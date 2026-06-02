@@ -258,6 +258,19 @@ func (s *SessionDBs) PendingInbound() ([]InboundMessage, error) {
 	return out, rows.Err()
 }
 
+// HasPendingInbound reports whether the session has any unconsumed inbound
+// messages. The sweep uses this to decide whether a session needs its runner
+// (re)launched (brief §3.3).
+func (s *SessionDBs) HasPendingInbound() (bool, error) {
+	var n int
+	if err := s.Inbound.QueryRow(
+		`SELECT count(*) FROM messages WHERE status = 'pending'`,
+	).Scan(&n); err != nil {
+		return false, fmt.Errorf("count pending inbound: %w", err)
+	}
+	return n > 0, nil
+}
+
 // MarkInboundConsumed flips an inbound row to 'consumed' (runner side).
 func (s *SessionDBs) MarkInboundConsumed(id int64) error {
 	_, err := s.Inbound.Exec(

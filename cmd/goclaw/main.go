@@ -114,7 +114,7 @@ func run(log *slog.Logger) error {
 	// a non-nil error, the group cancels and the rest unwind.
 	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, log)
 	del := delivery.New(central, registry, cfg.DataDir, log)
-	swp := sweep.New(central, log)
+	swp := sweep.New(central, cfg.DataDir, ensurer, log)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rtr.Run(gctx, inbound) })
