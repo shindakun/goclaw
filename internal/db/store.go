@@ -76,12 +76,49 @@ func (d *DB) MessagingGroupByChat(channel, chatID string) (*MessagingGroup, erro
 	return &mg, nil
 }
 
+// HasAgentDestination reports whether an agent group has an explicit
+// agent_destinations row for (channel, chatID). Used by delivery authorization
+// for non-origin targets (brief §9).
+func (d *DB) HasAgentDestination(agentGroupID int64, channel, chatID string) (bool, error) {
+	var n int
+	err := d.QueryRow(`
+		SELECT count(*) FROM agent_destinations
+		WHERE agent_group_id = ? AND channel = ? AND chat_id = ?`,
+		agentGroupID, channel, chatID,
+	).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check agent destination: %w", err)
+	}
+	return n > 0, nil
+}
+
 // Session is a resolved session row (the central-DB record; the on-disk DB pair
 // is opened separately via OpenSession).
 type Session struct {
 	ID           int64
 	AgentGroupID int64
 	SessionKey   string
+}
+
+// ActiveSessions returns every session row. v0 treats all sessions as drainable;
+// a later refinement filters by recent activity (brief §3.3 sweep). The delivery
+// loop uses this to know which outbound.db files to poll.
+func (d *DB) ActiveSessions() ([]Session, error) {
+	rows, err := d.Query(`SELECT id, agent_group_id, session_key FROM sessions`)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Session
+	for rows.Next() {
+		var s Session
+		if err := rows.Scan(&s.ID, &s.AgentGroupID, &s.SessionKey); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // ResolveOrCreateSession returns the session for (agentGroupID, sessionKey),

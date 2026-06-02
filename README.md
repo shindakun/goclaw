@@ -14,16 +14,17 @@ logic and tests.
 
 ```text
 cmd/goclaw/           entry: config, DB init, start loops, signal handling
-internal/config/      env-based configuration
-internal/db/          central DB + migrations (embedded SQL), session DB open
+cmd/stub-runner/      minimal stand-in for the in-container runner (echoes inbound→outbound)
+internal/config/      env + .env configuration
+internal/db/          central DB + migrations, session DB pair, queue helpers
 internal/channels/    ChannelAdapter interface + registry
 internal/channels/telegram/  Telegram adapter (the v0 channel)
-internal/router/      entity resolution + access gate → inbound.db (stub)
-internal/delivery/    outbound.db poll, adapter dispatch, delivery auth (stub)
+internal/router/      entity resolution + access gate → enqueue to inbound.db (REAL)
+internal/delivery/    outbound.db poll, delivery auth, adapter dispatch (REAL)
 internal/sweep/       60s ticker: stale, due-wake, recurrence (stub)
 internal/runtime/     Podman lifecycle (CLI shell-out) + mount builder
 internal/mounts/      allowlist load + path validation (REAL, unit-tested)
-internal/permissions/ roles, sender policy, access gate
+internal/permissions/ roles, sender policy, access gate (REAL)
 internal/vault/       OneCLI credential-proxy wiring at spawn time (stub)
 internal/vaultlock/   flock single-writer guard for the shared vault
 secondbrain-template/ optional second-brain vault starter (brief §11)
@@ -49,10 +50,30 @@ Config via environment:
 | `TELEGRAM_BOT_TOKEN` | _(unset)_ | enables the Telegram channel |
 | `GOCLAW_PODMAN_BIN` | `podman` | podman binary |
 
+## Proving the boundary (no container yet)
+
+The two-SQLite-file boundary round-trips end to end without a container, using
+`cmd/stub-runner` as a stand-in for the real agent-runner. The host enqueues an
+inbound message; the stub runner echoes it to outbound; delivery dispatches it.
+
+```sh
+# Point the stub runner at a session dir created by the host and let it echo:
+go run ./cmd/stub-runner -dir data/v2-sessions/<agentGroupID>/<sessionKey>
+#   -once      process the current backlog and exit
+#   -interval  poll cadence (default 500ms)
+```
+
+`internal/delivery` has an on-disk round-trip test (`TestRoundTrip`):
+host enqueues inbound → stub runner consumes + echoes → delivery sends via the
+adapter, with origin-chat-allowed / non-origin-denied authorization (brief §9).
+
 ## Status / next steps
 
-Roughly Phase 0–1 of the brief's plan. Next:
+Inbound and outbound paths are real; the loop round-trips through the stub
+runner. Next:
 
-1. Inbound/outbound session schema + the router write path.
-2. Container spawn from `internal/runtime` round-tripping one Telegram message.
-3. Delivery authorization against `agent_destinations`.
+1. Container spawn from `internal/runtime`: run the stub runner (then the real
+   Claude runner) inside a Podman container instead of on the host.
+2. Container wake on enqueue (the `// TODO` in `router.enqueue`).
+3. Replace the stub runner with the real agent-runner (Option A TS, or
+   Option A′ Go on `shindakun/agent-sdk-go`; brief §4).

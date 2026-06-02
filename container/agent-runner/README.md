@@ -24,6 +24,9 @@ installable via npm.
 
 ## Status
 
-Placeholder. Phase 0 of the plan (brief §13) round-trips one message to the
-**existing TS runner** to prove the boundary before any rewrite. Drop the runner
-implementation (TS sources, or a Go `main` + Containerfile) here.
+Placeholder. For now the boundary is proven on the host with
+[`cmd/stub-runner`](../../cmd/stub-runner/) — a minimal echo runner that reads
+`inbound.db` and writes `outbound.db`, no Claude. The next step is to run that
+(then the real runner) inside a Podman container via `internal/runtime`. Drop
+the production runner implementation (TS sources, or a Go `main` +
+Containerfile) here.

@@ -103,11 +103,18 @@ func sanitizeSessionKey(key string) string {
 	return s
 }
 
-// OpenSession creates the session directory if needed, opens the inbound/outbound
-// pair, and ensures both message-queue schemas exist. The inbound handle is
-// capped to one connection (host is its sole writer, brief §5.1).
+// OpenSession creates the session directory if needed and opens the
+// inbound/outbound pair under the host's data dir.
 func OpenSession(baseDir string, agentGroupID int64, sessionKey string) (*SessionDBs, error) {
-	dir := SessionDir(baseDir, agentGroupID, sessionKey)
+	return OpenSessionDir(SessionDir(baseDir, agentGroupID, sessionKey))
+}
+
+// OpenSessionDir opens (creating + initializing schemas if needed) the
+// inbound/outbound pair in an explicit directory. The in-container agent-runner
+// uses this against its mounted session dir, since it sees only its own two DBs
+// and knows nothing of agent-group ids or the central DB (brief §3.1, §5.1).
+// The inbound handle is capped to one connection (single-writer, brief §5.1).
+func OpenSessionDir(dir string) (*SessionDBs, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create session dir %q: %w", dir, err)
 	}
@@ -120,7 +127,6 @@ func OpenSession(baseDir string, agentGroupID int64, sessionKey string) (*Sessio
 		inbound.Close()
 		return nil, err
 	}
-	// Host is the sole writer of inbound — enforce one connection.
 	inbound.SetMaxOpenConns(1)
 	if _, err := inbound.Exec(inboundSchema); err != nil {
 		inbound.Close()
@@ -156,6 +162,121 @@ func (s *SessionDBs) EnqueueInbound(channel, chatID, senderID, senderName, text 
 	)
 	if err != nil {
 		return 0, fmt.Errorf("enqueue inbound: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// OutboundMessage is one row read from a session's outbound queue.
+type OutboundMessage struct {
+	ID      int64
+	Channel string
+	ChatID  string
+	Text    string
+}
+
+// PendingOutbound returns the outbound rows still awaiting delivery, oldest
+// first. The host reads these (the container is the writer).
+func (s *SessionDBs) PendingOutbound() ([]OutboundMessage, error) {
+	rows, err := s.Outbound.Query(`
+		SELECT id, channel, chat_id, text
+		FROM messages
+		WHERE status = 'pending'
+		ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("read pending outbound: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OutboundMessage
+	for rows.Next() {
+		var m OutboundMessage
+		if err := rows.Scan(&m.ID, &m.Channel, &m.ChatID, &m.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// MarkOutboundDelivered flips an outbound row to 'delivered'.
+func (s *SessionDBs) MarkOutboundDelivered(id int64) error {
+	_, err := s.Outbound.Exec(
+		`UPDATE messages SET status = 'delivered', delivered_at = datetime('now') WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("mark outbound delivered: %w", err)
+	}
+	return err
+}
+
+// MarkOutboundFailed flips an outbound row to 'failed' with an error message.
+func (s *SessionDBs) MarkOutboundFailed(id int64, reason string) error {
+	_, err := s.Outbound.Exec(
+		`UPDATE messages SET status = 'failed', error = ? WHERE id = ?`, reason, id)
+	if err != nil {
+		return fmt.Errorf("mark outbound failed: %w", err)
+	}
+	return err
+}
+
+// --- Container/runner side -------------------------------------------------
+//
+// These are used by the in-container agent-runner, not the host. They live here
+// so both sides share one schema definition, but note the ownership inversion:
+// the runner is the WRITER of outbound and the consumer of inbound, mirror image
+// of the host (brief §5.1).
+
+// InboundMessage is one row read from a session's inbound queue (runner side).
+type InboundMessage struct {
+	ID         int64
+	Channel    string
+	ChatID     string
+	SenderID   string
+	SenderName string
+	Text       string
+}
+
+// PendingInbound returns inbound rows the container hasn't consumed yet.
+func (s *SessionDBs) PendingInbound() ([]InboundMessage, error) {
+	rows, err := s.Inbound.Query(`
+		SELECT id, channel, chat_id, sender_id, COALESCE(sender_name, ''), text
+		FROM messages
+		WHERE status = 'pending'
+		ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("read pending inbound: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InboundMessage
+	for rows.Next() {
+		var m InboundMessage
+		if err := rows.Scan(&m.ID, &m.Channel, &m.ChatID, &m.SenderID, &m.SenderName, &m.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// MarkInboundConsumed flips an inbound row to 'consumed' (runner side).
+func (s *SessionDBs) MarkInboundConsumed(id int64) error {
+	_, err := s.Inbound.Exec(
+		`UPDATE messages SET status = 'consumed', consumed_at = datetime('now') WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("mark inbound consumed: %w", err)
+	}
+	return err
+}
+
+// EnqueueOutbound writes a reply into the session's outbound queue as 'pending'
+// for the host delivery loop to pick up (runner side).
+func (s *SessionDBs) EnqueueOutbound(channel, chatID, text string) (int64, error) {
+	res, err := s.Outbound.Exec(`
+		INSERT INTO messages (channel, chat_id, text) VALUES (?, ?, ?)`,
+		channel, chatID, text,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue outbound: %w", err)
 	}
 	return res.LastInsertId()
 }

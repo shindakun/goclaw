@@ -10,6 +10,7 @@ package delivery
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/shindakun/goclaw/internal/channels"
@@ -23,12 +24,13 @@ const pollInterval = 500 * time.Millisecond
 type Deliverer struct {
 	central  *db.DB
 	registry *channels.Registry
+	dataDir  string
 	log      *slog.Logger
 }
 
 // New constructs a Deliverer.
-func New(central *db.DB, registry *channels.Registry, log *slog.Logger) *Deliverer {
-	return &Deliverer{central: central, registry: registry, log: log}
+func New(central *db.DB, registry *channels.Registry, dataDir string, log *slog.Logger) *Deliverer {
+	return &Deliverer{central: central, registry: registry, dataDir: dataDir, log: log}
 }
 
 // Run polls outbound queues on a ticker until ctx is cancelled.
@@ -49,13 +51,60 @@ func (d *Deliverer) Run(ctx context.Context) error {
 
 // drain reads pending outbound rows across active sessions and dispatches them.
 func (d *Deliverer) drain(ctx context.Context) error {
-	// TODO: enumerate active sessions, open each outbound.db (host is a reader),
-	// SELECT undelivered rows, and for each:
-	//   1. authorize(channel, chatID, agentGroupID) — origin chat or
-	//      agent_destinations row,
-	//   2. look up the adapter in the registry,
-	//   3. adapter.Send(ctx, out),
-	//   4. mark the row delivered.
+	sessions, err := d.central.ActiveSessions()
+	if err != nil {
+		return err
+	}
+	for _, s := range sessions {
+		if err := d.drainSession(ctx, s); err != nil {
+			d.log.Error("drain session", "session", s.SessionKey, "err", err)
+			// Keep going with other sessions.
+		}
+	}
+	return nil
+}
+
+// drainSession dispatches the pending outbound rows for one session.
+func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
+	sess, err := db.OpenSession(d.dataDir, s.AgentGroupID, s.SessionKey)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	pending, err := sess.PendingOutbound()
+	if err != nil {
+		return err
+	}
+	originChannel, originChat := splitSessionKey(s.SessionKey)
+
+	for _, m := range pending {
+		ok, err := d.authorize(s.AgentGroupID, m.Channel, m.ChatID, originChannel, originChat)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			reason := "delivery not authorized for " + m.Channel + ":" + m.ChatID
+			d.log.Warn("outbound denied", "session", s.SessionKey, "target", m.Channel+":"+m.ChatID)
+			if err := sess.MarkOutboundFailed(m.ID, reason); err != nil {
+				return err
+			}
+			continue
+		}
+
+		out := channels.OutboundMsg{Channel: m.Channel, ChatID: m.ChatID, Text: m.Text}
+		if err := d.dispatch(ctx, out); err != nil {
+			d.log.Error("dispatch failed", "session", s.SessionKey, "err", err)
+			if mErr := sess.MarkOutboundFailed(m.ID, err.Error()); mErr != nil {
+				return mErr
+			}
+			continue
+		}
+		if err := sess.MarkOutboundDelivered(m.ID); err != nil {
+			return err
+		}
+		d.log.Info("delivered", "session", s.SessionKey, "target", m.Channel+":"+m.ChatID, "msg_id", m.ID)
+	}
 	return nil
 }
 
@@ -70,8 +119,20 @@ func (d *Deliverer) dispatch(ctx context.Context, out channels.OutboundMsg) erro
 }
 
 // authorize enforces origin-chat-always-allowed + agent_destinations (brief §9).
-//
-// TODO: implement against the central DB. Default-deny.
-func (d *Deliverer) authorize(agentGroupID int64, channel, chatID string) bool {
-	return false
+// The origin chat (the conversation this session belongs to) is always allowed;
+// any other target needs an explicit agent_destinations row.
+func (d *Deliverer) authorize(agentGroupID int64, channel, chatID, originChannel, originChat string) (bool, error) {
+	if channel == originChannel && chatID == originChat {
+		return true, nil
+	}
+	return d.central.HasAgentDestination(agentGroupID, channel, chatID)
+}
+
+// splitSessionKey parses a "channel:chatID" session key into its parts. v0 keys
+// are produced by the router as channel + ":" + chatID.
+func splitSessionKey(key string) (channel, chatID string) {
+	if c, rest, ok := strings.Cut(key, ":"); ok {
+		return c, rest
+	}
+	return "", key
 }
