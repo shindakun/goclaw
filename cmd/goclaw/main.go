@@ -117,16 +117,28 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
+		// Pass exactly one credential to avoid ambiguity in the CLI: prefer the
+		// long-lived API key; fall back to the OAuth token. (WithEnv drops empties.)
+		claudeEnv := map[string]string{}
+		if cfg.AnthropicAPIKey != "" {
+			claudeEnv["ANTHROPIC_API_KEY"] = cfg.AnthropicAPIKey
+		} else if cfg.ClaudeCodeOAuthToken != "" {
+			claudeEnv["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.ClaudeCodeOAuthToken
+		}
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
-			WithEnv(map[string]string{
-				"ANTHROPIC_API_KEY":       cfg.AnthropicAPIKey,
-				"CLAUDE_CODE_OAUTH_TOKEN": cfg.ClaudeCodeOAuthToken,
-			})
+			WithEnv(claudeEnv)
 		ensurer = mgr
 		runners = mgr
 		log.Info("runner launch enabled", "image", cfg.RunnerImage,
 			"mount_allowlist", cfg.MountAllowlistPath,
-			"claude_auth", cfg.ClaudeCodeOAuthToken != "" || cfg.AnthropicAPIKey != "")
+			"claude_auth", claudeAuthKind(cfg))
+		// A Claude Code OAuth token is short-lived (~12h) and the container can't
+		// refresh it — it WILL eventually 401. Steer toward a long-lived API key.
+		if cfg.ClaudeCodeOAuthToken != "" && cfg.AnthropicAPIKey == "" {
+			log.Warn("using a Claude Code OAuth token — it expires in ~12h and the " +
+				"container cannot refresh it; on 401 re-extract it, or set " +
+				"GOCLAW_ANTHROPIC_API_KEY (long-lived) instead")
+		}
 	} else {
 		log.Info("runner launch disabled — start a runner out of band (cmd/stub-runner)")
 	}
@@ -155,6 +167,20 @@ func run(log *slog.Logger) error {
 		return nil // clean shutdown
 	}
 	return err
+}
+
+// claudeAuthKind reports which Claude credential the runner will use, for the
+// startup log. An API key wins (it's long-lived); the OAuth token is the
+// short-lived fallback.
+func claudeAuthKind(cfg *config.Config) string {
+	switch {
+	case cfg.AnthropicAPIKey != "":
+		return "api-key"
+	case cfg.ClaudeCodeOAuthToken != "":
+		return "oauth-token (short-lived)"
+	default:
+		return "none"
+	}
 }
 
 // stopRunners stops every running runner container during host shutdown.

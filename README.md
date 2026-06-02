@@ -99,16 +99,22 @@ image bundles Node + the CLI.
 # 1. Build the Claude runner image:
 podman build -f container/claude.Containerfile -t goclaw-claude:latest .
 
-# 2. .env — point at the Claude image and provide auth (pick one):
+# 2. .env — point at the Claude image and provide auth:
 GOCLAW_LAUNCH_RUNNER=1
 GOCLAW_RUNNER_IMAGE=goclaw-claude:latest
-#   (a) Claude Code subscription:
-GOCLAW_CLAUDE_CODE_OAUTH_TOKEN=...   # see .env.example for Keychain extraction
-#   (b) or a standard API key:
-GOCLAW_ANTHROPIC_API_KEY=sk-ant-api03-...
+GOCLAW_ANTHROPIC_API_KEY=sk-ant-api03-...   # recommended: long-lived
 
 go run ./cmd/goclaw
 ```
+
+**Auth: use an API key.** A standard Anthropic API key
+(`GOCLAW_ANTHROPIC_API_KEY`, from console.anthropic.com) is long-lived and the
+runner keeps working indefinitely — this is what NanoClaw uses too. A Claude Code
+subscription token (`GOCLAW_CLAUDE_CODE_OAUTH_TOKEN`) is also supported and bills
+against your Claude plan, **but it expires in ~12h and the container cannot
+refresh it** (on macOS the live token is in the Keychain, unreachable from the
+container) — so it will eventually 401 and you'll have to re-extract it. Prefer
+the API key for anything left running. If both are set, the API key wins.
 
 Now messaging the bot gets a real Claude answer. The host passes the credential
 into the container (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`); the runner
