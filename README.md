@@ -50,30 +50,54 @@ Config via environment:
 | `TELEGRAM_BOT_TOKEN` | _(unset)_ | enables the Telegram channel |
 | `GOCLAW_PODMAN_BIN` | `podman` | podman binary |
 
-## Proving the boundary (no container yet)
+## Running the loop end to end
 
-The two-SQLite-file boundary round-trips end to end without a container, using
-`cmd/stub-runner` as a stand-in for the real agent-runner. The host enqueues an
-inbound message; the stub runner echoes it to outbound; delivery dispatches it.
+The full loop round-trips through a Podman container. The runner image packages
+`cmd/stub-runner` (an echo stand-in — no Claude yet); the host launches one
+container per session on enqueue.
+
+**1. Build the runner image** (from the repo root):
 
 ```sh
-# Point the stub runner at a session dir created by the host and let it echo:
+podman build -f container/runner.Containerfile -t goclaw-runner:latest .
+```
+
+**2. Run the host with runner launch enabled:**
+
+```sh
+# .env
+TELEGRAM_BOT_TOKEN=...          # from @BotFather
+GOCLAW_OWNER_TELEGRAM_ID=...    # your numeric Telegram id
+GOCLAW_AUTO_WIRE_OWNER=1        # first-run convenience
+GOCLAW_LAUNCH_RUNNER=1          # host launches the runner container
+
+go run ./cmd/goclaw
+```
+
+Message the bot and you get `echo: <your text>` back — the host writes inbound,
+launches the container (mounting the session dir at `/session`, `--user
+1000:1000`, `--init`, `:Z`), the runner echoes to outbound, and delivery sends
+the reply.
+
+### Without container launch
+
+Leave `GOCLAW_LAUNCH_RUNNER` unset to start the runner out of band instead —
+useful for development without rebuilding the image:
+
+```sh
 go run ./cmd/stub-runner -dir data/v2-sessions/<agentGroupID>/<sessionKey>
 #   -once      process the current backlog and exit
 #   -interval  poll cadence (default 500ms)
 ```
 
-`internal/delivery` has an on-disk round-trip test (`TestRoundTrip`):
-host enqueues inbound → stub runner consumes + echoes → delivery sends via the
-adapter, with origin-chat-allowed / non-origin-denied authorization (brief §9).
+`internal/delivery` has an on-disk round-trip test (`TestRoundTrip`), and
+`internal/runtime` tests the launch argv + idempotent skip against a fake podman.
 
 ## Status / next steps
 
-Inbound and outbound paths are real; the loop round-trips through the stub
-runner. Next:
+The full message loop works end to end through a real container. Next:
 
-1. Container spawn from `internal/runtime`: run the stub runner (then the real
-   Claude runner) inside a Podman container instead of on the host.
-2. Container wake on enqueue (the `// TODO` in `router.enqueue`).
-3. Replace the stub runner with the real agent-runner (Option A TS, or
+1. Replace the stub runner with the real agent-runner (Option A TS, or
    Option A′ Go on `shindakun/agent-sdk-go`; brief §4).
+2. Per-agent-group container model (v0 runs one container per session).
+3. Credential vault proxy + validated extra mounts on the runner (brief §8).

@@ -20,6 +20,13 @@ type Config struct {
 	TelegramToken string
 	// PodmanBin is the podman binary name/path.
 	PodmanBin string
+	// LaunchRunner enables host-managed runner containers: on enqueue the host
+	// runs RunnerImage in Podman for the session. When false, the runner is
+	// expected to be started out of band (e.g. cmd/stub-runner by hand).
+	LaunchRunner bool
+	// RunnerImage is the container image launched per session when LaunchRunner
+	// is on (build it from container/runner.Containerfile).
+	RunnerImage string
 	// OwnerTelegramID, if set, is seeded at startup as the owner user's Telegram
 	// identity so the first real user can get past the access gate without
 	// hand-editing the DB (brief §3.4). Empty disables the bootstrap.
@@ -57,6 +64,8 @@ func Load() (*Config, error) {
 		AutoWireOwner:           os.Getenv("GOCLAW_AUTO_WIRE_OWNER") == "1",
 		DefaultAgentGroupName:   getenv("GOCLAW_DEFAULT_AGENT_GROUP", "default"),
 		DefaultAgentGroupFolder: getenv("GOCLAW_DEFAULT_AGENT_GROUP_FOLDER", "default"),
+		LaunchRunner:            os.Getenv("GOCLAW_LAUNCH_RUNNER") == "1",
+		RunnerImage:             getenv("GOCLAW_RUNNER_IMAGE", "goclaw-runner:latest"),
 	}
 	return cfg, nil
 }

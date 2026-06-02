@@ -1,0 +1,9 @@
+# Keep the build context small and free of host state/secrets.
+.git/
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+secondbrain-template/
+*.md

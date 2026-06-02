@@ -40,7 +40,7 @@ func TestRoute_OwnerAutoWire(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	r := New(d, dataDir, agID, quietLogger())
+	r := New(d, dataDir, agID, nil /* no runner launch */, quietLogger())
 	msg := channels.InboundMsg{
 		Channel:  "telegram",
 		ChatID:   "555",
@@ -86,7 +86,7 @@ func TestRoute_OwnerAutoWire(t *testing.T) {
 // (recorded conversation, no wiring) — and must not error.
 func TestRoute_UnknownSenderNoWiringDrops(t *testing.T) {
 	d := testDB(t)
-	r := New(d, t.TempDir(), 0 /* no auto-wire */, quietLogger())
+	r := New(d, t.TempDir(), 0 /* no auto-wire */, nil /* no runner launch */, quietLogger())
 	msg := channels.InboundMsg{
 		Channel:  "telegram",
 		ChatID:   "777",

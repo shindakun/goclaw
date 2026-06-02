@@ -18,6 +18,10 @@ import (
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
+// execCommand builds an *exec.Cmd. It is a package var so tests can substitute a
+// fake that records argv / returns canned output without invoking podman.
+var execCommand = exec.CommandContext
+
 // Runtime selects the OCI runtime for a container (brief §6.4).
 type Runtime string
 
@@ -38,15 +42,34 @@ type Spec struct {
 
 // Manager drives Podman.
 type Manager struct {
-	podmanBin string // path/name of the podman binary
+	podmanBin string  // path/name of the podman binary
+	image     string  // runner image to launch
+	runtime   Runtime // OCI runtime for launched containers
 }
 
-// New constructs a Manager. binary defaults to "podman" if empty.
-func New(binary string) *Manager {
+// New constructs a Manager. binary defaults to "podman" and runtime to crun if
+// empty. image is the runner image launched by EnsureRunner.
+func New(binary, image string, rt Runtime) *Manager {
 	if binary == "" {
 		binary = "podman"
 	}
-	return &Manager{podmanBin: binary}
+	if rt == "" {
+		rt = RuntimeCrun
+	}
+	return &Manager{podmanBin: binary, image: image, runtime: rt}
+}
+
+// EnsureRunner implements router.RunnerEnsurer: it ensures a runner container is
+// up for the given session, launching one (mounting sessionDir at /session) if
+// not. Idempotent — a running container is left alone.
+func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, sessionKey, sessionDir string) error {
+	return m.EnsureSessionRunner(ctx, SessionRunner{
+		Image:        m.image,
+		Runtime:      m.runtime,
+		AgentGroupID: agentGroupID,
+		SessionKey:   sessionKey,
+		SessionDir:   sessionDir,
+	})
 }
 
 // Run launches a container per spec via `podman run`. Returns the container id.
@@ -55,7 +78,7 @@ func New(binary string) *Manager {
 // teardown. For v0 this only assembles the argv and runs it.
 func (m *Manager) Run(ctx context.Context, spec Spec) (string, error) {
 	args := m.buildArgs(spec)
-	cmd := exec.CommandContext(ctx, m.podmanBin, args...)
+	cmd := execCommand(ctx, m.podmanBin, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("runtime: podman run: %w", err)
@@ -92,7 +115,7 @@ func (m *Manager) buildArgs(spec Spec) []string {
 //
 // TODO: implement `podman stop` with a grace period.
 func (m *Manager) Stop(ctx context.Context, idOrName string) error {
-	cmd := exec.CommandContext(ctx, m.podmanBin, "stop", idOrName)
+	cmd := execCommand(ctx, m.podmanBin, "stop", idOrName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("runtime: podman stop %q: %w", idOrName, err)
 	}

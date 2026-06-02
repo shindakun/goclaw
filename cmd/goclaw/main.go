@@ -21,6 +21,7 @@ import (
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/delivery"
 	"github.com/shindakun/goclaw/internal/router"
+	"github.com/shindakun/goclaw/internal/runtime"
 	"github.com/shindakun/goclaw/internal/sweep"
 )
 
@@ -98,9 +99,20 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	// Container runner: when enabled, the host launches a Podman runner per
+	// session on enqueue. When disabled (default), start a runner out of band
+	// (cmd/stub-runner). nil ensurer ⇒ no host-managed launch.
+	var ensurer router.RunnerEnsurer
+	if cfg.LaunchRunner {
+		ensurer = runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun)
+		log.Info("runner launch enabled", "image", cfg.RunnerImage)
+	} else {
+		log.Info("runner launch disabled — start a runner out of band (cmd/stub-runner)")
+	}
+
 	// Wire the host loops. errgroup ties their lifetimes to ctx: if any returns
 	// a non-nil error, the group cancels and the rest unwind.
-	rtr := router.New(central, cfg.DataDir, autoWireID, log)
+	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, log)
 	del := delivery.New(central, registry, cfg.DataDir, log)
 	swp := sweep.New(central, log)
 
