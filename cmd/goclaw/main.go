@@ -21,6 +21,7 @@ import (
 	"github.com/shindakun/goclaw/internal/config"
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/delivery"
+	"github.com/shindakun/goclaw/internal/mounts"
 	"github.com/shindakun/goclaw/internal/router"
 	"github.com/shindakun/goclaw/internal/runtime"
 	"github.com/shindakun/goclaw/internal/sweep"
@@ -110,10 +111,16 @@ func run(log *slog.Logger) error {
 		runners sweep.RunnerManager  // richer: ensure + list + stop (sweep GC)
 	)
 	if cfg.LaunchRunner {
-		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun)
+		// Load the external mount allowlist (fail-closed if absent) to validate
+		// any extra group mounts at launch (brief §6.3).
+		allow, err := mounts.LoadAllowlist(cfg.MountAllowlistPath)
+		if err != nil {
+			return err
+		}
+		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow)
 		ensurer = mgr
 		runners = mgr
-		log.Info("runner launch enabled", "image", cfg.RunnerImage)
+		log.Info("runner launch enabled", "image", cfg.RunnerImage, "mount_allowlist", cfg.MountAllowlistPath)
 	} else {
 		log.Info("runner launch disabled — start a runner out of band (cmd/stub-runner)")
 	}

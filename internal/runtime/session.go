@@ -22,7 +22,8 @@ type GroupRunner struct {
 	Image        string  // runner image, e.g. "goclaw-runner:latest"
 	Runtime      Runtime // OCI runtime (crun default)
 	AgentGroupID int64
-	GroupDir     string // host path to the dir holding this group's session subdirs
+	GroupDir     string         // host path to the dir holding this group's session subdirs
+	ExtraMounts  []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
 
 // containerNamePrefix is the common prefix of every runner container's name.
@@ -74,11 +75,11 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		Name:    name,
 		Image:   gr.Image,
 		Runtime: gr.Runtime,
-		Mounts: []mounts.Mount{{
+		Mounts: append([]mounts.Mount{{
 			HostPath:      hostDir,
 			ContainerPath: sessionsMountPath,
 			ReadWrite:     true, // runner reads inbound, writes outbound
-		}},
+		}}, gr.ExtraMounts...),
 	}
 	id, err := m.Run(ctx, spec)
 	if err != nil {

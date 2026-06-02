@@ -18,15 +18,17 @@ import (
 
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/mounts"
 	"github.com/shindakun/goclaw/internal/permissions"
 )
 
 // RunnerEnsurer makes sure a runner is up for an agent group after a message is
-// enqueued. One container per agent group serves all its sessions.
-// internal/runtime implements this; it may be nil (no orchestration, e.g. when
-// running the stub runner by hand or in tests).
+// enqueued. One container per agent group serves all its sessions, plus any
+// extra mounts the group requested (validated against the allowlist by the
+// implementation). internal/runtime implements this; it may be nil (no
+// orchestration, e.g. when running the stub runner by hand or in tests).
 type RunnerEnsurer interface {
-	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error
+	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string, extra ...mounts.Request) error
 }
 
 // Sender sends a host-originated reply on a channel — used for the approval-card
@@ -304,9 +306,15 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 	// runner is expected to be started out of band (e.g. the stub runner by hand).
 	if r.ensurer != nil {
 		// One container per agent group serves all its sessions, so launch
-		// against the group dir (the parent of every session subdir).
+		// against the group dir (the parent of every session subdir), plus any
+		// extra mounts the group requested (validated against the allowlist by
+		// the ensurer).
 		groupDir := db.AgentGroupDir(r.dataDir, agentGroupID)
-		if err := r.ensurer.EnsureRunner(ctx, agentGroupID, groupDir); err != nil {
+		extra, err := r.extraMountRequests(agentGroupID)
+		if err != nil {
+			return err
+		}
+		if err := r.ensurer.EnsureRunner(ctx, agentGroupID, groupDir, extra...); err != nil {
 			// Don't lose the message over a launch failure — it's safely queued
 			// and a later message (or retry) can bring the runner up.
 			r.log.Error("ensure runner failed (message remains queued)",
@@ -316,4 +324,22 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 		}
 	}
 	return nil
+}
+
+// extraMountRequests loads an agent group's requested extra mounts and converts
+// them to mounts.Request for allowlist validation at launch (brief §6.3).
+func (r *Router) extraMountRequests(agentGroupID int64) ([]mounts.Request, error) {
+	ams, err := r.central.AgentMounts(agentGroupID)
+	if err != nil {
+		return nil, err
+	}
+	reqs := make([]mounts.Request, 0, len(ams))
+	for _, am := range ams {
+		reqs = append(reqs, mounts.Request{
+			HostPath:      am.HostPath,
+			ContainerPath: am.ContainerPath,
+			ReadWrite:     am.ReadWrite,
+		})
+	}
+	return reqs, nil
 }

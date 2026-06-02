@@ -76,6 +76,38 @@ func (d *DB) MessagingGroupByChat(channel, chatID string) (*MessagingGroup, erro
 	return &mg, nil
 }
 
+// AgentMount is an extra host directory an agent group wants mounted into its
+// runner, before allowlist validation (brief §6.3).
+type AgentMount struct {
+	HostPath      string
+	ContainerPath string
+	ReadWrite     bool
+}
+
+// AgentMounts returns the extra mounts requested by an agent group. These are
+// validated against the external allowlist at launch; the DB only records the
+// request.
+func (d *DB) AgentMounts(agentGroupID int64) ([]AgentMount, error) {
+	rows, err := d.Query(
+		`SELECT host_path, container_path, read_write FROM agent_mounts WHERE agent_group_id = ?`,
+		agentGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent mounts: %w", err)
+	}
+	defer rows.Close()
+	var out []AgentMount
+	for rows.Next() {
+		var m AgentMount
+		var rw int
+		if err := rows.Scan(&m.HostPath, &m.ContainerPath, &rw); err != nil {
+			return nil, err
+		}
+		m.ReadWrite = rw != 0
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // Identity is a channel-native identity for a user (used to message them).
 type Identity struct {
 	Channel  string

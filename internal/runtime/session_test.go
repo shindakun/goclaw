@@ -2,12 +2,21 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shindakun/goclaw/internal/mounts"
 )
+
+// jsonStr returns s as a JSON string literal (with surrounding quotes).
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
 
 // withFakePodman swaps execCommand for a fake that records argv and replays
 // scripted `ps` output via the test binary re-exec trick. The `ps` output flips
@@ -73,7 +82,7 @@ func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 	// Absent before launch; running after (post-launch health check passes).
 	withFakePodman(t, "", "goclaw-1 running\n", &calls)
 
-	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	// Use a RELATIVE group dir: podman would treat a relative -v source as a
 	// named volume, so the launcher must resolve it to an absolute path.
 	relDir := filepath.Join("data", "sessions", "1")
@@ -120,7 +129,7 @@ func TestEnsureGroupRunner_SkipsWhenRunning(t *testing.T) {
 	name := "goclaw-1"
 	withFakePodman(t, name+" running\n" /* already running */, name+" running\n", &calls)
 
-	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	gr := GroupRunner{
 		Image:        "goclaw-runner:latest",
 		AgentGroupID: 1,
@@ -142,7 +151,7 @@ func TestEnsureGroupRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 	// After: ps -a reports it running → post-launch health check passes.
 	withFakePodman(t, name+" exited\n", name+" running\n", &calls)
 
-	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	gr := GroupRunner{
 		Image:        "goclaw-runner:latest",
 		AgentGroupID: 1,
@@ -174,7 +183,7 @@ func TestRunningGroupIDs_ParsesNames(t *testing.T) {
 	// ps output: three runner containers (ignore any non-runner name).
 	withFakePodman(t, "goclaw-1\ngoclaw-42\ngoclaw-7\n", "", &calls)
 
-	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	ids, err := m.RunningGroupIDs(context.Background())
 	if err != nil {
 		t.Fatalf("RunningGroupIDs: %v", err)
@@ -198,7 +207,7 @@ func TestStopGroupRunner_RemovesWhenPresent(t *testing.T) {
 	// containerState sees it running; StopGroupRunner should rm it.
 	withFakePodman(t, "goclaw-3 running\n", "", &calls)
 
-	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	if err := m.StopGroupRunner(context.Background(), 3); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
@@ -208,10 +217,49 @@ func TestStopGroupRunner_RemovesWhenPresent(t *testing.T) {
 	}
 }
 
+func TestEnsureRunner_AppliesAllowlistedExtraMount(t *testing.T) {
+	var calls []string
+	withFakePodman(t, "", "goclaw-1 running\n", &calls)
+
+	// Allowlist permits a temp dir rw; request that as an extra mount plus a
+	// non-allowlisted one (which must be dropped).
+	allowed := t.TempDir()
+	denied := t.TempDir()
+	alJSON := `[{"host_path":` + jsonStr(allowed) + `,"read_write":true}]`
+	alPath := filepath.Join(t.TempDir(), "allow.json")
+	if err := os.WriteFile(alPath, []byte(alJSON), 0o600); err != nil {
+		t.Fatalf("write allowlist: %v", err)
+	}
+	al, err := mounts.LoadAllowlist(alPath)
+	if err != nil {
+		t.Fatalf("load allowlist: %v", err)
+	}
+
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, al)
+	err = m.EnsureRunner(context.Background(), 1, "/data/sessions/1",
+		mounts.Request{HostPath: allowed, ContainerPath: "/vault", ReadWrite: true},
+		mounts.Request{HostPath: denied, ContainerPath: "/secret", ReadWrite: true},
+	)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	run := calls[1] // ps, run, ps
+	absAllowed, _ := filepath.Abs(allowed)
+	// resolveOrClean (symlink resolution) matches what Validate emits on macOS.
+	if !strings.Contains(run, ":/vault:Z") {
+		t.Errorf("allowlisted mount missing from argv: %s", run)
+	}
+	if strings.Contains(run, "/secret") {
+		t.Errorf("non-allowlisted mount must be dropped, but appears: %s", run)
+	}
+	_ = absAllowed
+}
+
 func TestStopGroupRunner_NoopWhenAbsent(t *testing.T) {
 	var calls []string
 	withFakePodman(t, "", "", &calls) // ps returns nothing → absent
-	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	if err := m.StopGroupRunner(context.Background(), 9); err != nil {
 		t.Fatalf("stop: %v", err)
 	}

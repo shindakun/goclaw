@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/mounts"
 )
 
 // interval is the sweep cadence.
@@ -22,7 +23,7 @@ const idleTTL = 10 * time.Minute
 // RunnerManager makes sure an agent group's runner is up and can reap idle
 // runners. internal/runtime implements it; it may be nil (no orchestration).
 type RunnerManager interface {
-	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error
+	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string, extra ...mounts.Request) error
 	RunningGroupIDs(ctx context.Context) ([]int64, error)
 	StopGroupRunner(ctx context.Context, agentGroupID int64) error
 }
@@ -94,12 +95,35 @@ func (s *Sweeper) recoverRunners(ctx context.Context) {
 	}
 	for agentGroupID := range needsRunner {
 		dir := db.AgentGroupDir(s.dataDir, agentGroupID)
-		if err := s.runners.EnsureRunner(ctx, agentGroupID, dir); err != nil {
+		extra, err := s.extraMountRequests(agentGroupID)
+		if err != nil {
+			s.log.Error("sweep: load agent mounts", "agent_group", agentGroupID, "err", err)
+			continue
+		}
+		if err := s.runners.EnsureRunner(ctx, agentGroupID, dir, extra...); err != nil {
 			s.log.Error("sweep: ensure runner", "agent_group", agentGroupID, "err", err)
 			continue
 		}
 		s.log.Info("sweep: ensured runner for queued group", "agent_group", agentGroupID)
 	}
+}
+
+// extraMountRequests loads an agent group's extra mounts for launch (so a
+// recovered runner gets the same mounts as a router-launched one).
+func (s *Sweeper) extraMountRequests(agentGroupID int64) ([]mounts.Request, error) {
+	ams, err := s.central.AgentMounts(agentGroupID)
+	if err != nil {
+		return nil, err
+	}
+	reqs := make([]mounts.Request, 0, len(ams))
+	for _, am := range ams {
+		reqs = append(reqs, mounts.Request{
+			HostPath:      am.HostPath,
+			ContainerPath: am.ContainerPath,
+			ReadWrite:     am.ReadWrite,
+		})
+	}
+	return reqs, nil
 }
 
 // gcIdleRunners stops runner containers for agent groups that have had no

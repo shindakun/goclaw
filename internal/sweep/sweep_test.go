@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/mounts"
 )
 
 // fakeRunners is a stand-in RunnerManager that records calls and lets a test
@@ -19,7 +20,7 @@ type fakeRunners struct {
 	stopped []int64 // agentGroupIDs stopped
 }
 
-func (f *fakeRunners) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error {
+func (f *fakeRunners) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string, extra ...mounts.Request) error {
 	f.calls = append(f.calls, agentGroupID)
 	return nil
 }

@@ -43,34 +43,59 @@ type Spec struct {
 
 // Manager drives Podman.
 type Manager struct {
-	podmanBin string  // path/name of the podman binary
-	image     string  // runner image to launch
-	runtime   Runtime // OCI runtime for launched containers
+	podmanBin string            // path/name of the podman binary
+	image     string            // runner image to launch
+	runtime   Runtime           // OCI runtime for launched containers
+	allowlist *mounts.Allowlist // validates extra group mounts (may be nil)
 }
 
 // New constructs a Manager. binary defaults to "podman" and runtime to crun if
-// empty. image is the runner image launched by EnsureRunner.
-func New(binary, image string, rt Runtime) *Manager {
+// empty. image is the runner image launched by EnsureRunner. allowlist (may be
+// nil) validates a group's extra mounts; a nil allowlist permits no extras.
+func New(binary, image string, rt Runtime, allowlist *mounts.Allowlist) *Manager {
 	if binary == "" {
 		binary = "podman"
 	}
 	if rt == "" {
 		rt = RuntimeCrun
 	}
-	return &Manager{podmanBin: binary, image: image, runtime: rt}
+	return &Manager{podmanBin: binary, image: image, runtime: rt, allowlist: allowlist}
 }
 
 // EnsureRunner implements the RunnerEnsurer interface used by the router and
 // sweep: it ensures a runner container is up for the given agent group,
-// launching one (mounting groupDir at /sessions) if not. Idempotent — a running
-// container is left alone.
-func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error {
+// launching one (mounting groupDir at /sessions, plus any extra mounts that
+// pass allowlist validation) if not. Idempotent — a running container is left
+// alone. extra mounts that fail validation are skipped (fail closed) and logged
+// by the caller via the returned-from-Validate errors collected here.
+func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string, extra ...mounts.Request) error {
+	validated := m.validateExtra(extra)
 	return m.EnsureGroupRunner(ctx, GroupRunner{
 		Image:        m.image,
 		Runtime:      m.runtime,
 		AgentGroupID: agentGroupID,
 		GroupDir:     groupDir,
+		ExtraMounts:  validated,
 	})
+}
+
+// validateExtra validates each requested mount against the allowlist, returning
+// only the ones that pass. A nil allowlist (or a failed entry) yields no mount —
+// fail closed (brief §6.3, §9).
+func (m *Manager) validateExtra(reqs []mounts.Request) []mounts.Mount {
+	if m.allowlist == nil || len(reqs) == 0 {
+		return nil
+	}
+	var out []mounts.Mount
+	for _, req := range reqs {
+		mnt, err := m.allowlist.Validate(req)
+		if err != nil {
+			// Skip the entry; never silently widen access.
+			continue
+		}
+		out = append(out, mnt)
+	}
+	return out
 }
 
 // Run launches a container per spec via `podman run`. Returns the container id.
