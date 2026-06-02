@@ -116,11 +116,35 @@ func (r *Router) route(ctx context.Context, msg channels.InboundMsg) error {
 		// TODO: emit approval card.
 		return nil
 	case permissions.Allow:
-		// TODO: resolve-or-create the session, write msg into its inbound.db,
-		// and wake the container.
-		r.log.Info("message routed (stub)",
-			"channel", msg.Channel, "agent_group", wiring.AgentGroupID, "text", msg.Text)
-		return nil
+		return r.enqueue(msg, wiring.AgentGroupID)
 	}
+	return nil
+}
+
+// enqueue resolves-or-creates the session for this conversation, opens its
+// inbound.db, and writes the message as a pending row for the container to pick
+// up (brief §3.1). v0 opens and closes the session DB pair per message; a future
+// optimization is to cache open handles per active session.
+func (r *Router) enqueue(msg channels.InboundMsg, agentGroupID int64) error {
+	// One session per conversation in v0: the origin chat id is the session key.
+	sessionKey := msg.Channel + ":" + msg.ChatID
+	if _, err := r.central.ResolveOrCreateSession(agentGroupID, sessionKey); err != nil {
+		return err
+	}
+
+	sess, err := db.OpenSession(r.dataDir, agentGroupID, sessionKey)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	id, err := sess.EnqueueInbound(msg.Channel, msg.ChatID, msg.SenderID, msg.Sender, msg.Text)
+	if err != nil {
+		return err
+	}
+
+	// TODO: wake/ensure the container for this agent group (internal/runtime).
+	r.log.Info("message enqueued to inbound",
+		"channel", msg.Channel, "agent_group", agentGroupID, "session", sessionKey, "msg_id", id)
 	return nil
 }

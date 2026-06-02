@@ -7,11 +7,19 @@ package db
 
 import (
 	"database/sql"
+	_ "embed"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
 )
+
+//go:embed session_schema/inbound.sql
+var inboundSchema string
+
+//go:embed session_schema/outbound.sql
+var outboundSchema string
 
 // DB wraps the central database connection.
 type DB struct {
@@ -67,13 +75,42 @@ type SessionDBs struct {
 	dir      string
 }
 
-// OpenSession opens the inbound/outbound pair under
-// data/v2-sessions/{agentGroupID}/{sessionKey}/.
-//
-// TODO: create the directory, ensure the inbound/outbound schemas exist (the
-// message-queue tables), and mount these two files into the container.
+// SessionDir returns the on-disk directory for a session's DB pair:
+// {baseDir}/v2-sessions/{agentGroupID}/{sessionKey}/ (brief §3.2). The session
+// key derives from external input (a chat id), so it is sanitized to a safe
+// single path segment — no separators or traversal can escape the base dir.
+func SessionDir(baseDir string, agentGroupID int64, sessionKey string) string {
+	return filepath.Join(baseDir, "v2-sessions", fmt.Sprintf("%d", agentGroupID), sanitizeSessionKey(sessionKey))
+}
+
+// sanitizeSessionKey reduces a session key to a single safe path segment.
+// Anything that isn't an alphanumeric, '-', '_', or '.' becomes '_', and the
+// result can never be empty, "." or "..".
+func sanitizeSessionKey(key string) string {
+	b := make([]rune, 0, len(key))
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			b = append(b, r)
+		default:
+			b = append(b, '_')
+		}
+	}
+	s := string(b)
+	if s == "" || s == "." || s == ".." {
+		return "_" + s
+	}
+	return s
+}
+
+// OpenSession creates the session directory if needed, opens the inbound/outbound
+// pair, and ensures both message-queue schemas exist. The inbound handle is
+// capped to one connection (host is its sole writer, brief §5.1).
 func OpenSession(baseDir string, agentGroupID int64, sessionKey string) (*SessionDBs, error) {
-	dir := filepath.Join(baseDir, "v2-sessions", fmt.Sprintf("%d", agentGroupID), sessionKey)
+	dir := SessionDir(baseDir, agentGroupID, sessionKey)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create session dir %q: %w", dir, err)
+	}
 
 	inbound, err := sql.Open("sqlite", filepath.Join(dir, "inbound.db"))
 	if err != nil {
@@ -85,6 +122,10 @@ func OpenSession(baseDir string, agentGroupID int64, sessionKey string) (*Sessio
 	}
 	// Host is the sole writer of inbound — enforce one connection.
 	inbound.SetMaxOpenConns(1)
+	if _, err := inbound.Exec(inboundSchema); err != nil {
+		inbound.Close()
+		return nil, fmt.Errorf("init inbound schema: %w", err)
+	}
 
 	outbound, err := sql.Open("sqlite", filepath.Join(dir, "outbound.db"))
 	if err != nil {
@@ -96,8 +137,27 @@ func OpenSession(baseDir string, agentGroupID int64, sessionKey string) (*Sessio
 		outbound.Close()
 		return nil, err
 	}
+	if _, err := outbound.Exec(outboundSchema); err != nil {
+		inbound.Close()
+		outbound.Close()
+		return nil, fmt.Errorf("init outbound schema: %w", err)
+	}
 
 	return &SessionDBs{Inbound: inbound, Outbound: outbound, dir: dir}, nil
+}
+
+// EnqueueInbound writes one message into the session's inbound queue as
+// 'pending' for the container to pick up. Host is the sole writer (brief §5.1).
+func (s *SessionDBs) EnqueueInbound(channel, chatID, senderID, senderName, text string) (int64, error) {
+	res, err := s.Inbound.Exec(`
+		INSERT INTO messages (channel, chat_id, sender_id, sender_name, text)
+		VALUES (?, ?, ?, ?, ?)`,
+		channel, chatID, senderID, senderName, text,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("enqueue inbound: %w", err)
+	}
+	return res.LastInsertId()
 }
 
 // Close closes both session handles.

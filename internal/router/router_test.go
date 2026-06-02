@@ -39,11 +39,13 @@ func TestRoute_OwnerAutoWire(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	r := New(d, t.TempDir(), agID, quietLogger())
+	dataDir := t.TempDir()
+	r := New(d, dataDir, agID, quietLogger())
 	msg := channels.InboundMsg{
 		Channel:  "telegram",
 		ChatID:   "555",
 		SenderID: "6306189728",
+		Sender:   "@steve",
 		Text:     "hello",
 	}
 	if err := r.route(context.Background(), msg); err != nil {
@@ -61,6 +63,22 @@ func TestRoute_OwnerAutoWire(t *testing.T) {
 	}
 	if w == nil || w.AgentGroupID != agID {
 		t.Fatalf("expected auto-wiring to agent group %d, got %+v", agID, w)
+	}
+
+	// And the message must have landed in the session's inbound.db as pending.
+	sess, err := db.OpenSession(dataDir, agID, "telegram:555")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	defer sess.Close()
+	var text, status string
+	if err := sess.Inbound.QueryRow(
+		`SELECT text, status FROM messages ORDER BY id DESC LIMIT 1`,
+	).Scan(&text, &status); err != nil {
+		t.Fatalf("inbound row not found: %v", err)
+	}
+	if text != "hello" || status != "pending" {
+		t.Fatalf("inbound row mismatch: text=%q status=%q", text, status)
 	}
 }
 

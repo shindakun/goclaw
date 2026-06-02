@@ -76,6 +76,38 @@ func (d *DB) MessagingGroupByChat(channel, chatID string) (*MessagingGroup, erro
 	return &mg, nil
 }
 
+// Session is a resolved session row (the central-DB record; the on-disk DB pair
+// is opened separately via OpenSession).
+type Session struct {
+	ID           int64
+	AgentGroupID int64
+	SessionKey   string
+}
+
+// ResolveOrCreateSession returns the session for (agentGroupID, sessionKey),
+// creating its central-DB row on first use and bumping last_active_at. The
+// on-disk inbound/outbound DBs are opened by the caller via OpenSession.
+// v0 uses one session per conversation, so sessionKey is the origin chat id.
+func (d *DB) ResolveOrCreateSession(agentGroupID int64, sessionKey string) (*Session, error) {
+	if _, err := d.Exec(`
+		INSERT INTO sessions (agent_group_id, session_key, last_active_at)
+		VALUES (?, ?, datetime('now'))
+		ON CONFLICT (agent_group_id, session_key)
+		DO UPDATE SET last_active_at = datetime('now')`,
+		agentGroupID, sessionKey,
+	); err != nil {
+		return nil, fmt.Errorf("resolve-or-create session: %w", err)
+	}
+	var s Session
+	if err := d.QueryRow(
+		`SELECT id, agent_group_id, session_key FROM sessions WHERE agent_group_id = ? AND session_key = ?`,
+		agentGroupID, sessionKey,
+	).Scan(&s.ID, &s.AgentGroupID, &s.SessionKey); err != nil {
+		return nil, fmt.Errorf("read session: %w", err)
+	}
+	return &s, nil
+}
+
 // WiringForMessagingGroup resolves the wiring for a messaging group. v0 assumes
 // at most one wiring per messaging group; returns (nil, nil) when unwired.
 func (d *DB) WiringForMessagingGroup(messagingGroupID int64) (*Wiring, error) {
