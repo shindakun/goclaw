@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -130,8 +131,34 @@ func run(log *slog.Logger) error {
 
 	log.Info("goclaw host started")
 	err = g.Wait()
+
+	// On shutdown, stop the runner containers we launched so they don't outlive
+	// the host. Use a fresh context — the root ctx is already cancelled.
+	if runners != nil {
+		stopRunners(runners, log)
+	}
+
 	if errors.Is(err, context.Canceled) {
 		return nil // clean shutdown
 	}
 	return err
+}
+
+// stopRunners stops every running runner container during host shutdown.
+func stopRunners(runners sweep.RunnerManager, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ids, err := runners.RunningGroupIDs(ctx)
+	if err != nil {
+		log.Error("shutdown: list runners", "err", err)
+		return
+	}
+	for _, id := range ids {
+		if err := runners.StopGroupRunner(ctx, id); err != nil {
+			log.Error("shutdown: stop runner", "agent_group", id, "err", err)
+			continue
+		}
+		log.Info("shutdown: stopped runner", "agent_group", id)
+	}
 }
