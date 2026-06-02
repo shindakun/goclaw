@@ -94,7 +94,7 @@ func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 func TestEnsureSessionRunner_SkipsWhenRunning(t *testing.T) {
 	var calls []string
 	name := "goclaw-1-telegram-6306189728"
-	withFakePodman(t, name+"\n" /* ps returns the name → running */, &calls)
+	withFakePodman(t, name+" running\n" /* ps -a → running */, &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
 	sr := SessionRunner{
@@ -109,5 +109,35 @@ func TestEnsureSessionRunner_SkipsWhenRunning(t *testing.T) {
 	// Only the ps check; no run.
 	if len(calls) != 1 || !strings.Contains(calls[0], "ps") {
 		t.Fatalf("expected a single ps call, got: %v", calls)
+	}
+}
+
+func TestEnsureSessionRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
+	var calls []string
+	name := "goclaw-1-telegram-6306189728"
+	// ps -a reports the name in a non-running state → must rm then run.
+	withFakePodman(t, name+" exited\n", &calls)
+
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	sr := SessionRunner{
+		Image:        "goclaw-runner:latest",
+		AgentGroupID: 1,
+		SessionKey:   "telegram:6306189728",
+		SessionDir:   "/data/x",
+	}
+	if err := m.EnsureSessionRunner(context.Background(), sr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("expected ps + rm + run, got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "ps") {
+		t.Errorf("call 0 should be ps: %q", calls[0])
+	}
+	if !strings.Contains(calls[1], "rm -f "+name) {
+		t.Errorf("call 1 should remove the stale container: %q", calls[1])
+	}
+	if !strings.Contains(calls[2], "run") {
+		t.Errorf("call 2 should be run: %q", calls[2])
 	}
 }

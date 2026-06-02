@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/shindakun/goclaw/internal/mounts"
 )
@@ -79,8 +80,15 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, sessionK
 func (m *Manager) Run(ctx context.Context, spec Spec) (string, error) {
 	args := m.buildArgs(spec)
 	cmd := execCommand(ctx, m.podmanBin, args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		// Surface podman's stderr — a bare "exit status 125" is useless.
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return "", fmt.Errorf("runtime: podman run: %w: %s", err, msg)
+		}
 		return "", fmt.Errorf("runtime: podman run: %w", err)
 	}
 	return string(out), nil
