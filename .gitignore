@@ -1,0 +1,22 @@
+# Build output
+/nanoclaw
+/bin/
+*.exe
+
+# Local data & state
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets / local config
+*.env
+.env
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# CodeGraph index
+.codegraph/
