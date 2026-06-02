@@ -74,18 +74,26 @@ GOCLAW_LAUNCH_RUNNER=1          # host launches the runner container
 go run ./cmd/goclaw
 ```
 
-Message the bot and you get `echo: <your text>` back — the host writes inbound,
-launches the container (mounting the session dir at `/session`, `--user
-1000:1000`, `--init`, `:Z`), the runner echoes to outbound, and delivery sends
-the reply.
+Message the bot and you get `echo: <your text>` back. One container runs **per
+agent group** (named `goclaw-<agentGroupID>`), mounting that group's sessions
+directory at `/sessions` (`--user 1000:1000`, `--init`, `:Z`); the runner serves
+every session subdir beneath it, echoing to outbound, and delivery sends the
+reply.
+
+Session storage on disk:
+
+```text
+data/sessions/<agentGroupID>/<sessionKey>/{inbound.db,outbound.db}
+```
 
 ### Without container launch
 
 Leave `GOCLAW_LAUNCH_RUNNER` unset to start the runner out of band instead —
-useful for development without rebuilding the image:
+useful for development without rebuilding the image. Point it at an agent
+group's sessions directory:
 
 ```sh
-go run ./cmd/stub-runner -dir data/v2-sessions/<agentGroupID>/<sessionKey>
+go run ./cmd/stub-runner -dir data/sessions/<agentGroupID>
 #   -once      process the current backlog and exit
 #   -interval  poll cadence (default 500ms)
 ```
@@ -95,9 +103,10 @@ go run ./cmd/stub-runner -dir data/v2-sessions/<agentGroupID>/<sessionKey>
 
 ## Status / next steps
 
-The full message loop works end to end through a real container. Next:
+The full message loop works end to end through a real per-agent-group container.
+Next:
 
 1. Replace the stub runner with the real agent-runner (Option A TS, or
    Option A′ Go on `shindakun/agent-sdk-go`; brief §4).
-2. Per-agent-group container model (v0 runs one container per session).
+2. Container teardown / GC of idle runners (sweep).
 3. Credential vault proxy + validated extra mounts on the runner (brief §8).

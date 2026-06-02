@@ -68,22 +68,21 @@ func TestHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
+func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 	var calls []string
 	// Absent before launch; running after (post-launch health check passes).
-	withFakePodman(t, "", "goclaw-1-telegram-6306189728 running\n", &calls)
+	withFakePodman(t, "", "goclaw-1 running\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
-	// Use a RELATIVE session dir: podman would treat a relative -v source as a
+	// Use a RELATIVE group dir: podman would treat a relative -v source as a
 	// named volume, so the launcher must resolve it to an absolute path.
-	relDir := filepath.Join("data", "v2-sessions", "1", "telegram_6306189728")
-	sr := SessionRunner{
+	relDir := filepath.Join("data", "sessions", "1")
+	gr := GroupRunner{
 		Image:        "goclaw-runner:latest",
 		AgentGroupID: 1,
-		SessionKey:   "telegram:6306189728",
-		SessionDir:   relDir,
+		GroupDir:     relDir,
 	}
-	if err := m.EnsureSessionRunner(context.Background(), sr); err != nil {
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 
@@ -102,8 +101,8 @@ func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 	absDir, _ := filepath.Abs(relDir)
 	for _, want := range []string{
 		"run", "--user 1000:1000", "--init",
-		"--name goclaw-1-telegram-6306189728",
-		absDir + ":/session:Z", // mount source must be absolute
+		"--name goclaw-1",
+		absDir + ":/sessions:Z", // mount source must be absolute
 		"goclaw-runner:latest",
 	} {
 		if !strings.Contains(run, want) {
@@ -111,24 +110,23 @@ func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 		}
 	}
 	// Guard the regression directly: the -v source must not be the relative form.
-	if strings.Contains(run, " "+relDir+":/session") {
+	if strings.Contains(run, " "+relDir+":/sessions") {
 		t.Errorf("mount source is relative (would become a named volume): %s", run)
 	}
 }
 
-func TestEnsureSessionRunner_SkipsWhenRunning(t *testing.T) {
+func TestEnsureGroupRunner_SkipsWhenRunning(t *testing.T) {
 	var calls []string
-	name := "goclaw-1-telegram-6306189728"
+	name := "goclaw-1"
 	withFakePodman(t, name+" running\n" /* already running */, name+" running\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
-	sr := SessionRunner{
+	gr := GroupRunner{
 		Image:        "goclaw-runner:latest",
 		AgentGroupID: 1,
-		SessionKey:   "telegram:6306189728",
-		SessionDir:   "/data/x",
+		GroupDir:     "/data/x",
 	}
-	if err := m.EnsureSessionRunner(context.Background(), sr); err != nil {
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	// Only the ps check; no run.
@@ -137,21 +135,20 @@ func TestEnsureSessionRunner_SkipsWhenRunning(t *testing.T) {
 	}
 }
 
-func TestEnsureSessionRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
+func TestEnsureGroupRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 	var calls []string
-	name := "goclaw-1-telegram-6306189728"
+	name := "goclaw-1"
 	// Before: ps -a reports the name stopped → must rm then run.
 	// After: ps -a reports it running → post-launch health check passes.
 	withFakePodman(t, name+" exited\n", name+" running\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
-	sr := SessionRunner{
+	gr := GroupRunner{
 		Image:        "goclaw-runner:latest",
 		AgentGroupID: 1,
-		SessionKey:   "telegram:6306189728",
-		SessionDir:   "/data/x",
+		GroupDir:     "/data/x",
 	}
-	if err := m.EnsureSessionRunner(context.Background(), sr); err != nil {
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	// ps (pre) + rm (stale) + run + ps (post-launch health check).

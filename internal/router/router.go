@@ -18,11 +18,12 @@ import (
 	"github.com/shindakun/goclaw/internal/permissions"
 )
 
-// RunnerEnsurer makes sure a runner is up for a session after a message is
-// enqueued. internal/runtime implements this; it may be nil (no orchestration,
-// e.g. when running the stub runner by hand or in tests).
+// RunnerEnsurer makes sure a runner is up for an agent group after a message is
+// enqueued. One container per agent group serves all its sessions.
+// internal/runtime implements this; it may be nil (no orchestration, e.g. when
+// running the stub runner by hand or in tests).
 type RunnerEnsurer interface {
-	EnsureRunner(ctx context.Context, agentGroupID int64, sessionKey, sessionDir string) error
+	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error
 }
 
 // Router routes inbound messages to session inbound DBs.
@@ -159,8 +160,10 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 	// Make sure a runner is up to consume it. If no ensurer is configured, the
 	// runner is expected to be started out of band (e.g. the stub runner by hand).
 	if r.ensurer != nil {
-		sessionDir := db.SessionDir(r.dataDir, agentGroupID, sessionKey)
-		if err := r.ensurer.EnsureRunner(ctx, agentGroupID, sessionKey, sessionDir); err != nil {
+		// One container per agent group serves all its sessions, so launch
+		// against the group dir (the parent of every session subdir).
+		groupDir := db.AgentGroupDir(r.dataDir, agentGroupID)
+		if err := r.ensurer.EnsureRunner(ctx, agentGroupID, groupDir); err != nil {
 			// Don't lose the message over a launch failure — it's safely queued
 			// and a later message (or retry) can bring the runner up.
 			r.log.Error("ensure runner failed (message remains queued)",

@@ -9,36 +9,36 @@ import (
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
-// The container mount point for a session's DB pair. The runner image's
-// entrypoint points at this path (see container/runner.Containerfile).
-const sessionMountPath = "/session"
+// The container mount point for an agent group's sessions tree. The runner
+// image's entrypoint points at this path; the runner serves every session
+// subdirectory beneath it (see container/runner.Containerfile).
+const sessionsMountPath = "/sessions"
 
-// SessionRunner describes a per-session runner container to ensure is running.
-// v0 runs one container per session (the stub runner operates on a single
-// session dir); the real per-agent-group runner will broaden this later
-// (brief §3.3, §4).
-type SessionRunner struct {
+// GroupRunner describes a per-agent-group runner container to ensure is running.
+// One container per agent group serves all that group's sessions (brief §3.3):
+// it mounts the group's sessions directory and the runner loops over the session
+// subdirectories within.
+type GroupRunner struct {
 	Image        string  // runner image, e.g. "goclaw-runner:latest"
 	Runtime      Runtime // OCI runtime (crun default)
 	AgentGroupID int64
-	SessionKey   string // sanitized form is used for the container name
-	SessionDir   string // host path to the dir holding inbound.db + outbound.db
+	GroupDir     string // host path to the dir holding this group's session subdirs
 }
 
-// containerName is a stable, podman-safe name derived from the session, so
-// EnsureSessionRunner can check idempotently whether it's already running.
-func (s SessionRunner) containerName() string {
-	return "goclaw-" + fmt.Sprintf("%d", s.AgentGroupID) + "-" + safeName(s.SessionKey)
+// containerName is a stable, podman-safe name derived from the agent group, so
+// EnsureGroupRunner can check idempotently whether it's already running.
+func (g GroupRunner) containerName() string {
+	return "goclaw-" + fmt.Sprintf("%d", g.AgentGroupID)
 }
 
-// EnsureSessionRunner starts the runner container for a session if one isn't
+// EnsureGroupRunner starts the runner container for an agent group if one isn't
 // already running. It is safe to call on every inbound message and is robust to
 // a name collision: a running container is left alone; a leftover stopped one
 // with the same name is removed before launching (otherwise `podman run --name`
-// fails with exit 125). The session dir is mounted read-write at /session with
-// :Z relabeling (brief §6.3).
-func (m *Manager) EnsureSessionRunner(ctx context.Context, sr SessionRunner) error {
-	name := sr.containerName()
+// fails with exit 125). The group's sessions dir is mounted read-write at
+// /sessions with :Z relabeling (brief §6.3).
+func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
+	name := gr.containerName()
 
 	state, err := m.containerState(ctx, name)
 	if err != nil {
@@ -57,31 +57,31 @@ func (m *Manager) EnsureSessionRunner(ctx context.Context, sr SessionRunner) err
 	// The mount source MUST be absolute: podman treats a relative `-v` source
 	// as a named volume (and a path with '/' is an invalid volume name), which
 	// is what produced the "creating named volume" error. Resolve it here.
-	hostDir, err := filepath.Abs(sr.SessionDir)
+	hostDir, err := filepath.Abs(gr.GroupDir)
 	if err != nil {
-		return fmt.Errorf("runtime: resolve session dir %q: %w", sr.SessionDir, err)
+		return fmt.Errorf("runtime: resolve group dir %q: %w", gr.GroupDir, err)
 	}
 
 	spec := Spec{
 		Name:    name,
-		Image:   sr.Image,
-		Runtime: sr.Runtime,
+		Image:   gr.Image,
+		Runtime: gr.Runtime,
 		Mounts: []mounts.Mount{{
 			HostPath:      hostDir,
-			ContainerPath: sessionMountPath,
+			ContainerPath: sessionsMountPath,
 			ReadWrite:     true, // runner reads inbound, writes outbound
 		}},
 	}
 	id, err := m.Run(ctx, spec)
 	if err != nil {
-		return fmt.Errorf("runtime: ensure session runner %q: %w", name, err)
+		return fmt.Errorf("runtime: ensure group runner %q: %w", name, err)
 	}
 	id = strings.TrimSpace(id)
 
 	// Verify the container actually came up. `podman run -d` reports success
 	// once the container is created, even if its process dies immediately — so
 	// confirm it's running, and if not, surface the exit code + logs instead of
-	// silently leaving the session without a runner.
+	// silently leaving the group without a runner.
 	if st, err := m.containerState(ctx, name); err == nil && st != stateRunning {
 		detail := m.diagnose(ctx, name)
 		return fmt.Errorf("runtime: runner %q exited immediately after launch (id %s): %s", name, id, detail)
@@ -157,22 +157,4 @@ func (m *Manager) remove(ctx context.Context, name string) error {
 		return fmt.Errorf("runtime: podman rm %q: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
-}
-
-// safeName reduces a session key to a podman-safe container-name segment
-// ([a-zA-Z0-9_.-]); anything else becomes '-'.
-func safeName(key string) string {
-	b := make([]rune, 0, len(key))
-	for _, r := range key {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
-			b = append(b, r)
-		default:
-			b = append(b, '-')
-		}
-	}
-	if len(b) == 0 {
-		return "x"
-	}
-	return string(b)
 }

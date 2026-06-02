@@ -93,12 +93,20 @@ type SessionDBs struct {
 	dir      string
 }
 
+// AgentGroupDir returns the on-disk directory holding ALL of an agent group's
+// session subdirectories: {baseDir}/sessions/{agentGroupID}/. This is what a
+// per-agent-group runner container mounts; it then serves every session
+// subdirectory beneath it.
+func AgentGroupDir(baseDir string, agentGroupID int64) string {
+	return filepath.Join(baseDir, "sessions", fmt.Sprintf("%d", agentGroupID))
+}
+
 // SessionDir returns the on-disk directory for a session's DB pair:
-// {baseDir}/v2-sessions/{agentGroupID}/{sessionKey}/ (brief §3.2). The session
+// {baseDir}/sessions/{agentGroupID}/{sessionKey}/. The session
 // key derives from external input (a chat id), so it is sanitized to a safe
 // single path segment — no separators or traversal can escape the base dir.
 func SessionDir(baseDir string, agentGroupID int64, sessionKey string) string {
-	return filepath.Join(baseDir, "v2-sessions", fmt.Sprintf("%d", agentGroupID), sanitizeSessionKey(sessionKey))
+	return filepath.Join(AgentGroupDir(baseDir, agentGroupID), sanitizeSessionKey(sessionKey))
 }
 
 // sanitizeSessionKey reduces a session key to a single safe path segment.

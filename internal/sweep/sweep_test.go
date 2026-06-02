@@ -11,11 +11,11 @@ import (
 )
 
 type fakeEnsurer struct {
-	calls []string // sessionKeys ensured
+	calls []int64 // agentGroupIDs ensured
 }
 
-func (f *fakeEnsurer) EnsureRunner(ctx context.Context, agentGroupID int64, sessionKey, sessionDir string) error {
-	f.calls = append(f.calls, sessionKey)
+func (f *fakeEnsurer) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error {
+	f.calls = append(f.calls, agentGroupID)
 	return nil
 }
 
@@ -39,7 +39,7 @@ func setup(t *testing.T) (*db.DB, int64, string) {
 	return central, agID, dataDir
 }
 
-// A session with pending inbound triggers EnsureRunner.
+// A session with pending inbound triggers EnsureRunner for its agent group.
 func TestRecoverRunners_EnsuresWhenPending(t *testing.T) {
 	central, agID, dataDir := setup(t)
 	const key = "telegram:555"
@@ -59,8 +59,35 @@ func TestRecoverRunners_EnsuresWhenPending(t *testing.T) {
 	s := New(central, dataDir, fe, quiet())
 	s.recoverRunners(context.Background())
 
-	if len(fe.calls) != 1 || fe.calls[0] != key {
-		t.Fatalf("expected EnsureRunner for %q, got %v", key, fe.calls)
+	if len(fe.calls) != 1 || fe.calls[0] != agID {
+		t.Fatalf("expected EnsureRunner for agent group %d, got %v", agID, fe.calls)
+	}
+}
+
+// Two sessions in the SAME agent group → only one EnsureRunner call (one
+// container per group).
+func TestRecoverRunners_DedupesByAgentGroup(t *testing.T) {
+	central, agID, dataDir := setup(t)
+	for _, key := range []string{"telegram:111", "telegram:222"} {
+		if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
+			t.Fatalf("session: %v", err)
+		}
+		sess, err := db.OpenSession(dataDir, agID, key)
+		if err != nil {
+			t.Fatalf("open session: %v", err)
+		}
+		if _, err := sess.EnqueueInbound("telegram", key, "u", "n", "hi"); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		sess.Close()
+	}
+
+	fe := &fakeEnsurer{}
+	s := New(central, dataDir, fe, quiet())
+	s.recoverRunners(context.Background())
+
+	if len(fe.calls) != 1 || fe.calls[0] != agID {
+		t.Fatalf("expected a single EnsureRunner for agent group %d, got %v", agID, fe.calls)
 	}
 }
 

@@ -14,10 +14,10 @@ import (
 // interval is the sweep cadence.
 const interval = 60 * time.Second
 
-// RunnerEnsurer makes sure a session's runner is up. internal/runtime
+// RunnerEnsurer makes sure an agent group's runner is up. internal/runtime
 // implements it; it may be nil (no container orchestration).
 type RunnerEnsurer interface {
-	EnsureRunner(ctx context.Context, agentGroupID int64, sessionKey, sessionDir string) error
+	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error
 }
 
 // Sweeper runs periodic maintenance over the central DB and sessions.
@@ -69,21 +69,29 @@ func (s *Sweeper) recoverRunners(ctx context.Context) {
 		s.log.Error("sweep: list sessions", "err", err)
 		return
 	}
+	// One container per agent group, so collect the set of groups that have any
+	// session with pending inbound, then ensure each group's runner once.
+	needsRunner := make(map[int64]bool)
 	for _, sess := range sessions {
+		if needsRunner[sess.AgentGroupID] {
+			continue // already know this group needs its runner
+		}
 		pending, err := s.hasPendingInbound(sess)
 		if err != nil {
 			s.log.Error("sweep: check pending", "session", sess.SessionKey, "err", err)
 			continue
 		}
-		if !pending {
+		if pending {
+			needsRunner[sess.AgentGroupID] = true
+		}
+	}
+	for agentGroupID := range needsRunner {
+		dir := db.AgentGroupDir(s.dataDir, agentGroupID)
+		if err := s.ensurer.EnsureRunner(ctx, agentGroupID, dir); err != nil {
+			s.log.Error("sweep: ensure runner", "agent_group", agentGroupID, "err", err)
 			continue
 		}
-		dir := db.SessionDir(s.dataDir, sess.AgentGroupID, sess.SessionKey)
-		if err := s.ensurer.EnsureRunner(ctx, sess.AgentGroupID, sess.SessionKey, dir); err != nil {
-			s.log.Error("sweep: ensure runner", "session", sess.SessionKey, "err", err)
-			continue
-		}
-		s.log.Info("sweep: ensured runner for queued session", "session", sess.SessionKey)
+		s.log.Info("sweep: ensured runner for queued group", "agent_group", agentGroupID)
 	}
 }
 

@@ -60,16 +60,16 @@ func New(binary, image string, rt Runtime) *Manager {
 	return &Manager{podmanBin: binary, image: image, runtime: rt}
 }
 
-// EnsureRunner implements router.RunnerEnsurer: it ensures a runner container is
-// up for the given session, launching one (mounting sessionDir at /session) if
-// not. Idempotent — a running container is left alone.
-func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, sessionKey, sessionDir string) error {
-	return m.EnsureSessionRunner(ctx, SessionRunner{
+// EnsureRunner implements the RunnerEnsurer interface used by the router and
+// sweep: it ensures a runner container is up for the given agent group,
+// launching one (mounting groupDir at /sessions) if not. Idempotent — a running
+// container is left alone.
+func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error {
+	return m.EnsureGroupRunner(ctx, GroupRunner{
 		Image:        m.image,
 		Runtime:      m.runtime,
 		AgentGroupID: agentGroupID,
-		SessionKey:   sessionKey,
-		SessionDir:   sessionDir,
+		GroupDir:     groupDir,
 	})
 }
 
