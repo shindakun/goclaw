@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -61,11 +62,14 @@ func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 	withFakePodman(t, "" /* ps returns nothing → not running */, &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	// Use a RELATIVE session dir: podman would treat a relative -v source as a
+	// named volume, so the launcher must resolve it to an absolute path.
+	relDir := filepath.Join("data", "v2-sessions", "1", "telegram_6306189728")
 	sr := SessionRunner{
 		Image:        "goclaw-runner:latest",
 		AgentGroupID: 1,
 		SessionKey:   "telegram:6306189728",
-		SessionDir:   "/data/v2-sessions/1/telegram_6306189728",
+		SessionDir:   relDir,
 	}
 	if err := m.EnsureSessionRunner(context.Background(), sr); err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -79,15 +83,21 @@ func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 		t.Fatalf("first call should be ps: %q", calls[0])
 	}
 	run := calls[1]
+
+	absDir, _ := filepath.Abs(relDir)
 	for _, want := range []string{
 		"run", "--user 1000:1000", "--init",
 		"--name goclaw-1-telegram-6306189728",
-		"/data/v2-sessions/1/telegram_6306189728:/session:Z",
+		absDir + ":/session:Z", // mount source must be absolute
 		"goclaw-runner:latest",
 	} {
 		if !strings.Contains(run, want) {
 			t.Errorf("run argv missing %q\n  got: %s", want, run)
 		}
+	}
+	// Guard the regression directly: the -v source must not be the relative form.
+	if strings.Contains(run, " "+relDir+":/session") {
+		t.Errorf("mount source is relative (would become a named volume): %s", run)
 	}
 }
 

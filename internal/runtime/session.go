@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/shindakun/goclaw/internal/mounts"
@@ -53,12 +54,20 @@ func (m *Manager) EnsureSessionRunner(ctx context.Context, sr SessionRunner) err
 		}
 	}
 
+	// The mount source MUST be absolute: podman treats a relative `-v` source
+	// as a named volume (and a path with '/' is an invalid volume name), which
+	// is what produced the "creating named volume" error. Resolve it here.
+	hostDir, err := filepath.Abs(sr.SessionDir)
+	if err != nil {
+		return fmt.Errorf("runtime: resolve session dir %q: %w", sr.SessionDir, err)
+	}
+
 	spec := Spec{
 		Name:    name,
 		Image:   sr.Image,
 		Runtime: sr.Runtime,
 		Mounts: []mounts.Mount{{
-			HostPath:      sr.SessionDir,
+			HostPath:      hostDir,
 			ContainerPath: sessionMountPath,
 			ReadWrite:     true, // runner reads inbound, writes outbound
 		}},
