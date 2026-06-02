@@ -55,6 +55,27 @@ func run(log *slog.Logger) error {
 	defer central.Close()
 	log.Info("central db ready", "path", cfg.CentralDBPath)
 
+	// Optional startup seeding so a first user can message the host without
+	// hand-editing the DB (brief §3.4). Idempotent.
+	_, agentGroupID, err := central.Apply(db.Bootstrap{
+		OwnerTelegramID:         cfg.OwnerTelegramID,
+		DefaultAgentGroupName:   cfg.DefaultAgentGroupName,
+		DefaultAgentGroupFolder: cfg.DefaultAgentGroupFolder,
+	})
+	if err != nil {
+		return err
+	}
+	if cfg.OwnerTelegramID != "" {
+		log.Info("seeded owner", "telegram_id", cfg.OwnerTelegramID)
+	}
+
+	// Owner auto-wiring is opt-in and only meaningful with a default agent group.
+	var autoWireID int64
+	if cfg.AutoWireOwner {
+		autoWireID = agentGroupID
+		log.Info("owner auto-wire enabled", "agent_group", autoWireID)
+	}
+
 	// Channel registry. Telegram is the v0 channel (brief §7.4); register it
 	// only when a token is configured.
 	registry := channels.NewRegistry()
@@ -79,7 +100,7 @@ func run(log *slog.Logger) error {
 
 	// Wire the host loops. errgroup ties their lifetimes to ctx: if any returns
 	// a non-nil error, the group cancels and the rest unwind.
-	rtr := router.New(central, cfg.DataDir, log)
+	rtr := router.New(central, cfg.DataDir, autoWireID, log)
 	del := delivery.New(central, registry, log)
 	swp := sweep.New(central, log)
 

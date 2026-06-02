@@ -21,11 +21,24 @@ type Router struct {
 	central *db.DB
 	dataDir string
 	log     *slog.Logger
+
+	// autoWireAgentGroupID, when non-zero, lets the owner bootstrap a wiring by
+	// simply messaging the host: an owner message in an unwired conversation
+	// auto-wires that conversation to this agent group (scope=owner). Off (0)
+	// unless GOCLAW_AUTO_WIRE_OWNER is set. This is a convenience for first-run;
+	// real deployments wire explicitly.
+	autoWireAgentGroupID int64
 }
 
-// New constructs a Router over the central DB.
-func New(central *db.DB, dataDir string, log *slog.Logger) *Router {
-	return &Router{central: central, dataDir: dataDir, log: log}
+// New constructs a Router over the central DB. autoWireAgentGroupID may be 0 to
+// disable owner auto-wiring.
+func New(central *db.DB, dataDir string, autoWireAgentGroupID int64, log *slog.Logger) *Router {
+	return &Router{
+		central:              central,
+		dataDir:              dataDir,
+		log:                  log,
+		autoWireAgentGroupID: autoWireAgentGroupID,
+	}
 }
 
 // Run drains inbound messages until ctx is cancelled, routing each one.
@@ -47,29 +60,66 @@ func (r *Router) Run(ctx context.Context, in <-chan channels.InboundMsg) error {
 
 // route resolves the chain for one message, gates it, and enqueues it.
 func (r *Router) route(ctx context.Context, msg channels.InboundMsg) error {
-	// TODO: resolve user from (channel, sender_id) via user_identities.
-	// TODO: resolve messaging group from (channel, chat_id).
-	// TODO: resolve the wiring → agent group + sender_scope + policy.
-	// TODO: resolve-or-create the session and open its inbound.db.
+	// Resolve the routing chain from the central DB (brief §3.2).
+	user, err := r.central.UserByIdentity(msg.Channel, msg.SenderID)
+	if err != nil {
+		return err
+	}
 
-	// Access gate (brief §9). Placeholder request until resolution is wired.
-	decision := permissions.Check(permissions.Request{
-		KnownUser: false,
-		Scope:     permissions.ScopeAll,
-		Policy:    permissions.PolicyStrict,
-	})
-	switch decision {
+	// Record the conversation on first contact so it becomes routable, then
+	// resolve its wiring.
+	mgID, err := r.central.UpsertMessagingGroup(msg.Channel, msg.ChatID, "")
+	if err != nil {
+		return err
+	}
+	wiring, err := r.central.WiringForMessagingGroup(mgID)
+	if err != nil {
+		return err
+	}
+	if wiring == nil {
+		// First-run convenience: if the owner messages an unwired conversation
+		// and auto-wire is enabled, wire it to the default agent group so the
+		// path works without manual DB setup. Otherwise, drop.
+		if r.autoWireAgentGroupID != 0 && user != nil && user.Role == string(permissions.RoleOwner) {
+			if _, err := r.central.EnsureWiring(mgID, r.autoWireAgentGroupID,
+				string(permissions.ScopeOwner), string(permissions.PolicyStrict)); err != nil {
+				return err
+			}
+			r.log.Info("owner auto-wired conversation",
+				"channel", msg.Channel, "chat", msg.ChatID, "agent_group", r.autoWireAgentGroupID)
+			if wiring, err = r.central.WiringForMessagingGroup(mgID); err != nil {
+				return err
+			}
+		} else {
+			r.log.Info("message dropped: no wiring for conversation",
+				"channel", msg.Channel, "chat", msg.ChatID)
+			return nil
+		}
+	}
+
+	// Build the access request from resolved facts (brief §9).
+	req := permissions.Request{
+		KnownUser: user != nil,
+		Scope:     permissions.SenderScope(wiring.SenderScope),
+		Policy:    permissions.UnknownSenderPolicy(wiring.UnknownSenderPolicy),
+	}
+	if user != nil {
+		req.Role = permissions.Role(user.Role)
+	}
+
+	switch permissions.Check(req) {
 	case permissions.Deny:
-		r.log.Info("message denied", "channel", msg.Channel, "sender", msg.SenderID)
+		r.log.Info("message denied", "channel", msg.Channel, "sender", msg.SenderID, "known", user != nil)
 		return nil
 	case permissions.NeedsApproval:
 		r.log.Info("message needs approval", "channel", msg.Channel, "sender", msg.SenderID)
 		// TODO: emit approval card.
 		return nil
 	case permissions.Allow:
-		// TODO: write msg into the resolved session's inbound.db and wake the
-		// container.
-		r.log.Info("message routed (stub)", "channel", msg.Channel, "text", msg.Text)
+		// TODO: resolve-or-create the session, write msg into its inbound.db,
+		// and wake the container.
+		r.log.Info("message routed (stub)",
+			"channel", msg.Channel, "agent_group", wiring.AgentGroupID, "text", msg.Text)
 		return nil
 	}
 	return nil

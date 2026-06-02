@@ -20,6 +20,17 @@ type Config struct {
 	TelegramToken string
 	// PodmanBin is the podman binary name/path.
 	PodmanBin string
+	// OwnerTelegramID, if set, is seeded at startup as the owner user's Telegram
+	// identity so the first real user can get past the access gate without
+	// hand-editing the DB (brief §3.4). Empty disables the bootstrap.
+	OwnerTelegramID string
+	// AutoWireOwner, when true, auto-wires an unwired conversation the owner
+	// messages to the default agent group. Convenience for first-run only.
+	AutoWireOwner bool
+	// DefaultAgentGroup names the agent group seeded at startup and used for
+	// owner auto-wiring.
+	DefaultAgentGroupName   string
+	DefaultAgentGroupFolder string
 }
 
 // Load reads configuration from environment variables, applying defaults.
@@ -37,11 +48,15 @@ func Load() (*Config, error) {
 
 	dataDir := getenv("GOCLAW_DATA_DIR", "data")
 	cfg := &Config{
-		DataDir:            dataDir,
-		CentralDBPath:      filepath.Join(dataDir, "goclaw.db"),
-		MountAllowlistPath: getenv("GOCLAW_MOUNT_ALLOWLIST", filepath.Join(home, ".config", "goclaw", "mount-allowlist.json")),
-		TelegramToken:      os.Getenv("TELEGRAM_BOT_TOKEN"),
-		PodmanBin:          getenv("GOCLAW_PODMAN_BIN", "podman"),
+		DataDir:                 dataDir,
+		CentralDBPath:           filepath.Join(dataDir, "goclaw.db"),
+		MountAllowlistPath:      getenv("GOCLAW_MOUNT_ALLOWLIST", filepath.Join(home, ".config", "goclaw", "mount-allowlist.json")),
+		TelegramToken:           os.Getenv("TELEGRAM_BOT_TOKEN"),
+		PodmanBin:               getenv("GOCLAW_PODMAN_BIN", "podman"),
+		OwnerTelegramID:         os.Getenv("GOCLAW_OWNER_TELEGRAM_ID"),
+		AutoWireOwner:           os.Getenv("GOCLAW_AUTO_WIRE_OWNER") == "1",
+		DefaultAgentGroupName:   getenv("GOCLAW_DEFAULT_AGENT_GROUP", "default"),
+		DefaultAgentGroupFolder: getenv("GOCLAW_DEFAULT_AGENT_GROUP_FOLDER", "default"),
 	}
 	return cfg, nil
 }
