@@ -25,10 +25,18 @@ type GroupRunner struct {
 	GroupDir     string // host path to the dir holding this group's session subdirs
 }
 
+// containerNamePrefix is the common prefix of every runner container's name.
+const containerNamePrefix = "goclaw-"
+
+// groupContainerName returns the runner container name for an agent group.
+func groupContainerName(agentGroupID int64) string {
+	return containerNamePrefix + fmt.Sprintf("%d", agentGroupID)
+}
+
 // containerName is a stable, podman-safe name derived from the agent group, so
 // EnsureGroupRunner can check idempotently whether it's already running.
 func (g GroupRunner) containerName() string {
-	return "goclaw-" + fmt.Sprintf("%d", g.AgentGroupID)
+	return groupContainerName(g.AgentGroupID)
 }
 
 // EnsureGroupRunner starts the runner container for an agent group if one isn't
@@ -157,4 +165,44 @@ func (m *Manager) remove(ctx context.Context, name string) error {
 		return fmt.Errorf("runtime: podman rm %q: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// RunningGroupIDs returns the agent group ids that currently have a running
+// runner container. Used by the sweep's GC to find idle runners to reap.
+func (m *Manager) RunningGroupIDs(ctx context.Context) ([]int64, error) {
+	cmd := execCommand(ctx, m.podmanBin,
+		"ps", "--filter", "name=^"+containerNamePrefix, "--format", "{{.Names}}")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("runtime: podman ps: %w", err)
+	}
+	var ids []int64
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name := strings.TrimSpace(line)
+		if !strings.HasPrefix(name, containerNamePrefix) {
+			continue
+		}
+		var id int64
+		// The runner name is exactly goclaw-<id>; parse the suffix.
+		if _, err := fmt.Sscanf(name, containerNamePrefix+"%d", &id); err != nil {
+			continue // not a group runner (or an unexpected name) — skip
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// StopGroupRunner stops and removes the runner container for an agent group.
+// Removing (not just stopping) frees the name so a later EnsureGroupRunner can
+// relaunch cleanly. A non-existent container is not an error.
+func (m *Manager) StopGroupRunner(ctx context.Context, agentGroupID int64) error {
+	name := groupContainerName(agentGroupID)
+	state, err := m.containerState(ctx, name)
+	if err != nil {
+		return err
+	}
+	if state == stateAbsent {
+		return nil
+	}
+	return m.remove(ctx, name)
 }

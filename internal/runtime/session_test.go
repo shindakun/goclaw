@@ -168,3 +168,54 @@ func TestEnsureGroupRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 		t.Errorf("call 3 should be the post-launch ps: %q", calls[3])
 	}
 }
+
+func TestRunningGroupIDs_ParsesNames(t *testing.T) {
+	var calls []string
+	// ps output: three runner containers (ignore any non-runner name).
+	withFakePodman(t, "goclaw-1\ngoclaw-42\ngoclaw-7\n", "", &calls)
+
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	ids, err := m.RunningGroupIDs(context.Background())
+	if err != nil {
+		t.Fatalf("RunningGroupIDs: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, id := range ids {
+		got[id] = true
+	}
+	for _, want := range []int64{1, 42, 7} {
+		if !got[want] {
+			t.Errorf("expected group id %d in %v", want, ids)
+		}
+	}
+	if len(ids) != 3 {
+		t.Errorf("expected 3 ids, got %v", ids)
+	}
+}
+
+func TestStopGroupRunner_RemovesWhenPresent(t *testing.T) {
+	var calls []string
+	// containerState sees it running; StopGroupRunner should rm it.
+	withFakePodman(t, "goclaw-3 running\n", "", &calls)
+
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	if err := m.StopGroupRunner(context.Background(), 3); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	// Expect a ps (state check) then rm.
+	if len(calls) != 2 || !strings.Contains(calls[0], "ps") || !strings.Contains(calls[1], "rm -f goclaw-3") {
+		t.Fatalf("expected ps + rm goclaw-3, got %v", calls)
+	}
+}
+
+func TestStopGroupRunner_NoopWhenAbsent(t *testing.T) {
+	var calls []string
+	withFakePodman(t, "", "", &calls) // ps returns nothing → absent
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
+	if err := m.StopGroupRunner(context.Background(), 9); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if len(calls) != 1 || !strings.Contains(calls[0], "ps") {
+		t.Fatalf("expected only a ps check, got %v", calls)
+	}
+}

@@ -100,11 +100,18 @@ func run(log *slog.Logger) error {
 	}
 
 	// Container runner: when enabled, the host launches a Podman runner per
-	// session on enqueue. When disabled (default), start a runner out of band
-	// (cmd/stub-runner). nil ensurer ⇒ no host-managed launch.
-	var ensurer router.RunnerEnsurer
+	// agent group on enqueue and reaps idle ones in the sweep. When disabled
+	// (default), start a runner out of band (cmd/stub-runner). The interface
+	// values stay nil when disabled (avoid the typed-nil-interface trap) so the
+	// router/sweep nil checks work.
+	var (
+		ensurer router.RunnerEnsurer // narrow: ensure only (router)
+		runners sweep.RunnerManager  // richer: ensure + list + stop (sweep GC)
+	)
 	if cfg.LaunchRunner {
-		ensurer = runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun)
+		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun)
+		ensurer = mgr
+		runners = mgr
 		log.Info("runner launch enabled", "image", cfg.RunnerImage)
 	} else {
 		log.Info("runner launch disabled — start a runner out of band (cmd/stub-runner)")
@@ -114,7 +121,7 @@ func run(log *slog.Logger) error {
 	// a non-nil error, the group cancels and the rest unwind.
 	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, log)
 	del := delivery.New(central, registry, cfg.DataDir, log)
-	swp := sweep.New(central, cfg.DataDir, ensurer, log)
+	swp := sweep.New(central, cfg.DataDir, runners, log)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rtr.Run(gctx, inbound) })

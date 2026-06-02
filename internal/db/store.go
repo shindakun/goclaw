@@ -121,6 +121,28 @@ func (d *DB) ActiveSessions() ([]Session, error) {
 	return out, rows.Err()
 }
 
+// AgentGroupIDsActiveSince returns the set of agent group ids that have at least
+// one session active at or after the given cutoff (RFC-ish "YYYY-MM-DD HH:MM:SS"
+// in UTC, matching datetime('now')). Used by the sweep to decide which group
+// runners are still wanted (brief §3.3).
+func (d *DB) AgentGroupIDsActiveSince(cutoff string) (map[int64]bool, error) {
+	rows, err := d.Query(
+		`SELECT DISTINCT agent_group_id FROM sessions WHERE last_active_at >= ?`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("active groups since: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // ResolveOrCreateSession returns the session for (agentGroupID, sessionKey),
 // creating its central-DB row on first use and bumping last_active_at. The
 // on-disk inbound/outbound DBs are opened by the caller via OpenSession.
