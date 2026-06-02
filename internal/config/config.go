@@ -24,9 +24,19 @@ type Config struct {
 	// runs RunnerImage in Podman for the session. When false, the runner is
 	// expected to be started out of band (e.g. cmd/stub-runner by hand).
 	LaunchRunner bool
-	// RunnerImage is the container image launched per session when LaunchRunner
-	// is on (build it from container/runner.Containerfile).
+	// RunnerImage is the container image launched per agent group when
+	// LaunchRunner is on (build it from one of the container/*.Containerfile).
 	RunnerImage string
+	// AnthropicAPIKey, if set, is passed into the runner container as
+	// ANTHROPIC_API_KEY so the Claude runner can authenticate. Use a standard
+	// API key (sk-ant-api…). Empty for the echo stub.
+	AnthropicAPIKey string
+	// ClaudeCodeOAuthToken, if set, is passed in as CLAUDE_CODE_OAUTH_TOKEN so
+	// the Claude runner authenticates with a Claude Code subscription instead of
+	// an API key. On macOS the host token lives in the Keychain ("Claude
+	// Code-credentials"); extract it into this env var. Takes precedence over
+	// AnthropicAPIKey when both are set.
+	ClaudeCodeOAuthToken string
 	// OwnerTelegramID, if set, is seeded at startup as the owner user's Telegram
 	// identity so the first real user can get past the access gate without
 	// hand-editing the DB (brief §3.4). Empty disables the bootstrap.
@@ -66,6 +76,8 @@ func Load() (*Config, error) {
 		DefaultAgentGroupFolder: getenv("GOCLAW_DEFAULT_AGENT_GROUP_FOLDER", "default"),
 		LaunchRunner:            os.Getenv("GOCLAW_LAUNCH_RUNNER") == "1",
 		RunnerImage:             getenv("GOCLAW_RUNNER_IMAGE", "goclaw-runner:latest"),
+		AnthropicAPIKey:         os.Getenv("GOCLAW_ANTHROPIC_API_KEY"),
+		ClaudeCodeOAuthToken:    os.Getenv("GOCLAW_CLAUDE_CODE_OAUTH_TOKEN"),
 	}
 	return cfg, nil
 }

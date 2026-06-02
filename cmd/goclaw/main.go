@@ -117,10 +117,16 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow)
+		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
+			WithEnv(map[string]string{
+				"ANTHROPIC_API_KEY":       cfg.AnthropicAPIKey,
+				"CLAUDE_CODE_OAUTH_TOKEN": cfg.ClaudeCodeOAuthToken,
+			})
 		ensurer = mgr
 		runners = mgr
-		log.Info("runner launch enabled", "image", cfg.RunnerImage, "mount_allowlist", cfg.MountAllowlistPath)
+		log.Info("runner launch enabled", "image", cfg.RunnerImage,
+			"mount_allowlist", cfg.MountAllowlistPath,
+			"claude_auth", cfg.ClaudeCodeOAuthToken != "" || cfg.AnthropicAPIKey != "")
 	} else {
 		log.Info("runner launch disabled — start a runner out of band (cmd/stub-runner)")
 	}

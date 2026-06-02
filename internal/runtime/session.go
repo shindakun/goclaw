@@ -80,6 +80,7 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 			ContainerPath: sessionsMountPath,
 			ReadWrite:     true, // runner reads inbound, writes outbound
 		}}, gr.ExtraMounts...),
+		Env: m.env,
 	}
 	id, err := m.Run(ctx, spec)
 	if err != nil {

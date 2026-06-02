@@ -20,3 +20,4 @@
 
 # CodeGraph index
 .codegraph/
+/claude-runner

@@ -47,6 +47,7 @@ type Manager struct {
 	image     string            // runner image to launch
 	runtime   Runtime           // OCI runtime for launched containers
 	allowlist *mounts.Allowlist // validates extra group mounts (may be nil)
+	env       map[string]string // env vars set on every launched container
 }
 
 // New constructs a Manager. binary defaults to "podman" and runtime to crun if
@@ -60,6 +61,20 @@ func New(binary, image string, rt Runtime, allowlist *mounts.Allowlist) *Manager
 		rt = RuntimeCrun
 	}
 	return &Manager{podmanBin: binary, image: image, runtime: rt, allowlist: allowlist}
+}
+
+// WithEnv sets environment variables passed into every launched runner
+// container (e.g. ANTHROPIC_API_KEY for the Claude runner). Returns m for
+// chaining. Empty values are dropped so an unset key doesn't blank the var.
+func (m *Manager) WithEnv(env map[string]string) *Manager {
+	clean := make(map[string]string, len(env))
+	for k, v := range env {
+		if v != "" {
+			clean[k] = v
+		}
+	}
+	m.env = clean
+	return m
 }
 
 // EnsureRunner implements the RunnerEnsurer interface used by the router and
