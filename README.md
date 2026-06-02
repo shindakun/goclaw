@@ -114,6 +114,14 @@ Now messaging the bot gets a real Claude answer. The host passes the credential
 into the container (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`); the runner
 calls `claude.Query` per message and writes the result to outbound.
 
+**Conversation is multi-turn** — the runner persists Claude's session id per
+conversation (in the session's `outbound.db`) and resumes it each message, so
+Claude remembers the thread. Two chat commands manage it, and the runner
+auto-compacts when the context window fills:
+
+- `/reset` — forget this conversation, start fresh.
+- `/compact` — summarize history to shrink context, keep the thread.
+
 > ⚠️ **Security note:** passing a credential into the container is the pragmatic
 > shortcut. NanoClaw's design (brief §8) routes container traffic through a
 > credential _vault_ proxy so the raw key never enters the container — that's the

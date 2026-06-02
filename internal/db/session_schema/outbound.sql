@@ -21,3 +21,11 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
+
+-- Per-session key/value scratch owned by the runner. Used to persist the Claude
+-- conversation session id so multi-turn context survives across the runner's
+-- open-per-poll cycles (e.g. claude_session_id). The runner is the sole writer.
+CREATE TABLE IF NOT EXISTS meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);

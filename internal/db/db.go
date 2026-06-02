@@ -8,6 +8,7 @@ package db
 import (
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -320,6 +321,39 @@ func (s *SessionDBs) EnqueueOutbound(channel, chatID, text string) (int64, error
 		return 0, fmt.Errorf("enqueue outbound: %w", err)
 	}
 	return res.LastInsertId()
+}
+
+// GetMeta returns the value for a session meta key, or ("", false) if unset.
+// Stored in outbound.db, which the runner owns (multi-turn session id, etc.).
+func (s *SessionDBs) GetMeta(key string) (string, bool, error) {
+	var v string
+	err := s.Outbound.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get meta %q: %w", key, err)
+	}
+	return v, true, nil
+}
+
+// SetMeta upserts a session meta key/value (runner side).
+func (s *SessionDBs) SetMeta(key, value string) error {
+	_, err := s.Outbound.Exec(`
+		INSERT INTO meta (key, value) VALUES (?, ?)
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, value)
+	if err != nil {
+		return fmt.Errorf("set meta %q: %w", key, err)
+	}
+	return nil
+}
+
+// DeleteMeta removes a session meta key (e.g. on /reset).
+func (s *SessionDBs) DeleteMeta(key string) error {
+	if _, err := s.Outbound.Exec(`DELETE FROM meta WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("delete meta %q: %w", key, err)
+	}
+	return nil
 }
 
 // Close closes both session handles.
