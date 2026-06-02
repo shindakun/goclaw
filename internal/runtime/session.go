@@ -42,20 +42,28 @@ func (g GroupRunner) containerName() string {
 
 // EnsureGroupRunner starts the runner container for an agent group if one isn't
 // already running. It is safe to call on every inbound message and is robust to
-// a name collision: a running container is left alone; a leftover stopped one
-// with the same name is removed before launching (otherwise `podman run --name`
-// fails with exit 125). The group's sessions dir is mounted read-write at
-// /sessions with :Z relabeling (brief §6.3).
+// a name collision: a running container on the CURRENT image is left alone; a
+// leftover stopped one — or a running one started from a DIFFERENT image (e.g.
+// after switching GOCLAW_RUNNER_IMAGE) — is removed before launching. (Otherwise
+// the config change would silently have no effect, and `podman run --name` on a
+// stopped name fails with exit 125.) The group's sessions dir is mounted
+// read-write at /sessions with :Z relabeling (brief §6.3).
 func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 	name := gr.containerName()
 
-	state, err := m.containerState(ctx, name)
+	state, img, err := m.containerStateWithImage(ctx, name)
 	if err != nil {
 		return err
 	}
 	switch state {
 	case stateRunning:
-		return nil // already up
+		if sameImage(img, gr.Image) {
+			return nil // already up on the right image
+		}
+		// Image changed under it — replace so the new image takes effect.
+		if err := m.remove(ctx, name); err != nil {
+			return err
+		}
 	case stateStopped:
 		// Stale container holding the name — remove it so the run can reuse it.
 		if err := m.remove(ctx, name); err != nil {
@@ -125,27 +133,75 @@ const (
 )
 
 // containerState reports whether a container with the given name exists and
-// whether it is running. It lists all containers (running and not) by exact
-// name, reading the State column so a name reserved by a non-running container
-// is detected — that reservation is what causes `podman run --name` to fail.
+// whether it is running.
 func (m *Manager) containerState(ctx context.Context, name string) (containerStatus, error) {
+	st, _, err := m.containerStateWithImage(ctx, name)
+	return st, err
+}
+
+// containerStateWithImage reports the container's state and, when it exists, the
+// image it was started from. It lists all containers (running and not) by exact
+// name, reading the State column so a name reserved by a non-running container
+// is detected — that reservation is what causes `podman run --name` to fail. The
+// image lets EnsureGroupRunner replace a container started from a now-changed
+// image. Fields are tab-delimited so an image reference with no spaces parses
+// cleanly.
+func (m *Manager) containerStateWithImage(ctx context.Context, name string) (containerStatus, string, error) {
 	cmd := execCommand(ctx, m.podmanBin,
-		"ps", "--all", "--filter", "name=^"+name+"$", "--format", "{{.Names}} {{.State}}")
+		"ps", "--all", "--filter", "name=^"+name+"$", "--format", "{{.Names}}\t{{.State}}\t{{.Image}}")
 	out, err := cmd.Output()
 	if err != nil {
-		return stateAbsent, fmt.Errorf("runtime: podman ps: %w", err)
+		return stateAbsent, "", fmt.Errorf("runtime: podman ps: %w", err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] != name {
+		fields := strings.Split(line, "\t")
+		if len(fields) < 3 || fields[0] != name {
 			continue
 		}
+		img := strings.TrimSpace(fields[2])
 		if fields[1] == "running" {
-			return stateRunning, nil
+			return stateRunning, img, nil
 		}
-		return stateStopped, nil
+		return stateStopped, img, nil
 	}
-	return stateAbsent, nil
+	return stateAbsent, "", nil
+}
+
+// sameImage compares a container's reported image against a desired image,
+// tolerating registry/namespace prefixes podman adds (e.g. a desired
+// "goclaw-claude:latest" matches a reported "localhost/goclaw-claude:latest").
+// An untagged desired ref is treated as ":latest".
+func sameImage(reported, desired string) bool {
+	r, d := normalizeImage(reported), normalizeImage(desired)
+	if r == d {
+		return true
+	}
+	// Match on the trailing path component (handles localhost/ and registry/ns
+	// prefixes on either side).
+	return lastPathComponent(r) == lastPathComponent(d)
+}
+
+func normalizeImage(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	// Add a default :latest tag if none present (ignore any digest form).
+	name := ref
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		name = ref[i+1:]
+	}
+	if !strings.Contains(name, ":") && !strings.Contains(name, "@") {
+		ref += ":latest"
+	}
+	return ref
+}
+
+func lastPathComponent(ref string) string {
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		return ref[i+1:]
+	}
+	return ref
 }
 
 // IsRunning reports whether a container with the given name is currently

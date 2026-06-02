@@ -80,7 +80,7 @@ func TestHelperProcess(t *testing.T) {
 func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 	var calls []string
 	// Absent before launch; running after (post-launch health check passes).
-	withFakePodman(t, "", "goclaw-1 running\n", &calls)
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	// Use a RELATIVE group dir: podman would treat a relative -v source as a
@@ -127,7 +127,7 @@ func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 func TestEnsureGroupRunner_SkipsWhenRunning(t *testing.T) {
 	var calls []string
 	name := "goclaw-1"
-	withFakePodman(t, name+" running\n" /* already running */, name+" running\n", &calls)
+	withFakePodman(t, name+"\trunning\tgoclaw-runner:latest\n" /* already running, same image */, name+"\trunning\tgoclaw-runner:latest\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	gr := GroupRunner{
@@ -149,7 +149,7 @@ func TestEnsureGroupRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 	name := "goclaw-1"
 	// Before: ps -a reports the name stopped → must rm then run.
 	// After: ps -a reports it running → post-launch health check passes.
-	withFakePodman(t, name+" exited\n", name+" running\n", &calls)
+	withFakePodman(t, name+"\texited\tgoclaw-runner:latest\n", name+"\trunning\tgoclaw-runner:latest\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	gr := GroupRunner{
@@ -205,7 +205,7 @@ func TestRunningGroupIDs_ParsesNames(t *testing.T) {
 func TestStopGroupRunner_RemovesWhenPresent(t *testing.T) {
 	var calls []string
 	// containerState sees it running; StopGroupRunner should rm it.
-	withFakePodman(t, "goclaw-3 running\n", "", &calls)
+	withFakePodman(t, "goclaw-3\trunning\tgoclaw-runner:latest\n", "", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	if err := m.StopGroupRunner(context.Background(), 3); err != nil {
@@ -217,9 +217,71 @@ func TestStopGroupRunner_RemovesWhenPresent(t *testing.T) {
 	}
 }
 
+// A running container started from a DIFFERENT image is replaced when the
+// configured image changes (e.g. switching stub → claude).
+func TestEnsureGroupRunner_ReplacesOnImageChange(t *testing.T) {
+	var calls []string
+	name := "goclaw-1"
+	// Running, but on the OLD image; after replacement it runs the new one.
+	withFakePodman(t, name+"\trunning\tlocalhost/goclaw-runner:latest\n",
+		name+"\trunning\tlocalhost/goclaw-claude:latest\n", &calls)
+
+	m := New("podman", "goclaw-claude:latest", RuntimeCrun, nil) // desired = claude
+	gr := GroupRunner{Image: "goclaw-claude:latest", AgentGroupID: 1, GroupDir: "/data/x"}
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	// ps (sees old image) → rm → run → ps (health check).
+	if len(calls) != 4 {
+		t.Fatalf("expected ps + rm + run + ps, got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[1], "rm -f "+name) {
+		t.Errorf("call 1 should remove the wrong-image container: %q", calls[1])
+	}
+	if !strings.Contains(calls[2], "run") || !strings.Contains(calls[2], "goclaw-claude:latest") {
+		t.Errorf("call 2 should run the new image: %q", calls[2])
+	}
+}
+
+// A running container on the SAME image (modulo localhost/ prefix) is left alone.
+func TestEnsureGroupRunner_KeepsOnSameImagePrefixed(t *testing.T) {
+	var calls []string
+	name := "goclaw-1"
+	// podman reports localhost/-prefixed; desired is the bare ref.
+	withFakePodman(t, name+"\trunning\tlocalhost/goclaw-claude:latest\n",
+		name+"\trunning\tlocalhost/goclaw-claude:latest\n", &calls)
+
+	m := New("podman", "goclaw-claude:latest", RuntimeCrun, nil)
+	gr := GroupRunner{Image: "goclaw-claude:latest", AgentGroupID: 1, GroupDir: "/data/x"}
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected a single ps (no replace), got %d: %v", len(calls), calls)
+	}
+}
+
+func TestSameImage(t *testing.T) {
+	cases := []struct {
+		reported, desired string
+		want              bool
+	}{
+		{"localhost/goclaw-claude:latest", "goclaw-claude:latest", true},
+		{"goclaw-claude:latest", "goclaw-claude:latest", true},
+		{"localhost/goclaw-claude:latest", "goclaw-claude", true}, // desired untagged → :latest
+		{"localhost/goclaw-runner:latest", "goclaw-claude:latest", false},
+		{"docker.io/library/alpine:latest", "goclaw-claude:latest", false},
+	}
+	for _, c := range cases {
+		if got := sameImage(c.reported, c.desired); got != c.want {
+			t.Errorf("sameImage(%q,%q)=%v want %v", c.reported, c.desired, got, c.want)
+		}
+	}
+}
+
 func TestEnsureRunner_AppliesAllowlistedExtraMount(t *testing.T) {
 	var calls []string
-	withFakePodman(t, "", "goclaw-1 running\n", &calls)
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\n", &calls)
 
 	// Allowlist permits a temp dir rw; request that as an extra mount plus a
 	// non-allowlisted one (which must be dropped).
