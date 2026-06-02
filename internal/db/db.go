@@ -34,7 +34,8 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open central db %q: %w", path, err)
 	}
-	if err := applyPragmas(sqlDB); err != nil {
+	// The central DB is host-only (one process), so WAL is fine and faster.
+	if err := applyPragmas(sqlDB, journalWAL); err != nil {
 		sqlDB.Close()
 		return nil, err
 	}
@@ -46,10 +47,27 @@ func Open(path string) (*DB, error) {
 	return d, nil
 }
 
-// applyPragmas sets WAL + foreign keys on a fresh handle.
-func applyPragmas(sqlDB *sql.DB) error {
+// journalMode selects the SQLite journaling mode for a handle.
+type journalMode string
+
+const (
+	// journalWAL is fastest but relies on shared memory (-shm) + mmap, which do
+	// NOT work across a container bind mount (esp. the macOS podman-machine VM):
+	// a writer's changes never become visible to a reader in the other process.
+	// Use only for host-only DBs.
+	journalWAL journalMode = "WAL"
+	// journalDelete is the classic rollback journal. It writes through the main
+	// .db file with no -shm dependency, so a write by one process is visible to a
+	// reader in another across a bind mount. Use for the session inbound/outbound
+	// DBs that the host and the container share (brief §3.1, §5.1).
+	journalDelete journalMode = "DELETE"
+)
+
+// applyPragmas sets the journal mode, foreign keys, and busy timeout on a fresh
+// handle.
+func applyPragmas(sqlDB *sql.DB, journal journalMode) error {
 	for _, p := range []string{
-		"PRAGMA journal_mode = WAL;",
+		"PRAGMA journal_mode = " + string(journal) + ";",
 		"PRAGMA foreign_keys = ON;",
 		"PRAGMA busy_timeout = 5000;",
 	} {
@@ -123,7 +141,9 @@ func OpenSessionDir(dir string) (*SessionDBs, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open inbound.db: %w", err)
 	}
-	if err := applyPragmas(inbound); err != nil {
+	// Session DBs cross the container bind mount, so they must NOT use WAL —
+	// use the rollback journal so cross-process writes are visible (brief §5.1).
+	if err := applyPragmas(inbound, journalDelete); err != nil {
 		inbound.Close()
 		return nil, err
 	}
@@ -138,7 +158,7 @@ func OpenSessionDir(dir string) (*SessionDBs, error) {
 		inbound.Close()
 		return nil, fmt.Errorf("open outbound.db: %w", err)
 	}
-	if err := applyPragmas(outbound); err != nil {
+	if err := applyPragmas(outbound, journalDelete); err != nil {
 		inbound.Close()
 		outbound.Close()
 		return nil, err
