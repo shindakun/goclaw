@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -246,14 +247,17 @@ func (r *runner) query(ctx context.Context, sess *db.SessionDBs, prompt string) 
 
 	for msg, qErr := range claude.Query(ctx, prompt, opts...) {
 		if qErr != nil {
+			// The CLI subprocess failed (e.g. couldn't start, crashed). Surface
+			// its stderr, which usually names the real cause.
+			var pe *claude.ProcessError
+			if errors.As(qErr, &pe) && strings.TrimSpace(pe.Stderr) != "" {
+				return "", "", 0, fmt.Errorf("claude CLI: %s", firstLine(pe.Stderr))
+			}
 			return "", "", 0, qErr
 		}
 		if res, ok := msg.(*claude.ResultMessage); ok {
 			if res.IsError {
-				if len(res.Errors) > 0 {
-					return "", "", 0, fmt.Errorf("claude: %s", res.Errors[0])
-				}
-				return "", "", 0, fmt.Errorf("claude: result reported an error")
+				return "", "", 0, resultError(res)
 			}
 			result = res.Result
 			sessionID = res.SessionID
@@ -264,4 +268,44 @@ func (r *runner) query(ctx context.Context, sess *db.SessionDBs, prompt string) 
 		return "", sessionID, inputTokens, fmt.Errorf("claude: no result produced")
 	}
 	return result, sessionID, inputTokens, nil
+}
+
+// resultError builds the most informative error from an error ResultMessage.
+// The CLI doesn't always populate Errors, so fall back through APIErrorStatus,
+// Result (which often carries the message), Subtype, then the raw payload.
+func resultError(res *claude.ResultMessage) error {
+	if len(res.Errors) > 0 {
+		return fmt.Errorf("claude: %s", strings.Join(res.Errors, "; "))
+	}
+	status := ""
+	if res.APIErrorStatus != nil {
+		status = fmt.Sprintf("API %d: ", *res.APIErrorStatus)
+	}
+	if msg := strings.TrimSpace(res.Result); msg != "" {
+		return fmt.Errorf("claude: %s%s", status, firstLine(msg))
+	}
+	if res.Subtype != "" {
+		return fmt.Errorf("claude: %s%s", status, res.Subtype)
+	}
+	if status != "" {
+		return fmt.Errorf("claude: %serror", status)
+	}
+	if raw := strings.TrimSpace(string(res.Raw)); raw != "" {
+		return fmt.Errorf("claude: %s", firstLine(raw))
+	}
+	return fmt.Errorf("claude: result reported an error")
+}
+
+// firstLine returns the first non-empty line of s, trimmed, capped to keep chat
+// replies readable.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			if len(line) > 300 {
+				return line[:300] + "…"
+			}
+			return line
+		}
+	}
+	return strings.TrimSpace(s)
 }
