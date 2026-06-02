@@ -429,6 +429,8 @@ Two navigation aids make this work without embedding-based RAG at personal scale
 
 Invariants worth enforcing in the schema: **search before create** (no duplicates; fuzzy-match existing names), **propagate every write** (a new note updates the index and any linked pages), **no orphans** (every note is linked from somewhere), and **provenance-first** (no claim without a source). During lint, **randomize the page-visit order** rather than walking ingestion order — it surfaces cross-cutting contradictions that an ordered pass tends to miss.
 
+Two more, because the vault is shared by multiple agent runs and the human at once (the same breach of isolation §11.6 handles at the host level). **Task leases**: a `task` note carries `claimed_by` + `lease_until`; a worker claims before working, heartbeats to extend, and a claim whose lease has passed is *stale and reclaimable* — so two runs never grind the same task, and a crashed run's work isn't locked forever. Don't-finish becomes `state: blocked` with a handoff note, not abandonment; tasks are never deleted. **Append-only audit trail**: every mutating action appends one `log.md` line naming the actor (agent run or human) and the pages touched, and `log.md` is never rewritten — this is what makes the bi-temporal and lifecycle rules actually auditable (you can reconstruct how any page reached its state) rather than merely asserted. Both are pure schema + prompt discipline; the only host-side support they need is the `flock` write guard already in §11.5.
+
 ### 11.5 What this costs the Go host (not much)
 
 The vault is mostly configuration plus prompt discipline. The host-side pieces are small:
