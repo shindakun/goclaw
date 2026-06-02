@@ -45,15 +45,10 @@ func main() {
 }
 
 func run(dir string, once bool, interval time.Duration, log *slog.Logger) error {
-	sess, err := db.OpenSessionDir(dir)
-	if err != nil {
-		return err
-	}
-	defer sess.Close()
 	log.Info("stub-runner started", "dir", dir)
 
 	if once {
-		n, err := processOnce(sess, log)
+		n, err := processOnce(dir, log)
 		if err != nil {
 			return err
 		}
@@ -72,16 +67,25 @@ func run(dir string, once bool, interval time.Duration, log *slog.Logger) error 
 			log.Info("stub-runner stopped")
 			return nil
 		case <-ticker.C:
-			if _, err := processOnce(sess, log); err != nil {
+			if _, err := processOnce(dir, log); err != nil {
 				log.Error("process", "err", err)
 			}
 		}
 	}
 }
 
-// processOnce handles every currently-pending inbound message and returns the
-// number echoed.
-func processOnce(sess *db.SessionDBs, log *slog.Logger) (int, error) {
+// processOnce opens the session FRESH, handles every currently-pending inbound
+// message, and closes again. Opening per poll is deliberate: the session DBs
+// live on a container bind mount, and a long-lived SQLite handle caches the
+// file's pages and never sees the host's later writes across the VM's shared
+// filesystem. A fresh open each poll always reads current on-disk state.
+func processOnce(dir string, log *slog.Logger) (int, error) {
+	sess, err := db.OpenSessionDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	defer sess.Close()
+
 	pending, err := sess.PendingInbound()
 	if err != nil {
 		return 0, err
