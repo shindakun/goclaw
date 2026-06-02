@@ -98,8 +98,13 @@ func (m *Manager) Run(ctx context.Context, spec Spec) (string, error) {
 // defaults applied. Kept separate so it can be unit-tested without invoking
 // podman.
 func (m *Manager) buildArgs(spec Spec) []string {
+	// NOTE: no --rm. A removed-on-exit container vanishes the instant its
+	// process dies, which (a) hides crash logs/exit codes and (b) races the
+	// sweep's recovery into a create→die→remove churn. We keep stopped
+	// containers inspectable; the sweep's stateStopped path removes a stale one
+	// before relaunching.
 	args := []string{
-		"run", "--rm", "-d",
+		"run", "-d",
 		"--user", "1000:1000", // non-root in container (brief §9)
 		"--init", // PID-1 signal handling (brief §9)
 	}

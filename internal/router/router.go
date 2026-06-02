@@ -165,6 +165,8 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 			// and a later message (or retry) can bring the runner up.
 			r.log.Error("ensure runner failed (message remains queued)",
 				"agent_group", agentGroupID, "session", sessionKey, "err", err)
+		} else {
+			r.log.Info("runner ensured", "agent_group", agentGroupID, "session", sessionKey)
 		}
 	}
 	return nil

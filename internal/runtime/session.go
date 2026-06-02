@@ -72,10 +72,37 @@ func (m *Manager) EnsureSessionRunner(ctx context.Context, sr SessionRunner) err
 			ReadWrite:     true, // runner reads inbound, writes outbound
 		}},
 	}
-	if _, err := m.Run(ctx, spec); err != nil {
+	id, err := m.Run(ctx, spec)
+	if err != nil {
 		return fmt.Errorf("runtime: ensure session runner %q: %w", name, err)
 	}
+	id = strings.TrimSpace(id)
+
+	// Verify the container actually came up. `podman run -d` reports success
+	// once the container is created, even if its process dies immediately — so
+	// confirm it's running, and if not, surface the exit code + logs instead of
+	// silently leaving the session without a runner.
+	if st, err := m.containerState(ctx, name); err == nil && st != stateRunning {
+		detail := m.diagnose(ctx, name)
+		return fmt.Errorf("runtime: runner %q exited immediately after launch (id %s): %s", name, id, detail)
+	}
 	return nil
+}
+
+// diagnose collects a one-line summary of why a container isn't running:
+// its exit code and the tail of its logs. Best-effort — used only for error
+// messages, so failures to gather detail are ignored.
+func (m *Manager) diagnose(ctx context.Context, name string) string {
+	exit := "?"
+	if out, err := execCommand(ctx, m.podmanBin,
+		"inspect", name, "--format", "{{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}}").Output(); err == nil {
+		exit = strings.TrimSpace(string(out))
+	}
+	logs := ""
+	if out, err := execCommand(ctx, m.podmanBin, "logs", "--tail", "5", name).CombinedOutput(); err == nil {
+		logs = strings.TrimSpace(string(out))
+	}
+	return fmt.Sprintf("exit=%s logs=%q", exit, logs)
 }
 
 // containerStatus is the coarse state of a named container.

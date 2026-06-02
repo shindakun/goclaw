@@ -9,17 +9,28 @@ import (
 	"testing"
 )
 
-// withFakePodman swaps execCommand for a fake that records argv and replays a
-// scripted exit/stdout via the test binary re-exec trick.
-func withFakePodman(t *testing.T, psOutput string, record *[]string) {
+// withFakePodman swaps execCommand for a fake that records argv and replays
+// scripted `ps` output via the test binary re-exec trick. The `ps` output flips
+// from psBefore to psAfter once a `run` has been seen — modeling a container
+// that is absent before launch and running after (so the post-launch health
+// check passes).
+func withFakePodman(t *testing.T, psBefore, psAfter string, record *[]string) {
 	t.Helper()
 	orig := execCommand
 	t.Cleanup(func() { execCommand = orig })
+	ran := false
 	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		*record = append(*record, name+" "+strings.Join(args, " "))
-		// Re-exec the test binary in helper mode to emit canned stdout.
+		isPS := len(args) > 0 && args[0] == "ps"
+		psOutput := psBefore
+		if ran {
+			psOutput = psAfter
+		}
+		if len(args) > 0 && args[0] == "run" {
+			ran = true
+		}
 		cs := []string{"-test.run=TestHelperProcess", "--", psOutput}
-		if len(args) > 0 && args[0] == "ps" {
+		if isPS {
 			cs = append(cs, "ps")
 		}
 		cmd := exec.Command(os.Args[0], cs...)
@@ -59,7 +70,8 @@ func TestHelperProcess(t *testing.T) {
 
 func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 	var calls []string
-	withFakePodman(t, "" /* ps returns nothing → not running */, &calls)
+	// Absent before launch; running after (post-launch health check passes).
+	withFakePodman(t, "", "goclaw-1-telegram-6306189728 running\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
 	// Use a RELATIVE session dir: podman would treat a relative -v source as a
@@ -75,12 +87,15 @@ func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 		t.Fatalf("ensure: %v", err)
 	}
 
-	// Expect a ps check then a run.
-	if len(calls) != 2 {
-		t.Fatalf("expected ps + run, got %d calls: %v", len(calls), calls)
+	// Expect: ps (pre-check) + run + ps (post-launch health check).
+	if len(calls) != 3 {
+		t.Fatalf("expected ps + run + ps, got %d calls: %v", len(calls), calls)
 	}
 	if !strings.Contains(calls[0], "ps") {
 		t.Fatalf("first call should be ps: %q", calls[0])
+	}
+	if !strings.Contains(calls[2], "ps") {
+		t.Fatalf("third call should be the post-launch ps: %q", calls[2])
 	}
 	run := calls[1]
 
@@ -104,7 +119,7 @@ func TestEnsureSessionRunner_LaunchesWhenAbsent(t *testing.T) {
 func TestEnsureSessionRunner_SkipsWhenRunning(t *testing.T) {
 	var calls []string
 	name := "goclaw-1-telegram-6306189728"
-	withFakePodman(t, name+" running\n" /* ps -a → running */, &calls)
+	withFakePodman(t, name+" running\n" /* already running */, name+" running\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
 	sr := SessionRunner{
@@ -125,8 +140,9 @@ func TestEnsureSessionRunner_SkipsWhenRunning(t *testing.T) {
 func TestEnsureSessionRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 	var calls []string
 	name := "goclaw-1-telegram-6306189728"
-	// ps -a reports the name in a non-running state → must rm then run.
-	withFakePodman(t, name+" exited\n", &calls)
+	// Before: ps -a reports the name stopped → must rm then run.
+	// After: ps -a reports it running → post-launch health check passes.
+	withFakePodman(t, name+" exited\n", name+" running\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun)
 	sr := SessionRunner{
@@ -138,8 +154,9 @@ func TestEnsureSessionRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 	if err := m.EnsureSessionRunner(context.Background(), sr); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("expected ps + rm + run, got %d: %v", len(calls), calls)
+	// ps (pre) + rm (stale) + run + ps (post-launch health check).
+	if len(calls) != 4 {
+		t.Fatalf("expected ps + rm + run + ps, got %d: %v", len(calls), calls)
 	}
 	if !strings.Contains(calls[0], "ps") {
 		t.Errorf("call 0 should be ps: %q", calls[0])
@@ -149,5 +166,8 @@ func TestEnsureSessionRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 	}
 	if !strings.Contains(calls[2], "run") {
 		t.Errorf("call 2 should be run: %q", calls[2])
+	}
+	if !strings.Contains(calls[3], "ps") {
+		t.Errorf("call 3 should be the post-launch ps: %q", calls[3])
 	}
 }
