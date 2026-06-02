@@ -76,6 +76,35 @@ func (d *DB) MessagingGroupByChat(channel, chatID string) (*MessagingGroup, erro
 	return &mg, nil
 }
 
+// Identity is a channel-native identity for a user (used to message them).
+type Identity struct {
+	Channel  string
+	SenderID string
+}
+
+// OwnerIdentity returns a channel identity for an owner user, so the host can
+// send them the approval card (brief §3.4). v0 picks any owner's first identity;
+// agent-group-scoped owners can be added later. Returns (nil, nil) if no owner
+// has a known identity.
+func (d *DB) OwnerIdentity(agentGroupID int64) (*Identity, error) {
+	var idn Identity
+	err := d.QueryRow(`
+		SELECT ui.channel, ui.sender_id
+		FROM users u
+		JOIN user_identities ui ON ui.user_id = u.id
+		WHERE u.role = 'owner'
+		ORDER BY u.id
+		LIMIT 1`,
+	).Scan(&idn.Channel, &idn.SenderID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("owner identity: %w", err)
+	}
+	return &idn, nil
+}
+
 // HasAgentDestination reports whether an agent group has an explicit
 // agent_destinations row for (channel, chatID). Used by delivery authorization
 // for non-origin targets (brief §9).

@@ -11,7 +11,10 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/db"
@@ -26,11 +29,19 @@ type RunnerEnsurer interface {
 	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string) error
 }
 
+// Sender sends a host-originated reply on a channel — used for the approval-card
+// flow (notifying the owner, confirming approve/deny). internal/channels.Registry
+// satisfies this. May be nil to disable host-sent messages.
+type Sender interface {
+	Send(ctx context.Context, out channels.OutboundMsg) error
+}
+
 // Router routes inbound messages to session inbound DBs.
 type Router struct {
 	central *db.DB
 	dataDir string
 	ensurer RunnerEnsurer
+	sender  Sender
 	log     *slog.Logger
 
 	// autoWireAgentGroupID, when non-zero, lets the owner bootstrap a wiring by
@@ -42,12 +53,14 @@ type Router struct {
 }
 
 // New constructs a Router over the central DB. autoWireAgentGroupID may be 0 to
-// disable owner auto-wiring; ensurer may be nil to disable container launch.
-func New(central *db.DB, dataDir string, autoWireAgentGroupID int64, ensurer RunnerEnsurer, log *slog.Logger) *Router {
+// disable owner auto-wiring; ensurer may be nil to disable container launch;
+// sender may be nil to disable host-sent messages (the approval-card flow).
+func New(central *db.DB, dataDir string, autoWireAgentGroupID int64, ensurer RunnerEnsurer, sender Sender, log *slog.Logger) *Router {
 	return &Router{
 		central:              central,
 		dataDir:              dataDir,
 		ensurer:              ensurer,
+		sender:               sender,
 		log:                  log,
 		autoWireAgentGroupID: autoWireAgentGroupID,
 	}
@@ -76,6 +89,13 @@ func (r *Router) route(ctx context.Context, msg channels.InboundMsg) error {
 	user, err := r.central.UserByIdentity(msg.Channel, msg.SenderID)
 	if err != nil {
 		return err
+	}
+
+	// Owner/admin approval commands are handled before normal routing.
+	if handled, err := r.handleApprovalCommand(ctx, msg, user); err != nil {
+		return err
+	} else if handled {
+		return nil
 	}
 
 	// Record the conversation on first contact so it becomes routable, then
@@ -124,13 +144,136 @@ func (r *Router) route(ctx context.Context, msg channels.InboundMsg) error {
 		r.log.Info("message denied", "channel", msg.Channel, "sender", msg.SenderID, "known", user != nil)
 		return nil
 	case permissions.NeedsApproval:
-		r.log.Info("message needs approval", "channel", msg.Channel, "sender", msg.SenderID)
-		// TODO: emit approval card.
-		return nil
+		return r.requestApproval(ctx, msg, wiring.AgentGroupID)
 	case permissions.Allow:
 		return r.enqueue(ctx, msg, wiring.AgentGroupID)
 	}
 	return nil
+}
+
+// requestApproval holds an unknown sender's message and notifies the owner with
+// an approval card (brief §3.4). A repeat message updates the held text rather
+// than creating a duplicate request.
+func (r *Router) requestApproval(ctx context.Context, msg channels.InboundMsg, agentGroupID int64) error {
+	id, err := r.central.UpsertPendingApproval(db.PendingApproval{
+		Channel:      msg.Channel,
+		ChatID:       msg.ChatID,
+		SenderID:     msg.SenderID,
+		SenderName:   msg.Sender,
+		Text:         msg.Text,
+		AgentGroupID: agentGroupID,
+	})
+	if err != nil {
+		return err
+	}
+	r.log.Info("message needs approval",
+		"channel", msg.Channel, "sender", msg.SenderID, "approval_id", id)
+
+	// Notify the owner of this agent group with the approval card.
+	owner, err := r.central.OwnerIdentity(agentGroupID)
+	if err != nil {
+		return err
+	}
+	if owner == nil || r.sender == nil {
+		// No reachable owner (or no sender wired) — the request is still held in
+		// the DB and can be approved out of band.
+		return nil
+	}
+	card := fmt.Sprintf(
+		"Access request for agent group %d\nFrom: %s (%s on %s)\nMessage: %q\n\nReply /approve %d or /deny %d",
+		agentGroupID, displayName(msg), msg.SenderID, msg.Channel, msg.Text, id, id)
+	return r.sender.Send(ctx, channels.OutboundMsg{
+		Channel: owner.Channel,
+		ChatID:  owner.SenderID,
+		Text:    card,
+	})
+}
+
+// handleApprovalCommand intercepts "/approve <id>" and "/deny <id>" from an
+// owner or admin. Returns (handled, err): when handled, the message is consumed
+// and normal routing is skipped.
+func (r *Router) handleApprovalCommand(ctx context.Context, msg channels.InboundMsg, user *db.User) (bool, error) {
+	cmd, idStr, ok := parseApprovalCommand(msg.Text)
+	if !ok {
+		return false, nil
+	}
+	// Only owners/admins may approve.
+	if user == nil || (user.Role != string(permissions.RoleOwner) && user.Role != string(permissions.RoleAdmin)) {
+		return false, nil // not authorized — fall through to normal routing
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		r.reply(ctx, msg, "Usage: /approve <id> or /deny <id>")
+		return true, nil
+	}
+
+	switch cmd {
+	case "deny":
+		if err := r.central.DeletePendingApproval(id); err != nil {
+			return true, err
+		}
+		r.reply(ctx, msg, fmt.Sprintf("Denied request %d.", id))
+		return true, nil
+	case "approve":
+		p, err := r.central.ApprovePendingApproval(id)
+		if err != nil {
+			return true, err
+		}
+		if p == nil {
+			r.reply(ctx, msg, fmt.Sprintf("No pending request %d.", id))
+			return true, nil
+		}
+		r.reply(ctx, msg, fmt.Sprintf("Approved %s. Replaying their message.", p.SenderID))
+		// Replay the original message now that the sender is a known member.
+		replay := channels.InboundMsg{
+			Channel:  p.Channel,
+			ChatID:   p.ChatID,
+			SenderID: p.SenderID,
+			Sender:   p.SenderName,
+			Text:     p.Text,
+		}
+		if err := r.route(ctx, replay); err != nil {
+			r.log.Error("replay approved message", "approval_id", id, "err", err)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// reply sends a short host message back to the conversation a command came from.
+func (r *Router) reply(ctx context.Context, msg channels.InboundMsg, text string) {
+	if r.sender == nil {
+		return
+	}
+	if err := r.sender.Send(ctx, channels.OutboundMsg{
+		Channel: msg.Channel, ChatID: msg.ChatID, Text: text,
+	}); err != nil {
+		r.log.Error("send reply", "channel", msg.Channel, "err", err)
+	}
+}
+
+// parseApprovalCommand recognizes "/approve <id>" and "/deny <id>" (leading/
+// trailing space tolerated). Returns (cmd, idArg, ok).
+func parseApprovalCommand(text string) (cmd, idArg string, ok bool) {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) != 2 {
+		return "", "", false
+	}
+	switch fields[0] {
+	case "/approve":
+		return "approve", fields[1], true
+	case "/deny":
+		return "deny", fields[1], true
+	}
+	return "", "", false
+}
+
+// displayName prefers the sender's display name, falling back to the id.
+func displayName(msg channels.InboundMsg) string {
+	if msg.Sender != "" {
+		return msg.Sender
+	}
+	return msg.SenderID
 }
 
 // enqueue resolves-or-creates the session for this conversation, opens its

@@ -38,6 +38,17 @@ func (r *Registry) Get(name string) (ChannelAdapter, bool) {
 	return a, ok
 }
 
+// Send dispatches a host-originated message via the target channel's adapter.
+// Used for host-sent system messages (e.g. the approval-card flow). Returns an
+// error if no adapter is registered for the channel.
+func (r *Registry) Send(ctx context.Context, out OutboundMsg) error {
+	a, ok := r.Get(out.Channel)
+	if !ok {
+		return fmt.Errorf("channels: no adapter for %q", out.Channel)
+	}
+	return a.Send(ctx, out)
+}
+
 // All returns the registered adapters in no particular order.
 func (r *Registry) All() []ChannelAdapter {
 	r.mu.RLock()

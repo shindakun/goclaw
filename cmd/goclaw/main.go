@@ -120,7 +120,7 @@ func run(log *slog.Logger) error {
 
 	// Wire the host loops. errgroup ties their lifetimes to ctx: if any returns
 	// a non-nil error, the group cancels and the rest unwind.
-	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, log)
+	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, log)
 	del := delivery.New(central, registry, cfg.DataDir, log)
 	swp := sweep.New(central, cfg.DataDir, runners, log)
 
