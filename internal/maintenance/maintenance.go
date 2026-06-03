@@ -34,10 +34,15 @@ type RunnerEnsurer interface {
 
 // Job is one scheduled maintenance task.
 type Job struct {
-	Name   string        // stable id, used in the kv last-run key
-	Every  time.Duration // minimum spacing between runs
-	AtHour int           // local hour-of-day to prefer (0-23); -1 means "any time once Every has elapsed"
-	Prompt string        // the instruction enqueued for the agent
+	Name string // stable id, used in the kv last-run key
+	// PeriodDays is how many days apart scheduled days are: 1 = daily, 7 = weekly.
+	// Used with AtHour to pin the job to a local wall-clock boundary without drift.
+	PeriodDays int
+	AtHour     int // local hour-of-day boundary (0-23); -1 means "no preferred hour, use Every"
+	// Every is the spacing used ONLY when AtHour < 0 (pure-interval scheduling,
+	// no preferred wall-clock hour). Ignored when AtHour >= 0.
+	Every  time.Duration
+	Prompt string // the instruction enqueued for the agent
 }
 
 // DefaultJobs is the brief's §11.5 cadence. Times are local. Prompts lean on the
@@ -45,24 +50,24 @@ type Job struct {
 // chat summary so the owner stays informed without noise.
 var DefaultJobs = []Job{
 	{
-		Name:   "morning",
-		Every:  20 * time.Hour, // once a day, prefer the morning hour
-		AtHour: 7,
+		Name:       "morning",
+		PeriodDays: 1, // daily, pinned to the 07:00 local boundary
+		AtHour:     7,
 		Prompt: "Maintenance (morning): create or update today's day note in wiki/daily/. " +
 			"Pull any open/overdue tasks from wiki/tasks/ into it. Reply with a 1-2 sentence summary only.",
 	},
 	{
-		Name:   "nightly",
-		Every:  20 * time.Hour,
-		AtHour: 22,
+		Name:       "nightly",
+		PeriodDays: 1, // daily, pinned to the 22:00 local boundary
+		AtHour:     22,
 		Prompt: "Maintenance (nightly): run reconcile (resolve contradicting notes, not just flag them) " +
 			"and synthesize (write synthesis pages for recurring un-named themes), then heal orphan pages. " +
 			"Commit your vault changes with git. Reply with a 1-2 sentence summary only.",
 	},
 	{
-		Name:   "weekly-health",
-		Every:  6 * 24 * time.Hour, // weekly
-		AtHour: 9,
+		Name:       "weekly-health",
+		PeriodDays: 7, // weekly, pinned to the 09:00 local boundary
+		AtHour:     9,
 		Prompt: "Maintenance (weekly health): run lint over the whole vault (broken links, duplicates, bad " +
 			"frontmatter, stale claims, orphans, lingering unresolved_references). Report by severity; do NOT " +
 			"auto-fix. Reply with a 1-2 sentence summary of the worst findings only.",
@@ -136,23 +141,47 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 	}
 }
 
-// due reports whether a job should run now: at least Every has elapsed since its
-// last run, and (when AtHour >= 0) it is at or past that local hour today.
+// due reports whether a job should run now. The schedule is pinned to a LOCAL
+// wall-clock boundary so it does not drift with host uptime: the job fires once
+// per scheduling period, at or after AtHour, regardless of when the host started.
+//
+// The boundary is "today at AtHour" (local). The job is due when now is at/after
+// it and the job has not run since it - so it fires once per day, in the AtHour
+// hour, regardless of host start time, and never before AtHour. PeriodDays > 1
+// additionally requires ~that many days since the last run, so a weekly job only
+// fires on one of the daily boundaries. AtHour < 0 means "no preferred hour":
+// fall back to a pure Every interval.
 func (s *Scheduler) due(job Job, now time.Time) (bool, error) {
 	last, ok, err := s.central.GetKV(kvPrefix + job.Name)
+	var lastRun time.Time
 	if err != nil {
 		return false, err
 	}
 	if ok {
-		t, perr := time.Parse(time.RFC3339, last)
-		if perr == nil && now.Sub(t) < job.Every {
-			return false, nil // ran too recently
+		if t, perr := time.Parse(time.RFC3339, last); perr == nil {
+			lastRun = t
 		}
 	}
-	if job.AtHour >= 0 && now.Hour() < job.AtHour {
+
+	// No preferred hour: pure interval scheduling.
+	if job.AtHour < 0 {
+		return !ok || now.Sub(lastRun) >= job.Every, nil
+	}
+
+	// Today's AtHour boundary in the host's local zone.
+	boundary := time.Date(now.Year(), now.Month(), now.Day(), job.AtHour, 0, 0, 0, now.Location())
+	if now.Before(boundary) {
 		return false, nil // not yet at the preferred hour today
 	}
-	return true, nil
+	// For a multi-day period, only fire if enough days have passed since the last
+	// run that we are in a NEW period. A daily job (period 1) always qualifies at
+	// a fresh boundary; a weekly job (period 7) requires ~the period to have
+	// elapsed, so the daily boundaries in between don't trigger it.
+	if ok && job.PeriodDays > 1 && now.Sub(lastRun) < time.Duration(job.PeriodDays-1)*24*time.Hour {
+		return false, nil
+	}
+	// Due if we have not already run on/after today's boundary.
+	return !ok || lastRun.Before(boundary), nil
 }
 
 // fire enqueues the job's prompt into the target session and ensures the runner.
