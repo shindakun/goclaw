@@ -143,6 +143,26 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID> -once
 #   -system-prompt-file e.g. a group's CLAUDE.md
 ```
 
+### Development environment + GitHub
+
+The Claude runner image is a real dev environment: git, the GitHub CLI (`gh`),
+build-essential, Python 3, Go, ripgrep, jq, and more, so the agent can clone,
+build, script, and open pull requests. Set a GitHub token to enable private
+clones and PRs:
+
+```sh
+# .env
+GOCLAW_GITHUB_TOKEN=github_pat_...   # passed in as GH_TOKEN
+GOCLAW_GIT_USER_NAME=Your Name       # commit author (defaults work)
+GOCLAW_GIT_USER_EMAIL=you@example.com
+```
+
+Then "clone X, make this change, open a PR" works end to end: the agent clones in
+`/work`, branches, commits (using your git identity), and runs `gh pr create`.
+For a repo you don't own, `gh repo fork` pushes the branch to your fork and opens
+the PR against upstream. Without a token, the agent can still clone public repos
+but cannot push or open PRs.
+
 ### Knowledge vault
 
 Give the agent a persistent, Obsidian-style Markdown vault it reads and writes

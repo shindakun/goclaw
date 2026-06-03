@@ -1,7 +1,8 @@
 # Builds the goclaw CLAUDE runner image: the Go claude-runner plus the `claude`
 # Code CLI it drives (brief §4, Option A′), on top of a development environment
-# (git, build-essential, Python3, Go, ripgrep, jq, ...) so the agent can do real
-# work. Needs Node, since the SDK runs the claude CLI as a subprocess.
+# (git, gh, build-essential, Python3, Go, ripgrep, jq, ...) so the agent can do
+# real work, including opening pull requests. Needs Node, since the SDK runs the
+# claude CLI as a subprocess.
 #
 # Build from the repo root so the Go module is in context:
 #   podman build -f container/claude.Containerfile -t goclaw-claude:latest .
@@ -46,6 +47,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         less \
         procps \
     && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI (gh) from GitHub's apt repo, so the agent can open pull requests
+# (gh pr create) and fork repos (gh repo fork). Authenticated at run time via the
+# GH_TOKEN env the host injects from GOCLAW_GITHUB_TOKEN.
+RUN set -eux; \
+    mkdir -p -m 755 /etc/apt/keyrings; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gh; \
+    rm -rf /var/lib/apt/lists/*
 
 # Go toolchain, fetched for the image's architecture (arm64 on Apple Silicon,
 # amd64 on Intel) so the same Containerfile works on either.

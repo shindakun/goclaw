@@ -142,6 +142,8 @@ func run(log *slog.Logger) error {
 		claudeEnv["GIT_AUTHOR_EMAIL"] = cfg.GitUserEmail
 		claudeEnv["GIT_COMMITTER_NAME"] = cfg.GitUserName
 		claudeEnv["GIT_COMMITTER_EMAIL"] = cfg.GitUserEmail
+		// GitHub auth for gh (clone private, push, fork, open PRs). Empty -> dropped.
+		claudeEnv["GH_TOKEN"] = cfg.GitHubToken
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir)

@@ -48,6 +48,10 @@ type Config struct {
 	// in as GIT_AUTHOR_*/GIT_COMMITTER_* env. Sensible defaults applied.
 	GitUserName  string
 	GitUserEmail string
+	// GitHubToken, if set, is passed into the container as GH_TOKEN so the agent
+	// can clone private repos, push branches, fork, and open pull requests with
+	// the gh CLI. Empty leaves the agent able to clone public repos only.
+	GitHubToken string
 	// OwnerTelegramID, if set, is seeded at startup as the owner user's Telegram
 	// identity so the first real user can get past the access gate without
 	// hand-editing the DB (brief §3.4). Empty disables the bootstrap.
@@ -92,6 +96,7 @@ func Load() (*Config, error) {
 		VaultDir:                expandHome(os.Getenv("GOCLAW_VAULT_DIR"), home),
 		GitUserName:             getenv("GOCLAW_GIT_USER_NAME", "goclaw agent"),
 		GitUserEmail:            getenv("GOCLAW_GIT_USER_EMAIL", "agent@goclaw.local"),
+		GitHubToken:             os.Getenv("GOCLAW_GITHUB_TOKEN"),
 	}
 	return cfg, nil
 }
