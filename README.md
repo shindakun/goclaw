@@ -5,10 +5,14 @@ into per-agent-group containers where a Claude agent runs with OS-level
 isolation, then delivers replies back. Inspired by NanoClaw; see
 [`nanoclaw-go-podman-brief.md`](nanoclaw-go-podman-brief.md) for the full design.
 
-This is a **scaffold**: the package layout and boundaries from §10 of the brief
-are in place and the project compiles, but most host logic is stubbed with
-`TODO`s. The security-critical mount validation (`internal/mounts`) has real
-logic and tests.
+The full message loop runs end to end: a real per-agent-group Podman container
+drives Claude (multi-turn, with `/reset` and `/compact`), reads and writes a
+knowledge vault, can clone repos and open pull requests, and runs scheduled
+vault maintenance. The host pieces (router, delivery, sweep, permissions, mount
+validation) are real and tested. The one part still stubbed is the credential
+**vault proxy** (`internal/vault`); until it is wired, the runner container
+holds the raw credential (see the security note under
+[Real Claude runner](#real-claude-runner)).
 
 ## Layout
 
@@ -210,9 +214,15 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID>   # real Claude
 ## Status / next steps
 
 The full message loop works end to end through a real per-agent-group container.
+Done: the real Go runner on [`shindakun/agent-sdk-go`](https://github.com/shindakun/agent-sdk-go)
+(multi-turn, `/reset`, `/compact`, auto-compact); the knowledge vault mount with
+scheduled maintenance; the GitHub dev environment (clone + open PRs); and
+container teardown / idle-runner GC (`internal/sweep`).
+
 Next:
 
-1. Replace the stub runner with the real agent-runner (Option A TS, or
-   Option A′ Go on `shindakun/agent-sdk-go`; brief §4).
-2. Container teardown / GC of idle runners (sweep).
-3. Credential vault proxy + validated extra mounts on the runner (brief §8).
+1. Credential vault proxy so the raw API key never enters the container
+   (`internal/vault`, brief §8) - the last security shortcut.
+2. More channels (Discord, then Slack) on the same `ChannelAdapter` interface
+   (brief §7).
+3. Validated extra mounts on the runner via the allowlist (brief §8).

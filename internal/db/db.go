@@ -145,22 +145,24 @@ func sanitizeSessionKey(key string) string {
 	return s
 }
 
-// OpenSession creates the session directory if needed and opens the
-// inbound/outbound pair under the host's data dir.
+// OpenSession opens a session's DB pair for the HOST under the host's data dir.
+// The host owns inbound.db (opened read-write) and only READS outbound.db, so
+// outbound is opened READ-ONLY - the single-writer-per-file invariant (brief
+// §5.1) is then enforced by the SQLite driver, not just by discipline: a stray
+// host write to outbound.db fails loudly instead of silently losing across the
+// podman mount (which is what caused duplicate delivery). Use OpenSessionDir for
+// the runner, which owns and writes outbound.db.
 func OpenSession(baseDir string, agentGroupID int64, sessionKey string) (*SessionDBs, error) {
-	return OpenSessionDir(SessionDir(baseDir, agentGroupID, sessionKey))
+	return OpenSessionHostDir(SessionDir(baseDir, agentGroupID, sessionKey))
 }
 
-// OpenSessionDir opens (creating + initializing schemas if needed) the
-// inbound/outbound pair in an explicit directory. The in-container agent-runner
-// uses this against its mounted session dir, since it sees only its own two DBs
-// and knows nothing of agent-group ids or the central DB (brief §3.1, §5.1).
-// The inbound handle is capped to one connection (single-writer, brief §5.1).
-func OpenSessionDir(dir string) (*SessionDBs, error) {
+// openInboundRW opens (creating the dir + applying the inbound schema) the
+// host-owned inbound.db read-write, capped to one connection (single writer,
+// brief §5.1). Shared by the host and runner open paths.
+func openInboundRW(dir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create session dir %q: %w", dir, err)
 	}
-
 	inbound, err := sql.Open("sqlite", filepath.Join(dir, "inbound.db"))
 	if err != nil {
 		return nil, fmt.Errorf("open inbound.db: %w", err)
@@ -175,6 +177,59 @@ func OpenSessionDir(dir string) (*SessionDBs, error) {
 	if _, err := inbound.Exec(inboundSchema); err != nil {
 		inbound.Close()
 		return nil, fmt.Errorf("init inbound schema: %w", err)
+	}
+	return inbound, nil
+}
+
+// OpenSessionHostDir opens a session pair for the host in an explicit directory:
+// inbound.db read-write (host-owned), outbound.db READ-ONLY. If outbound.db does
+// not exist yet (no runner has started for this session), Outbound is left nil
+// and the outbound-reading methods degrade to "nothing there" - the host can
+// enqueue inbound before any container exists. The host never creates or writes
+// outbound.db; that is the runner's job (brief §5.1).
+func OpenSessionHostDir(dir string) (*SessionDBs, error) {
+	inbound, err := openInboundRW(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &SessionDBs{Inbound: inbound, dir: dir}
+
+	outPath := filepath.Join(dir, "outbound.db")
+	if _, statErr := os.Stat(outPath); statErr != nil {
+		// No outbound.db yet: the runner hasn't created it. That's fine - leave
+		// Outbound nil. We must NOT open read-only here, because read-only mode
+		// cannot create the file and would error.
+		return s, nil
+	}
+	// immutable=0, but mode=ro so the driver rejects any write. busy_timeout via
+	// applyPragmas still lets reads wait out the runner's write lock.
+	outbound, err := sql.Open("sqlite", "file:"+outPath+"?mode=ro")
+	if err != nil {
+		inbound.Close()
+		return nil, fmt.Errorf("open outbound.db (ro): %w", err)
+	}
+	// journal_mode is a no-op on a read-only handle; set the rest (busy_timeout,
+	// foreign_keys, synchronous) which apply to readers too.
+	if err := applyPragmas(outbound, journalDelete); err != nil {
+		inbound.Close()
+		outbound.Close()
+		return nil, err
+	}
+	s.Outbound = outbound
+	return s, nil
+}
+
+// OpenSessionDir opens (creating + initializing schemas if needed) the
+// inbound/outbound pair in an explicit directory for the RUNNER. The in-container
+// agent-runner uses this against its mounted session dir, since it sees only its
+// own two DBs and knows nothing of agent-group ids or the central DB (brief §3.1,
+// §5.1). The runner owns outbound.db, so it is opened read-write here; the
+// inbound handle is capped to one connection (single-writer, brief §5.1).
+func OpenSessionDir(dir string) (*SessionDBs, error) {
+	inbound, err := openInboundRW(dir)
+	if err != nil {
+		return nil, err
 	}
 
 	outbound, err := sql.Open("sqlite", filepath.Join(dir, "outbound.db"))
@@ -237,6 +292,9 @@ type OutboundMessage struct {
 // PendingOutbound returns the outbound rows still awaiting delivery, oldest
 // first. The host reads these (the container is the writer).
 func (s *SessionDBs) PendingOutbound() ([]OutboundMessage, error) {
+	if s.Outbound == nil {
+		return nil, nil // no outbound.db yet (runner hasn't started)
+	}
 	rows, err := s.Outbound.Query(`
 		SELECT id, channel, chat_id, text
 		FROM messages
@@ -258,43 +316,52 @@ func (s *SessionDBs) PendingOutbound() ([]OutboundMessage, error) {
 	return out, rows.Err()
 }
 
-// ClaimOutbound atomically flips an outbound row from 'pending' to 'sending',
-// returning true only if THIS call won the claim. The delivery loop claims a row
-// before sending it, so an overlapping drain (the 500ms poll can fire again
-// before a send + mark-delivered completes) can't pick up the same row and send
-// it twice. The host is the sole writer of outbound status, so this UPDATE is the
-// single point that decides who sends.
-func (s *SessionDBs) ClaimOutbound(id int64) (bool, error) {
-	res, err := s.Outbound.Exec(
-		`UPDATE messages SET status = 'sending' WHERE id = ? AND status = 'pending'`, id)
-	if err != nil {
-		return false, fmt.Errorf("claim outbound: %w", err)
+// Delivery ledger (host side). The host records which outbound rows it has
+// dispatched in the `delivered` table of inbound.db - the HOST-OWNED file - so
+// the single-writer-per-file invariant holds (brief §5.1). The host never writes
+// the runner's outbound.db; doing so loses writes across the podman VM mount,
+// which is what made a reply get delivered twice. WasDelivered + INSERT OR IGNORE
+// make delivery idempotent: even if a duplicate drain picks up the same pending
+// outbound row, the second send is suppressed.
+
+// WasDelivered reports whether the outbound row id has already been delivered or
+// permanently failed - i.e. whether the host is done with it.
+func (s *SessionDBs) WasDelivered(outboundID int64) (bool, error) {
+	var one int
+	err := s.Inbound.QueryRow(
+		`SELECT 1 FROM delivered WHERE outbound_id = ?`, outboundID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	n, err := res.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("claim outbound rows: %w", err)
+		return false, fmt.Errorf("check delivered: %w", err)
 	}
-	return n == 1, nil
+	return true, nil
 }
 
-// MarkOutboundDelivered flips an outbound row to 'delivered'.
-func (s *SessionDBs) MarkOutboundDelivered(id int64) error {
-	_, err := s.Outbound.Exec(
-		`UPDATE messages SET status = 'delivered', delivered_at = datetime('now') WHERE id = ?`, id)
+// MarkDelivered records that the outbound row id was delivered. INSERT OR IGNORE
+// so a re-mark (e.g. an overlapping drain) is a harmless no-op.
+func (s *SessionDBs) MarkDelivered(outboundID int64) error {
+	_, err := s.Inbound.Exec(
+		`INSERT OR IGNORE INTO delivered (outbound_id, status) VALUES (?, 'delivered')`,
+		outboundID)
 	if err != nil {
-		return fmt.Errorf("mark outbound delivered: %w", err)
+		return fmt.Errorf("mark delivered: %w", err)
 	}
-	return err
+	return nil
 }
 
-// MarkOutboundFailed flips an outbound row to 'failed' with an error message.
-func (s *SessionDBs) MarkOutboundFailed(id int64, reason string) error {
-	_, err := s.Outbound.Exec(
-		`UPDATE messages SET status = 'failed', error = ? WHERE id = ?`, reason, id)
+// MarkFailed records that the outbound row id failed permanently (delivery not
+// authorized, or the adapter Send errored). Recorded in the same ledger so the
+// row is not retried forever; INSERT OR IGNORE keeps it idempotent.
+func (s *SessionDBs) MarkFailed(outboundID int64, reason string) error {
+	_, err := s.Inbound.Exec(
+		`INSERT OR IGNORE INTO delivered (outbound_id, status, error) VALUES (?, 'failed', ?)`,
+		outboundID, reason)
 	if err != nil {
-		return fmt.Errorf("mark outbound failed: %w", err)
+		return fmt.Errorf("mark failed: %w", err)
 	}
-	return err
+	return nil
 }
 
 // --- Container/runner side -------------------------------------------------
@@ -401,6 +468,9 @@ func (s *SessionDBs) EnqueueOutbound(channel, chatID, text string) (int64, error
 // GetMeta returns the value for a session meta key, or ("", false) if unset.
 // Stored in outbound.db, which the runner owns (multi-turn session id, etc.).
 func (s *SessionDBs) GetMeta(key string) (string, bool, error) {
+	if s.Outbound == nil {
+		return "", false, nil // no outbound.db yet (runner hasn't started)
+	}
 	var v string
 	err := s.Outbound.QueryRow(`SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {

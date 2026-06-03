@@ -69,14 +69,15 @@ func TestDrain_DeliversOriginChat(t *testing.T) {
 	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
 		t.Fatalf("session row: %v", err)
 	}
-	sess, err := db.OpenSession(dataDir, agID, key)
+	// The runner writes the reply: use the RUNNER opener (outbound read-write).
+	runner, err := db.OpenSessionDir(db.SessionDir(dataDir, agID, key))
 	if err != nil {
-		t.Fatalf("open session: %v", err)
+		t.Fatalf("open session (runner): %v", err)
 	}
-	if _, err := sess.EnqueueOutbound("telegram", "555", "echo: hi"); err != nil {
+	if _, err := runner.EnqueueOutbound("telegram", "555", "echo: hi"); err != nil {
 		t.Fatalf("enqueue outbound: %v", err)
 	}
-	sess.Close()
+	runner.Close()
 
 	if err := d.drain(context.Background()); err != nil {
 		t.Fatalf("drain: %v", err)
@@ -86,12 +87,27 @@ func TestDrain_DeliversOriginChat(t *testing.T) {
 		t.Fatalf("expected one delivered echo, got %+v", fake.sent)
 	}
 
-	// Row must be marked delivered (no longer pending).
-	sess, _ = db.OpenSession(dataDir, agID, key)
+	// Delivery is recorded in the host-owned ledger (inbound.db), NOT by
+	// mutating outbound.db. The outbound row stays 'pending' there - that file
+	// belongs to the runner and the host never writes it (brief §5.1).
+	sess, _ := db.OpenSession(dataDir, agID, key)
 	defer sess.Close()
-	pend, _ := sess.PendingOutbound()
-	if len(pend) != 0 {
-		t.Fatalf("expected no pending after delivery, got %d", len(pend))
+	delivered, err := sess.WasDelivered(1)
+	if err != nil {
+		t.Fatalf("WasDelivered: %v", err)
+	}
+	if !delivered {
+		t.Fatalf("expected outbound id 1 recorded as delivered in the ledger")
+	}
+
+	// Idempotency: a second drain must NOT re-send. This is the duplicate-
+	// delivery bug - the outbound row is still 'pending' in outbound.db (the
+	// runner could even have rewritten it), but the ledger suppresses a re-send.
+	if err := d.drain(context.Background()); err != nil {
+		t.Fatalf("second drain: %v", err)
+	}
+	if len(fake.sent) != 1 {
+		t.Fatalf("re-drain re-sent: expected still 1 sent, got %d", len(fake.sent))
 	}
 }
 
@@ -102,15 +118,16 @@ func TestDrain_DeniesNonOriginWithoutDestination(t *testing.T) {
 	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
 		t.Fatalf("session row: %v", err)
 	}
-	sess, err := db.OpenSession(dataDir, agID, key)
+	// Runner writes the reply (outbound read-write opener).
+	runner, err := db.OpenSessionDir(db.SessionDir(dataDir, agID, key))
 	if err != nil {
-		t.Fatalf("open session: %v", err)
+		t.Fatalf("open session (runner): %v", err)
 	}
 	// Reply targets a DIFFERENT chat with no agent_destinations row → denied.
-	if _, err := sess.EnqueueOutbound("telegram", "999", "leak"); err != nil {
+	if _, err := runner.EnqueueOutbound("telegram", "999", "leak"); err != nil {
 		t.Fatalf("enqueue outbound: %v", err)
 	}
-	sess.Close()
+	runner.Close()
 
 	if err := d.drain(context.Background()); err != nil {
 		t.Fatalf("drain: %v", err)

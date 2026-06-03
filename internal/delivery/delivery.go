@@ -87,6 +87,19 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 	originChannel, originChat := splitSessionKey(s.SessionKey)
 
 	for _, m := range pending {
+		// Dedup against the host-owned delivery ledger (inbound.db). The runner
+		// owns outbound.db and may rewrite it (resurrecting a row we already
+		// sent) any time, so 'pending' there is NOT a reliable "needs sending"
+		// signal across the mount - the ledger is. If we've recorded this id,
+		// skip it; this is what stops the same reply going out twice.
+		done, err := sess.WasDelivered(m.ID)
+		if err != nil {
+			return err
+		}
+		if done {
+			continue
+		}
+
 		ok, err := d.authorize(s.AgentGroupID, m.Channel, m.ChatID, originChannel, originChat)
 		if err != nil {
 			return err
@@ -94,22 +107,10 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 		if !ok {
 			reason := "delivery not authorized for " + m.Channel + ":" + m.ChatID
 			d.log.Warn("outbound denied", "session", s.SessionKey, "target", m.Channel+":"+m.ChatID)
-			if err := sess.MarkOutboundFailed(m.ID, reason); err != nil {
+			if err := sess.MarkFailed(m.ID, reason); err != nil {
 				return err
 			}
 			continue
-		}
-
-		// Atomically claim the row (pending -> sending) before sending. If another
-		// drain (the poll can re-fire before this send + mark completes) already
-		// claimed it, skip - this is what stops the same reply being delivered
-		// twice.
-		claimed, err := sess.ClaimOutbound(m.ID)
-		if err != nil {
-			return err
-		}
-		if !claimed {
-			continue // someone else is handling this row
 		}
 
 		// The reply is ready: the runner is done, so stop the typing indicator
@@ -120,13 +121,15 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 
 		out := channels.OutboundMsg{Channel: m.Channel, ChatID: m.ChatID, Text: m.Text}
 		if err := d.dispatch(ctx, out); err != nil {
-			d.log.Error("dispatch failed", "session", s.SessionKey, "err", err)
-			if mErr := sess.MarkOutboundFailed(m.ID, err.Error()); mErr != nil {
-				return mErr
-			}
+			// Transient send failure: do NOT record it as terminally failed, so
+			// the next drain retries. Dedup still protects us because the ledger
+			// is only written on success below.
+			d.log.Error("dispatch failed", "session", s.SessionKey, "msg_id", m.ID, "err", err)
 			continue
 		}
-		if err := sess.MarkOutboundDelivered(m.ID); err != nil {
+		// Record delivery BEFORE logging success. The host owns inbound.db, so
+		// this write is durable and can't be clobbered by the runner.
+		if err := sess.MarkDelivered(m.ID); err != nil {
 			return err
 		}
 		d.log.Info("delivered", "session", s.SessionKey, "target", m.Channel+":"+m.ChatID, "msg_id", m.ID)

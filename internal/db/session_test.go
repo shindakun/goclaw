@@ -6,21 +6,25 @@ import (
 	"testing"
 )
 
-func TestOpenSession_CreatesDirAndSchema(t *testing.T) {
+func TestOpenSession_HostCreatesInboundNotOutbound(t *testing.T) {
 	base := t.TempDir()
+	// Host opener: owns inbound.db, only reads outbound.db. A fresh session
+	// (no runner yet) has no outbound.db, and the host must NOT create it.
 	s, err := OpenSession(base, 1, "telegram:555")
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
 	defer s.Close()
 
-	// The directory and both DB files should exist.
 	dir := SessionDir(base, 1, "telegram:555")
 	if _, err := os.Stat(filepath.Join(dir, "inbound.db")); err != nil {
 		t.Fatalf("inbound.db missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "outbound.db")); err != nil {
-		t.Fatalf("outbound.db missing: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "outbound.db")); !os.IsNotExist(err) {
+		t.Fatalf("host must not create outbound.db; stat err = %v", err)
+	}
+	if s.Outbound != nil {
+		t.Fatal("expected nil Outbound handle when outbound.db does not exist")
 	}
 
 	// The messages table must exist in inbound.
@@ -29,6 +33,59 @@ func TestOpenSession_CreatesDirAndSchema(t *testing.T) {
 		`SELECT name FROM sqlite_master WHERE type='table' AND name='messages'`,
 	).Scan(&name); err != nil {
 		t.Fatalf("inbound messages table missing: %v", err)
+	}
+
+	// Outbound reads degrade gracefully to empty, not panic.
+	pend, err := s.PendingOutbound()
+	if err != nil {
+		t.Fatalf("PendingOutbound on fresh host session: %v", err)
+	}
+	if len(pend) != 0 {
+		t.Fatalf("expected no pending outbound, got %d", len(pend))
+	}
+}
+
+func TestOpenSessionDir_RunnerCreatesBoth(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sess")
+	// Runner opener: owns outbound.db, so it creates and writes it.
+	s, err := OpenSessionDir(dir)
+	if err != nil {
+		t.Fatalf("open session dir: %v", err)
+	}
+	defer s.Close()
+	if _, err := os.Stat(filepath.Join(dir, "outbound.db")); err != nil {
+		t.Fatalf("runner should create outbound.db: %v", err)
+	}
+	if s.Outbound == nil {
+		t.Fatal("runner Outbound handle should be non-nil")
+	}
+}
+
+// TestHostCannotWriteOutbound is the enforcement guarantee for gap #1: the host
+// handle opens outbound.db read-only, so a write fails at the driver - the
+// single-writer-per-file invariant is enforced, not just promised (brief §5.1).
+func TestHostCannotWriteOutbound(t *testing.T) {
+	base := t.TempDir()
+	// First let the runner create outbound.db so the host can open it read-only.
+	dir := SessionDir(base, 1, "telegram:555")
+	runner, err := OpenSessionDir(dir)
+	if err != nil {
+		t.Fatalf("runner open: %v", err)
+	}
+	runner.Close()
+
+	host, err := OpenSession(base, 1, "telegram:555")
+	if err != nil {
+		t.Fatalf("host open: %v", err)
+	}
+	defer host.Close()
+	if host.Outbound == nil {
+		t.Fatal("expected host to open existing outbound.db read-only")
+	}
+	// Any write to outbound.db through the host handle must be rejected.
+	if _, err := host.Outbound.Exec(
+		`INSERT INTO messages (channel, chat_id, text) VALUES ('x','y','z')`); err == nil {
+		t.Fatal("expected read-only error writing outbound.db through the host handle")
 	}
 }
 
