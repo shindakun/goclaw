@@ -2,9 +2,12 @@
 type: concept
 state: active
 date: 2026-06-01
+domain: [example]
 tags: [example]
 trust: trusted
 confidence: high
+entities: []
+unresolved_reference:
 ---
 
 Example concept page — an idea, framework, or synthesis. The preamble states the

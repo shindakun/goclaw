@@ -20,6 +20,8 @@ wiki/
   concepts/        # ideas, frameworks, synthesis (+ one example note)
   projects/        # ongoing work
   decisions/       # decision records, the "why" (+ one example note)
+  resources/       # links, documents, references (+ one example note)
+  credentials/     # where secrets live — never the secret (+ one example note)
   daily/           # day notes (YYYY-MM-DD.md)
   tasks/           # open / closed tasks
 ```

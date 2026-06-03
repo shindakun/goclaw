@@ -2,9 +2,12 @@
 type: decision
 state: active
 date: 2026-06-01
+domain: [example]
 tags: [example]
 trust: trusted
 confidence: stated
+entities: []
+unresolved_reference:
 ---
 
 Example decision record. Preamble: what was decided, in one or two sentences.

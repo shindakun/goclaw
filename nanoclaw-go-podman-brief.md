@@ -373,6 +373,8 @@ The structure separates content cleanly by **who owns it**, so the agent always 
   - `concepts/` — ideas, frameworks, and synthesis pages.
   - `projects/` — ongoing work.
   - `decisions/` — short decision records (the *why* behind a choice, ADR-style).
+  - `resources/` — links, documents, references worth keeping (one per source).
+  - `credentials/` — where a secret lives and how to find it; never the secret itself.
   - `daily/` — day notes.
   - `tasks/` — open/closed task tracking.
 - the **schema** — the group's `CLAUDE.md`: it is the *behavioral contract*, the programming interface for the agent. Folder map, naming conventions, frontmatter schemas, create-vs-edit rules, link rules, reconcile procedure, lint criteria, and the note-writing discipline below. Read on every session start; it's what keeps the agent a disciplined librarian rather than drifting into generic-chatbot mode.
@@ -389,9 +391,11 @@ A few small **always-loaded context files** at the vault root make the agent che
 The highest-leverage design choice: write notes for *future-agent retrieval*, not human browsing. A note pulled by search later may arrive with no surrounding context, so each note must carry its own. Concretely, every agent-written note should have:
 
 - a 2–3 sentence summary preamble at the top (a "for future retrieval" header), so the agent can judge relevance at a glance before reading the whole note;
-- machine-readable frontmatter (`type`, `date`, `tags`, `state`, and type-specific fields) — this also lets Obsidian's Dataview query the vault;
+- machine-readable frontmatter (`type`, `date`, `state`, and type-specific fields) — this also lets Obsidian's Dataview query the vault;
+- **two tag axes**: a coarse `domain` (the life area — home / health / work) and fine `tags` (topics within it); filtering by domain narrows fast, tags pinpoint;
+- a structured `entities` list (`[{name, kind, role, org}]`) alongside the prose, so the agent can do "find every note mentioning a plumber" lookups that `[[wikilinks]]` alone don't support;
 - recency markers on volatile claims — e.g. "raised $24M (as of 2026-04, <source-url>)" — so the agent knows what may be stale;
-- source provenance preserved inline for every external claim (URL plus, where it matters, the quoted line);
+- source provenance preserved inline for every external claim (URL plus, where it matters, the quoted line); an `unresolved_reference` field records a cross-link the writer couldn't resolve at write time, for the reconcile pass to close;
 - mandatory `[[wikilinks]]` to every person / project / idea / decision mentioned, so the graph stays traversable;
 - a confidence tag where it matters (`stated | high | medium | speculation`).
 
@@ -473,15 +477,17 @@ You are the librarian of this vault. You are NOT a chatbot. Every turn either
 reads from or writes to this vault. Obey this contract; do not improvise structure.
 
 ## Layout
-- `raw/`            immutable sources — READ ONLY, never edit.
-- `wiki/entities/`  people, companies, tools — one page each.
-- `wiki/concepts/`  ideas, frameworks, synthesis.
-- `wiki/projects/`  ongoing work.
-- `wiki/decisions/` decision records (the *why* of a choice).
-- `wiki/daily/`     day notes (`YYYY-MM-DD.md`).
-- `wiki/tasks/`     open/closed tasks.
-- `index.md`        page catalog — READ FIRST, update on every write.
-- `log.md`          append-only activity log.
+- `raw/`             immutable sources — READ ONLY, never edit.
+- `wiki/entities/`   people, companies, tools — one page each.
+- `wiki/concepts/`   ideas, frameworks, synthesis.
+- `wiki/projects/`   ongoing work.
+- `wiki/decisions/`  decision records (the *why* of a choice).
+- `wiki/resources/`  links, documents, references (one per source).
+- `wiki/credentials/` where a secret lives — never the secret itself.
+- `wiki/daily/`      day notes (`YYYY-MM-DD.md`).
+- `wiki/tasks/`      open/closed tasks.
+- `index.md`         page catalog — READ FIRST, update on every write.
+- `log.md`           append-only activity log.
 - `CRITICAL_FACTS.md`  tiny always-true facts — load every turn.
 
 ## Context budget (climb only as needed)
@@ -492,12 +498,15 @@ reads from or writes to this vault. Obey this contract; do not improvise structu
 
 ## Frontmatter (required on every wiki note)
 ---
-type: entity | concept | project | decision | daily | task
+type: entity | concept | project | decision | resource | credential | daily | task
 state: draft | active | stale | contradicted | archived
 date: YYYY-MM-DD
-tags: []
+domain: []                        # COARSE life area(s): home | health | work | …
+tags: []                          # FINE topic tags (≤3) within the domain(s)
 trust: trusted | untrusted        # channel/external input starts untrusted
 confidence: stated | high | medium | speculation
+entities: []                      # [{name, kind, role, org}] — structured lookup
+unresolved_reference:             # a reference noted but not yet resolved
 ---
 
 ## Note shape

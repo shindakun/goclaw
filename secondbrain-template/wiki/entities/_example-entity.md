@@ -2,9 +2,12 @@
 type: entity
 state: active
 date: 2026-06-01
+domain: [example]
 tags: [example]
 trust: trusted
 confidence: stated
+entities: [{name: Example Person, kind: person, role: example, org: Example Co}]
+unresolved_reference:
 ---
 
 Example entity page. A 2–3 sentence preamble goes here so the agent can judge
