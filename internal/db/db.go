@@ -102,6 +102,15 @@ func AgentGroupDir(baseDir string, agentGroupID int64) string {
 	return filepath.Join(baseDir, "sessions", fmt.Sprintf("%d", agentGroupID))
 }
 
+// ClaudeHomeDir returns the host directory that persists a group's Claude CLI
+// home (~/.claude) across container restarts: {baseDir}/claude-home/{id}/. The
+// CLI stores conversation history there, so persisting it is what makes
+// multi-turn --resume survive a container being recreated. Kept OUTSIDE the
+// sessions tree so the runner's session scan never visits it.
+func ClaudeHomeDir(baseDir string, agentGroupID int64) string {
+	return filepath.Join(baseDir, "claude-home", fmt.Sprintf("%d", agentGroupID))
+}
+
 // SessionDir returns the on-disk directory for a session's DB pair:
 // {baseDir}/sessions/{agentGroupID}/{sessionKey}/. The session
 // key derives from external input (a chat id), so it is sanitized to a safe

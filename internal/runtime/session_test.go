@@ -298,7 +298,9 @@ func TestEnsureRunner_AppliesAllowlistedExtraMount(t *testing.T) {
 	}
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, al)
-	err = m.EnsureRunner(context.Background(), 1, "/data/sessions/1",
+	// Real temp group dir so EnsureRunner can create the sibling claude-home.
+	groupDir := filepath.Join(t.TempDir(), "sessions", "1")
+	err = m.EnsureRunner(context.Background(), 1, groupDir,
 		mounts.Request{HostPath: allowed, ContainerPath: "/vault", ReadWrite: true},
 		mounts.Request{HostPath: denied, ContainerPath: "/secret", ReadWrite: true},
 	)

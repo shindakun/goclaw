@@ -186,9 +186,18 @@ func (r *runner) handle(ctx context.Context, sess *db.SessionDBs, tag, text stri
 
 // ask runs Claude on one prompt, resuming the stored session id for continuity,
 // persists the (possibly new) session id, and auto-compacts when the context
-// grows large. Returns the final reply text.
+// grows large. Returns the final reply text. If the stored session id can't be
+// resumed (its conversation no longer exists in this container — e.g. after a
+// container restart), the id is dropped and the turn retried fresh.
 func (r *runner) ask(ctx context.Context, sess *db.SessionDBs, tag, prompt string) (string, error) {
-	result, sessionID, inputTokens, err := r.query(ctx, sess, prompt)
+	resumeID, _, _ := sess.GetMeta(metaSessionID)
+
+	result, sessionID, inputTokens, err := r.query(ctx, resumeID, prompt)
+	if errors.Is(err, errStaleResume) {
+		r.log.Info("stale session id — starting fresh", "session", tag)
+		_ = sess.DeleteMeta(metaSessionID)
+		result, sessionID, inputTokens, err = r.query(ctx, "", prompt)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -217,7 +226,12 @@ func (r *runner) compact(ctx context.Context, sess *db.SessionDBs, tag string) e
 	if !ok || id == "" {
 		return nil // nothing to compact yet
 	}
-	_, newID, _, err := r.query(ctx, sess, "/compact")
+	_, newID, _, err := r.query(ctx, id, "/compact")
+	if errors.Is(err, errStaleResume) {
+		// The conversation is gone; nothing to compact. Forget it.
+		_ = sess.DeleteMeta(metaSessionID)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -228,10 +242,15 @@ func (r *runner) compact(ctx context.Context, sess *db.SessionDBs, tag string) e
 	return nil
 }
 
-// query runs one Claude turn (resuming the stored session id if present) and
-// returns the final result text, the resulting session id, and the turn's input
-// token count.
-func (r *runner) query(ctx context.Context, sess *db.SessionDBs, prompt string) (result, sessionID string, inputTokens int, err error) {
+// errStaleResume indicates the stored session id couldn't be resumed (its
+// conversation no longer exists in this container — e.g. after a container
+// restart). The caller drops the id and retries fresh.
+var errStaleResume = errors.New("stale resume session id")
+
+// query runs one Claude turn. resumeID continues an existing conversation when
+// non-empty; "" starts fresh. Returns the result text, the resulting session
+// id, and the turn's input token count. A failed resume returns errStaleResume.
+func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, sessionID string, inputTokens int, err error) {
 	opts := []claude.Option{}
 	if r.model != "" {
 		opts = append(opts, claude.WithModel(r.model))
@@ -241,14 +260,17 @@ func (r *runner) query(ctx context.Context, sess *db.SessionDBs, prompt string) 
 			opts = append(opts, claude.WithSystemPromptFile(r.systemPromptFile))
 		}
 	}
-	if id, ok, _ := sess.GetMeta(metaSessionID); ok && id != "" {
-		opts = append(opts, claude.WithResume(id))
+	if resumeID != "" {
+		opts = append(opts, claude.WithResume(resumeID))
 	}
 
 	for msg, qErr := range claude.Query(ctx, prompt, opts...) {
 		if qErr != nil {
-			// The CLI subprocess failed (e.g. couldn't start, crashed). Surface
-			// its stderr, which usually names the real cause.
+			// The CLI subprocess failed. A failed --resume often surfaces here as
+			// "connection closed" (the CLI exits before the control handshake).
+			if resumeID != "" {
+				return "", "", 0, errStaleResume
+			}
 			var pe *claude.ProcessError
 			if errors.As(qErr, &pe) && strings.TrimSpace(pe.Stderr) != "" {
 				return "", "", 0, fmt.Errorf("claude CLI: %s", firstLine(pe.Stderr))
@@ -257,6 +279,10 @@ func (r *runner) query(ctx context.Context, sess *db.SessionDBs, prompt string) 
 		}
 		if res, ok := msg.(*claude.ResultMessage); ok {
 			if res.IsError {
+				// "No conversation found with session ID …" from a stale resume.
+				if resumeID != "" && isNoConversation(res) {
+					return "", "", 0, errStaleResume
+				}
 				return "", "", 0, resultError(res)
 			}
 			result = res.Result
@@ -268,6 +294,13 @@ func (r *runner) query(ctx context.Context, sess *db.SessionDBs, prompt string) 
 		return "", sessionID, inputTokens, fmt.Errorf("claude: no result produced")
 	}
 	return result, sessionID, inputTokens, nil
+}
+
+// isNoConversation reports whether an error result is the CLI's "No conversation
+// found with session ID …" — i.e. a stale --resume.
+func isNoConversation(res *claude.ResultMessage) bool {
+	hay := strings.ToLower(strings.Join(res.Errors, " ") + " " + res.Result + " " + string(res.Raw))
+	return strings.Contains(hay, "no conversation found")
 }
 
 // resultError builds the most informative error from an error ResultMessage.

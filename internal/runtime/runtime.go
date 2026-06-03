@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/shindakun/goclaw/internal/mounts"
@@ -90,8 +91,18 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir
 		Runtime:      m.runtime,
 		AgentGroupID: agentGroupID,
 		GroupDir:     groupDir,
+		ClaudeHome:   claudeHomeFor(groupDir),
 		ExtraMounts:  validated,
 	})
+}
+
+// claudeHomeFor derives the persistent claude-home dir for a group from its
+// sessions dir. groupDir is <data>/sessions/<id>; the home is
+// <data>/claude-home/<id> — a sibling tree outside the sessions scan.
+func claudeHomeFor(groupDir string) string {
+	id := filepath.Base(groupDir)                   // <id>
+	dataDir := filepath.Dir(filepath.Dir(groupDir)) // <data>
+	return filepath.Join(dataDir, "claude-home", id)
 }
 
 // validateExtra validates each requested mount against the allowlist, returning

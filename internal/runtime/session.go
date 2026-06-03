@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -23,8 +24,13 @@ type GroupRunner struct {
 	Runtime      Runtime // OCI runtime (crun default)
 	AgentGroupID int64
 	GroupDir     string         // host path to the dir holding this group's session subdirs
+	ClaudeHome   string         // OPTIONAL host dir persisted as the container's ~/.claude
 	ExtraMounts  []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
+
+// claudeHomePath is where the container's claude CLI keeps its config + session
+// history. Matches HOME=/home/node in container/claude.Containerfile.
+const claudeHomePath = "/home/node/.claude"
 
 // containerNamePrefix is the common prefix of every runner container's name.
 const containerNamePrefix = "goclaw-"
@@ -79,16 +85,36 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		return fmt.Errorf("runtime: resolve group dir %q: %w", gr.GroupDir, err)
 	}
 
+	groupMounts := []mounts.Mount{{
+		HostPath:      hostDir,
+		ContainerPath: sessionsMountPath,
+		ReadWrite:     true, // runner reads inbound, writes outbound
+	}}
+
+	// Persist the container's ~/.claude so the CLI's conversation history (and
+	// thus multi-turn --resume) survives the container being recreated. The host
+	// dir must exist and be writable by the mapped uid; create it up front.
+	if gr.ClaudeHome != "" {
+		home, err := filepath.Abs(gr.ClaudeHome)
+		if err != nil {
+			return fmt.Errorf("runtime: resolve claude home %q: %w", gr.ClaudeHome, err)
+		}
+		if err := os.MkdirAll(home, 0o777); err != nil {
+			return fmt.Errorf("runtime: create claude home %q: %w", home, err)
+		}
+		groupMounts = append(groupMounts, mounts.Mount{
+			HostPath:      home,
+			ContainerPath: claudeHomePath,
+			ReadWrite:     true,
+		})
+	}
+
 	spec := Spec{
 		Name:    name,
 		Image:   gr.Image,
 		Runtime: gr.Runtime,
-		Mounts: append([]mounts.Mount{{
-			HostPath:      hostDir,
-			ContainerPath: sessionsMountPath,
-			ReadWrite:     true, // runner reads inbound, writes outbound
-		}}, gr.ExtraMounts...),
-		Env: m.env,
+		Mounts:  append(groupMounts, gr.ExtraMounts...),
+		Env:     m.env,
 	}
 	id, err := m.Run(ctx, spec)
 	if err != nil {
