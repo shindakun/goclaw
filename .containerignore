@@ -7,3 +7,8 @@ data/
 .env
 secondbrain-template/
 *.md
+# ...but the image bakes in the agent base prompt and skills, which ARE markdown.
+# Re-include them (negations after the *.md rule above) so the Containerfile's
+# COPY of container/CLAUDE.md and container/skills can see them in the context.
+!container/CLAUDE.md
+!container/skills/**

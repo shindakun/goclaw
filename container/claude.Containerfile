@@ -82,14 +82,28 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.160 \
 
 COPY --from=build /out/claude-runner /usr/local/bin/claude-runner
 
+# Shared agent assets, baked into the image (the host never mounts these):
+#   /app/CLAUDE.md  - the generic agent-first base prompt, composed into each
+#                     group's CLAUDE.md at spawn.
+#   /app/skills/    - skills shipped with goclaw (e.g. coding). The host symlinks
+#                     ~/.claude/skills/<name> -> /app/skills/<name> per group so
+#                     the CLI discovers them at the standard location.
+# Read-only at runtime (the container runs as a non-root uid that doesn't own them).
+COPY container/CLAUDE.md /app/CLAUDE.md
+COPY container/skills /app/skills
+
 # /work is the agent's scratch working directory: clones, temp files, and any
 # command output land here, NOT in the mounted /vault (which would pollute it).
 # Ephemeral with the container; owned by the runtime uid so the agent can write.
 RUN mkdir -p /work && chown -R 1000:1000 /work
 
-# Run as a non-root uid that matches the host's --user 1000:1000 (brief §9).
-# node:22-slim ships a "node" user at uid 1000; reuse it and give it a HOME the
-# claude CLI can write its config/cache into.
+# Run as a non-root uid that matches the host's --user 1000:1000 (brief §9). The
+# node:22-slim base names uid 1000 "node" with home /home/node, but that name is
+# incidental - it's the base image's user, nothing Node-related, and the runner is
+# Go. Give uid 1000 an explicit, neutral HOME so the path is self-documenting and
+# not tied to the base image's user naming. The claude CLI writes its config,
+# cache, and session history under $HOME/.claude, which the host persists per group.
+RUN mkdir -p /home/agent && chown -R 1000:1000 /home/agent
 USER 1000:1000
-ENV HOME=/home/node
+ENV HOME=/home/agent
 ENTRYPOINT ["/usr/local/bin/claude-runner", "-dir", "/sessions"]

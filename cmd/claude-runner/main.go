@@ -30,14 +30,18 @@ import (
 	"github.com/shindakun/goclaw/internal/db"
 )
 
-// vaultManualPath is where the knowledge vault's operating manual lands when the
-// host mounts the vault at /vault (brief §11). When present, the runner uses it
-// as the system prompt so the agent behaves as the vault librarian.
 const (
 	// vaultDir is the in-container mount point of the knowledge vault (brief §11).
 	vaultDir = "/vault"
-	// vaultManualPath is the vault's operating manual, used as the system prompt.
-	vaultManualPath = vaultDir + "/CLAUDE.md"
+	// composedPromptPath is the agent's system prompt, composed by the host into
+	// claude-home before launch (see internal/runtime/compose.go): the generic
+	// agent-first base plus skill symlinks. It exists whether or not a vault is
+	// mounted, so the agent always has an identity - the vault is optional.
+	composedPromptPath = "/home/agent/.claude/CLAUDE.md"
+	// vaultMarkerPath detects a mounted vault. The librarian is a vault-provided
+	// skill the host symlinks in when this is present; the runner only needs to
+	// know a vault exists to add the absolute-path note below.
+	vaultMarkerPath = vaultDir + "/CLAUDE.md"
 	// workDir is the agent's scratch working directory (clones, temp files), kept
 	// separate from /vault so command output never pollutes the vault.
 	workDir = "/work"
@@ -53,16 +57,21 @@ func main() {
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	// Detect a mounted vault: default the system prompt to its CLAUDE.md so the
-	// agent runs as the vault librarian without any extra wiring (brief §11).
+	// Detect a mounted vault (the librarian skill is symlinked in by the host when
+	// one is present; the runner only needs this to add the vault-path note).
 	vaultMounted := false
-	if _, err := os.Stat(vaultManualPath); err == nil {
+	if _, err := os.Stat(vaultMarkerPath); err == nil {
 		vaultMounted = true
 	}
+	// Default the system prompt to the host-composed CLAUDE.md (base + skills),
+	// which exists whether or not a vault is mounted. An explicit -system-prompt-file
+	// still wins (e.g. running the runner standalone in dev).
 	promptFile := *systemPromptFile
-	if promptFile == "" && vaultMounted {
-		promptFile = vaultManualPath
-		log.Info("using vault system prompt", "path", promptFile)
+	if promptFile == "" {
+		if _, err := os.Stat(composedPromptPath); err == nil {
+			promptFile = composedPromptPath
+			log.Info("using composed system prompt", "path", promptFile)
+		}
 	}
 
 	r := &runner{

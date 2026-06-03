@@ -30,8 +30,9 @@ type GroupRunner struct {
 }
 
 // claudeHomePath is where the container's claude CLI keeps its config + session
-// history. Matches HOME=/home/node in container/claude.Containerfile.
-const claudeHomePath = "/home/node/.claude"
+// history. Matches HOME=/home/agent in container/claude.Containerfile (a neutral
+// home for uid 1000, not the base image's incidental "node" user).
+const claudeHomePath = "/home/agent/.claude"
 
 // vaultMountPath is where the knowledge vault is mounted in the container; the
 // runner reads vaultMountPath/CLAUDE.md as its system prompt (brief §11).
@@ -115,6 +116,13 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		}
 		if err := os.MkdirAll(home, 0o777); err != nil {
 			return fmt.Errorf("runtime: create claude home %q: %w", home, err)
+		}
+		// Compose the agent's system prompt + skill symlinks into claude-home,
+		// fresh each launch: the baked-in base (/app/CLAUDE.md), the coding skill
+		// (always), and the librarian skill when a vault is mounted. The runner
+		// reads the composed CLAUDE.md as its system prompt (see compose.go).
+		if err := composeGroupPrompt(home, gr.VaultDir != ""); err != nil {
+			return err
 		}
 		groupMounts = append(groupMounts, mounts.Mount{
 			HostPath:      home,
