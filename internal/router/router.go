@@ -315,10 +315,7 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 	// Show a "typing…" indicator while the runner works; the delivery loop stops
 	// it once the reply is sent (best-effort; no-op if the channel can't type).
 	if r.typer != nil {
-		r.log.Info("typing start", "channel", msg.Channel, "chat", msg.ChatID)
 		r.typer.Start(ctx, msg.Channel, msg.ChatID)
-	} else {
-		r.log.Warn("no typer configured — no typing indicator")
 	}
 
 	// Make sure a runner is up to consume it. If no ensurer is configured, the
