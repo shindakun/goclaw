@@ -22,11 +22,12 @@ type Config struct {
 	// PodmanBin is the podman binary name/path.
 	PodmanBin string
 	// LaunchRunner enables host-managed runner containers: on enqueue the host
-	// runs RunnerImage in Podman for the session. When false, the runner is
-	// expected to be started out of band (e.g. cmd/stub-runner by hand).
+	// runs RunnerImage in Podman for the agent group. When false, a runner must
+	// be started out of band (cmd/claude-runner, or cmd/stub-runner for testing).
 	LaunchRunner bool
 	// RunnerImage is the container image launched per agent group when
-	// LaunchRunner is on (build it from one of the container/*.Containerfile).
+	// LaunchRunner is on. Defaults to the real Claude runner (goclaw-claude); the
+	// echo stub (goclaw-runner) is for testing the boundary only.
 	RunnerImage string
 	// AnthropicAPIKey, if set, is passed into the runner container as
 	// ANTHROPIC_API_KEY so the Claude runner can authenticate. Use a standard
@@ -90,7 +91,7 @@ func Load() (*Config, error) {
 		DefaultAgentGroupName:   getenv("GOCLAW_DEFAULT_AGENT_GROUP", "default"),
 		DefaultAgentGroupFolder: getenv("GOCLAW_DEFAULT_AGENT_GROUP_FOLDER", "default"),
 		LaunchRunner:            os.Getenv("GOCLAW_LAUNCH_RUNNER") == "1",
-		RunnerImage:             getenv("GOCLAW_RUNNER_IMAGE", "goclaw-runner:latest"),
+		RunnerImage:             getenv("GOCLAW_RUNNER_IMAGE", "goclaw-claude:latest"),
 		AnthropicAPIKey:         os.Getenv("GOCLAW_ANTHROPIC_API_KEY"),
 		ClaudeCodeOAuthToken:    os.Getenv("GOCLAW_CLAUDE_CODE_OAUTH_TOKEN"),
 		VaultDir:                expandHome(os.Getenv("GOCLAW_VAULT_DIR"), home),

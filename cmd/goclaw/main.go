@@ -114,7 +114,7 @@ func run(log *slog.Logger) error {
 
 	// Container runner: when enabled, the host launches a Podman runner per
 	// agent group on enqueue and reaps idle ones in the sweep. When disabled
-	// (default), start a runner out of band (cmd/stub-runner). The interface
+	// (default), start a runner out of band (cmd/claude-runner). The interface
 	// values stay nil when disabled (avoid the typed-nil-interface trap) so the
 	// router/sweep nil checks work.
 	var (
@@ -161,7 +161,7 @@ func run(log *slog.Logger) error {
 				"GOCLAW_ANTHROPIC_API_KEY (long-lived) instead")
 		}
 	} else {
-		log.Info("runner launch disabled - start a runner out of band (cmd/stub-runner)")
+		log.Info("runner launch disabled - start a runner out of band (cmd/claude-runner)")
 	}
 
 	// Wire the host loops. errgroup ties their lifetimes to ctx: if any returns

@@ -54,24 +54,27 @@ Config via environment:
 
 ## Running the loop end to end
 
-The full loop round-trips through a Podman container. The runner image packages
-`cmd/stub-runner` (an echo stand-in - no Claude yet); the host launches one
-container per session on enqueue.
+The full loop round-trips through a Podman container, one per agent group,
+launched by the host on enqueue. For real Claude replies, jump to
+[Real Claude runner](#real-claude-runner). The steps below use the **echo stub**
+(`cmd/stub-runner`, no Claude/API key) to verify the plumbing first.
 
-**1. Build the runner image** (from the repo root):
+**1. Build the echo-stub image** (from the repo root):
 
 ```sh
 podman build -f container/runner.Containerfile -t goclaw-runner:latest .
 ```
 
-**2. Run the host with runner launch enabled:**
+**2. Run the host with runner launch enabled**, pointed at the stub image (the
+default is the Claude runner):
 
 ```sh
 # .env
-TELEGRAM_BOT_TOKEN=...          # from @BotFather
-GOCLAW_OWNER_TELEGRAM_ID=...    # your numeric Telegram id
-GOCLAW_AUTO_WIRE_OWNER=1        # first-run convenience
-GOCLAW_LAUNCH_RUNNER=1          # host launches the runner container
+TELEGRAM_BOT_TOKEN=...                    # from @BotFather
+GOCLAW_OWNER_TELEGRAM_ID=...              # your numeric Telegram id
+GOCLAW_AUTO_WIRE_OWNER=1                  # first-run convenience
+GOCLAW_LAUNCH_RUNNER=1                    # host launches the runner container
+GOCLAW_RUNNER_IMAGE=goclaw-runner:latest  # the echo stub (omit for real Claude)
 
 go run ./cmd/goclaw
 ```

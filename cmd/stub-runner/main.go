@@ -1,16 +1,17 @@
-// Command stub-runner is a minimal stand-in for the in-container agent-runner.
-// It does NOT run Claude - it just proves the SQLite boundary end-to-end: for
-// each session under its sessions directory, poll inbound.db for pending
-// messages, mark them consumed, and write an echo reply into outbound.db for the
-// host's delivery loop to pick up (brief §3.1, Phase 0).
+// Command stub-runner is a DEV/CI tool: a minimal echo runner that exercises the
+// SQLite boundary end-to-end without Node, the claude CLI, or an API key. It does
+// NOT run Claude. For each session under its sessions directory it reads pending
+// inbound messages, writes an echo reply to outbound.db, and advances the
+// processed high-water mark in outbound.db (it never writes inbound.db, matching
+// the real runner's single-writer protocol). The production runner is
+// cmd/claude-runner; this exists only to smoke-test the plumbing (brief §3.1).
 //
 // One runner serves a whole agent group: -dir points at the group's sessions
 // directory (the parent of the per-session subdirs, each holding inbound.db +
-// outbound.db). Inside a real container that directory is the /sessions mount.
+// outbound.db).
 //
 // Usage:
 //
-//	stub-runner                                  # defaults to -dir /sessions (in-container)
 //	stub-runner -dir data/sessions/1             # serve agent group 1 locally
 //	stub-runner -dir <dir> -once                 # process current backlog and exit
 package main
