@@ -1,5 +1,5 @@
 // Package telegram implements the ChannelAdapter for Telegram using long-poll
-// mode — no inbound port or public URL needed, which fits a self-hosted box
+// mode - no inbound port or public URL needed, which fits a self-hosted box
 // behind NAT (brief §7.5). Telegram is the v0 channel; more channels drop in
 // behind the same interface later (brief §7.4).
 package telegram
@@ -26,7 +26,7 @@ type Adapter struct {
 	limiter *rate.Limiter // outbound rate limit (Telegram ~30 msg/s, brief §7.3)
 }
 
-// New constructs a Telegram adapter from a bot token (load from env/vault —
+// New constructs a Telegram adapter from a bot token (load from env/vault -
 // never mount it into the agent container, brief §7.6).
 func New(token string) (*Adapter, error) {
 	bot, err := tgbotapi.NewBotAPI(token)
@@ -115,7 +115,7 @@ func (a *Adapter) SendAction(ctx context.Context, chatID, kind string) error {
 	}
 	action := telegramAction(kind)
 	if action == "" {
-		return nil // unknown kind — no-op rather than error
+		return nil // unknown kind - no-op rather than error
 	}
 	if _, err := a.bot.Request(tgbotapi.NewChatAction(id, action)); err != nil {
 		return fmt.Errorf("telegram: chat action: %w", err)

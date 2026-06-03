@@ -93,7 +93,7 @@ func run(log *slog.Logger) error {
 		}
 		log.Info("registered channel", "channel", tg.Name())
 	} else {
-		log.Warn("TELEGRAM_BOT_TOKEN unset — no channels registered")
+		log.Warn("TELEGRAM_BOT_TOKEN unset - no channels registered")
 	}
 
 	// Start adapters and fan inbound messages in.
@@ -134,14 +134,14 @@ func run(log *slog.Logger) error {
 			"mount_allowlist", cfg.MountAllowlistPath,
 			"claude_auth", claudeAuthKind(cfg))
 		// A Claude Code OAuth token is short-lived (~12h) and the container can't
-		// refresh it — it WILL eventually 401. Steer toward a long-lived API key.
+		// refresh it - it WILL eventually 401. Steer toward a long-lived API key.
 		if cfg.ClaudeCodeOAuthToken != "" && cfg.AnthropicAPIKey == "" {
-			log.Warn("using a Claude Code OAuth token — it expires in ~12h and the " +
+			log.Warn("using a Claude Code OAuth token - it expires in ~12h and the " +
 				"container cannot refresh it; on 401 re-extract it, or set " +
 				"GOCLAW_ANTHROPIC_API_KEY (long-lived) instead")
 		}
 	} else {
-		log.Info("runner launch disabled — start a runner out of band (cmd/stub-runner)")
+		log.Info("runner launch disabled - start a runner out of band (cmd/stub-runner)")
 	}
 
 	// Wire the host loops. errgroup ties their lifetimes to ctx: if any returns
@@ -161,7 +161,7 @@ func run(log *slog.Logger) error {
 	err = g.Wait()
 
 	// On shutdown, stop the runner containers we launched so they don't outlive
-	// the host. Use a fresh context — the root ctx is already cancelled.
+	// the host. Use a fresh context - the root ctx is already cancelled.
 	if runners != nil {
 		stopRunners(runners, log)
 	}

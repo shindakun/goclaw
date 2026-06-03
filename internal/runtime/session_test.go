@@ -20,7 +20,7 @@ func jsonStr(s string) string {
 
 // withFakePodman swaps execCommand for a fake that records argv and replays
 // scripted `ps` output via the test binary re-exec trick. The `ps` output flips
-// from psBefore to psAfter once a `run` has been seen — modeling a container
+// from psBefore to psAfter once a `run` has been seen - modeling a container
 // that is absent before launch and running after (so the post-launch health
 // check passes).
 func withFakePodman(t *testing.T, psBefore, psAfter string, record *[]string) {
@@ -295,7 +295,7 @@ func podmanSubcmd(call string) string {
 }
 
 // didLaunchOrRemove reports whether any call launched (run) or removed (rm) a
-// container — i.e. a replacement happened.
+// container - i.e. a replacement happened.
 func didLaunchOrRemove(calls []string) bool {
 	for _, c := range calls {
 		switch podmanSubcmd(c) {

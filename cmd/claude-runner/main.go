@@ -5,7 +5,7 @@
 // Like cmd/stub-runner it serves a whole agent group: -dir points at the group's
 // sessions directory (the /sessions mount in a container). For each session it
 // polls inbound.db, runs Claude on the message text, and enqueues the result to
-// outbound.db. Opening the session DBs fresh each poll is deliberate — a
+// outbound.db. Opening the session DBs fresh each poll is deliberate - a
 // long-lived SQLite handle doesn't see the host's later writes across the
 // container bind mount.
 //
@@ -61,7 +61,7 @@ func (r *runner) run(sessionsDir string, once bool, interval time.Duration) erro
 	// Fail fast on a missing/mismatched CLI so the container doesn't silently
 	// loop without ever being able to answer.
 	if v, err := claude.CheckCLIVersion(context.Background(), ""); err != nil {
-		r.log.Warn("claude CLI check failed — replies will error until fixed", "err", err)
+		r.log.Warn("claude CLI check failed - replies will error until fixed", "err", err)
 	} else {
 		r.log.Info("claude-runner started", "sessions_dir", sessionsDir, "cli_version", v)
 	}
@@ -187,14 +187,14 @@ func (r *runner) handle(ctx context.Context, sess *db.SessionDBs, tag, text stri
 // ask runs Claude on one prompt, resuming the stored session id for continuity,
 // persists the (possibly new) session id, and auto-compacts when the context
 // grows large. Returns the final reply text. If the stored session id can't be
-// resumed (its conversation no longer exists in this container — e.g. after a
+// resumed (its conversation no longer exists in this container - e.g. after a
 // container restart), the id is dropped and the turn retried fresh.
 func (r *runner) ask(ctx context.Context, sess *db.SessionDBs, tag, prompt string) (string, error) {
 	resumeID, _, _ := sess.GetMeta(metaSessionID)
 
 	result, sessionID, inputTokens, err := r.query(ctx, resumeID, prompt)
 	if errors.Is(err, errStaleResume) {
-		r.log.Info("stale session id — starting fresh", "session", tag)
+		r.log.Info("stale session id - starting fresh", "session", tag)
 		_ = sess.DeleteMeta(metaSessionID)
 		result, sessionID, inputTokens, err = r.query(ctx, "", prompt)
 	}
@@ -243,7 +243,7 @@ func (r *runner) compact(ctx context.Context, sess *db.SessionDBs, tag string) e
 }
 
 // errStaleResume indicates the stored session id couldn't be resumed (its
-// conversation no longer exists in this container — e.g. after a container
+// conversation no longer exists in this container - e.g. after a container
 // restart). The caller drops the id and retries fresh.
 var errStaleResume = errors.New("stale resume session id")
 
@@ -297,7 +297,7 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 }
 
 // isNoConversation reports whether an error result is the CLI's "No conversation
-// found with session ID …" — i.e. a stale --resume.
+// found with session ID …" - i.e. a stale --resume.
 func isNoConversation(res *claude.ResultMessage) bool {
 	hay := strings.ToLower(strings.Join(res.Errors, " ") + " " + res.Result + " " + string(res.Raw))
 	return strings.Contains(hay, "no conversation found")

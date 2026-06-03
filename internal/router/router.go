@@ -4,7 +4,7 @@
 //
 // The router is pure host-side logic: it reads the central DB to resolve
 // entities and the permissions package to gate access, then enqueues into
-// inbound.db. It does not implement container orchestration itself — after a
+// inbound.db. It does not implement container orchestration itself - after a
 // successful enqueue it asks an injected RunnerEnsurer to make sure a runner is
 // up for that session, keeping the Podman dependency out of this package.
 package router
@@ -31,7 +31,7 @@ type RunnerEnsurer interface {
 	EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string, extra ...mounts.Request) error
 }
 
-// Sender sends a host-originated reply on a channel — used for the approval-card
+// Sender sends a host-originated reply on a channel - used for the approval-card
 // flow (notifying the owner, confirming approve/deny). internal/channels.Registry
 // satisfies this. May be nil to disable host-sent messages.
 type Sender interface {
@@ -187,7 +187,7 @@ func (r *Router) requestApproval(ctx context.Context, msg channels.InboundMsg, a
 		return err
 	}
 	if owner == nil || r.sender == nil {
-		// No reachable owner (or no sender wired) — the request is still held in
+		// No reachable owner (or no sender wired) - the request is still held in
 		// the DB and can be approved out of band.
 		return nil
 	}
@@ -211,7 +211,7 @@ func (r *Router) handleApprovalCommand(ctx context.Context, msg channels.Inbound
 	}
 	// Only owners/admins may approve.
 	if user == nil || (user.Role != string(permissions.RoleOwner) && user.Role != string(permissions.RoleAdmin)) {
-		return false, nil // not authorized — fall through to normal routing
+		return false, nil // not authorized - fall through to normal routing
 	}
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
@@ -331,7 +331,7 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 			return err
 		}
 		if err := r.ensurer.EnsureRunner(ctx, agentGroupID, groupDir, extra...); err != nil {
-			// Don't lose the message over a launch failure — it's safely queued
+			// Don't lose the message over a launch failure - it's safely queued
 			// and a later message (or retry) can bring the runner up.
 			r.log.Error("ensure runner failed (message remains queued)",
 				"agent_group", agentGroupID, "session", sessionKey, "err", err)

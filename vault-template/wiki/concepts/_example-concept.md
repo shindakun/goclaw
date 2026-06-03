@@ -10,7 +10,7 @@ entities: []
 unresolved_reference:
 ---
 
-Example concept page — an idea, framework, or synthesis. The preamble states the
+Example concept page - an idea, framework, or synthesis. The preamble states the
 idea in 2–3 sentences and why it's filed here. Delete once real notes exist.
 
 ## Detail

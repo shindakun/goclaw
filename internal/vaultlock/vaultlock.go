@@ -1,7 +1,7 @@
 // Package vaultlock provides a flock-based single-writer guard for the optional
-// shared second-brain vault (brief §11.5). The vault has several possible
-// writers — multiple sessions of a group, scheduled maintenance runs, and a
-// human in Obsidian — so the host takes an exclusive flock on a lockfile before
+// shared knowledge vault (brief §11.5). The vault has several possible
+// writers - multiple sessions of a group, scheduled maintenance runs, and a
+// human in Obsidian - so the host takes an exclusive flock on a lockfile before
 // launching any vault-mutating agent run and releases it after. Reads never
 // block; this only serializes writes to close the corruption hole.
 package vaultlock

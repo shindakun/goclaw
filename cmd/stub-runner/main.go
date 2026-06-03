@@ -1,5 +1,5 @@
 // Command stub-runner is a minimal stand-in for the in-container agent-runner.
-// It does NOT run Claude — it just proves the SQLite boundary end-to-end: for
+// It does NOT run Claude - it just proves the SQLite boundary end-to-end: for
 // each session under its sessions directory, poll inbound.db for pending
 // messages, mark them consumed, and write an echo reply into outbound.db for the
 // host's delivery loop to pick up (brief §3.1, Phase 0).
@@ -79,7 +79,7 @@ func run(sessionsDir string, once bool, interval time.Duration, log *slog.Logger
 func processAll(sessionsDir string, log *slog.Logger) (int, error) {
 	entries, err := os.ReadDir(sessionsDir)
 	if os.IsNotExist(err) {
-		return 0, nil // group dir not created yet — nothing to do
+		return 0, nil // group dir not created yet - nothing to do
 	}
 	if err != nil {
 		return 0, err

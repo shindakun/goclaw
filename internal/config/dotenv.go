@@ -10,7 +10,7 @@ import (
 // loadDotEnv reads KEY=VALUE lines from path into the process environment for
 // any key not already set, so a real environment variable always wins over the
 // file. A missing file is not an error (the file is optional). This is a tiny
-// loader on purpose — no dependency, keeping the "few dependencies" ethos
+// loader on purpose - no dependency, keeping the "few dependencies" ethos
 // (brief §2). It supports `#` comments, blank lines, optional `export `
 // prefixes, and single/double-quoted values.
 func loadDotEnv(path string) error {

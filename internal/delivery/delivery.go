@@ -3,7 +3,7 @@
 // (brief §3.1, §7.3, §9).
 //
 // Delivery authorization (brief §9): an agent may deliver to its origin chat
-// always, or to any channel/chat with an explicit agent_destinations row —
+// always, or to any channel/chat with an explicit agent_destinations row -
 // checked HERE, before the adapter's Send is ever called.
 package delivery
 

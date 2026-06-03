@@ -23,7 +23,7 @@ type Config struct {
 // Reachable reports whether the vault endpoint is currently reachable.
 //
 // TODO: implement a real health probe. On unreachable, the caller starts the
-// container with NO credentials and logs a warning (brief §8 — match current
+// container with NO credentials and logs a warning (brief §8 - match current
 // behavior, fail open to a credential-less container rather than blocking).
 func (c Config) Reachable() bool { return c.ProxyURL != "" }
 

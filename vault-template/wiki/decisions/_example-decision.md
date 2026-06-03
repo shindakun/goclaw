@@ -20,6 +20,6 @@ What situation forced a choice.
 What was chosen.
 
 ## Why
-The reasoning — alternatives considered and why they lost. Link the [[example-concept]]
+The reasoning - alternatives considered and why they lost. Link the [[example-concept]]
 or [[example-entity]] this bears on. This *why* is the whole point of a decision note:
 future-you (and the agent) can see the rationale, not just the outcome.

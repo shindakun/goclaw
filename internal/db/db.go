@@ -114,7 +114,7 @@ func ClaudeHomeDir(baseDir string, agentGroupID int64) string {
 // SessionDir returns the on-disk directory for a session's DB pair:
 // {baseDir}/sessions/{agentGroupID}/{sessionKey}/. The session
 // key derives from external input (a chat id), so it is sanitized to a safe
-// single path segment — no separators or traversal can escape the base dir.
+// single path segment - no separators or traversal can escape the base dir.
 func SessionDir(baseDir string, agentGroupID int64, sessionKey string) string {
 	return filepath.Join(AgentGroupDir(baseDir, agentGroupID), sanitizeSessionKey(sessionKey))
 }
@@ -159,7 +159,7 @@ func OpenSessionDir(dir string) (*SessionDBs, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open inbound.db: %w", err)
 	}
-	// Session DBs cross the container bind mount, so they must NOT use WAL —
+	// Session DBs cross the container bind mount, so they must NOT use WAL -
 	// use the rollback journal so cross-process writes are visible (brief §5.1).
 	if err := applyPragmas(inbound, journalDelete); err != nil {
 		inbound.Close()

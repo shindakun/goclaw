@@ -1,5 +1,5 @@
 // Package sweep runs the periodic host sweep: runner recovery (relaunch a
-// session's container if it died while work is still queued), and — later —
+// session's container if it died while work is still queued), and - later -
 // stale-session detection, due-message wake, and recurrence (brief §3.3, §5).
 package sweep
 
@@ -127,7 +127,7 @@ func (s *Sweeper) extraMountRequests(agentGroupID int64) ([]mounts.Request, erro
 }
 
 // gcIdleRunners stops runner containers for agent groups that have had no
-// session activity within idleTTL — reaping idle runners so they don't
+// session activity within idleTTL - reaping idle runners so they don't
 // accumulate. A group is kept alive if it was recently active OR still has
 // pending inbound (which recoverRunners just (re)launched). now is passed in so
 // the cutoff is testable.
@@ -153,7 +153,7 @@ func (s *Sweeper) gcIdleRunners(ctx context.Context, now time.Time) {
 
 	for _, agentGroupID := range running {
 		if active[agentGroupID] {
-			continue // recently active — keep its runner
+			continue // recently active - keep its runner
 		}
 		// Don't reap a group that still has queued work waiting to be consumed.
 		pending, err := s.groupHasPendingInbound(agentGroupID)

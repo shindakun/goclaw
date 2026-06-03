@@ -29,7 +29,7 @@ internal/permissions/ roles, sender policy, access gate (REAL)
 internal/vault/       OneCLI credential-proxy wiring at spawn time (stub)
 internal/vaultlock/   flock single-writer guard for the shared vault
 container/            Containerfiles: runner (echo stub) + claude (real runner)
-secondbrain-template/ optional second-brain vault starter (brief §11)
+vault-template/       optional knowledge-vault starter (brief §11)
 ```
 
 ## Build & run
@@ -55,7 +55,7 @@ Config via environment:
 ## Running the loop end to end
 
 The full loop round-trips through a Podman container. The runner image packages
-`cmd/stub-runner` (an echo stand-in — no Claude yet); the host launches one
+`cmd/stub-runner` (an echo stand-in - no Claude yet); the host launches one
 container per session on enqueue.
 
 **1. Build the runner image** (from the repo root):
@@ -99,7 +99,7 @@ image bundles Node + the CLI.
 # 1. Build the Claude runner image:
 podman build -f container/claude.Containerfile -t goclaw-claude:latest .
 
-# 2. .env — point at the Claude image and provide auth:
+# 2. .env - point at the Claude image and provide auth:
 GOCLAW_LAUNCH_RUNNER=1
 GOCLAW_RUNNER_IMAGE=goclaw-claude:latest
 GOCLAW_ANTHROPIC_API_KEY=sk-ant-api03-...   # recommended: long-lived
@@ -109,28 +109,28 @@ go run ./cmd/goclaw
 
 **Auth: use an API key.** A standard Anthropic API key
 (`GOCLAW_ANTHROPIC_API_KEY`, from console.anthropic.com) is long-lived and the
-runner keeps working indefinitely — this is what NanoClaw uses too. A Claude Code
+runner keeps working indefinitely - this is what NanoClaw uses too. A Claude Code
 subscription token (`GOCLAW_CLAUDE_CODE_OAUTH_TOKEN`) is also supported and bills
 against your Claude plan, **but it expires in ~12h and the container cannot
 refresh it** (on macOS the live token is in the Keychain, unreachable from the
-container) — so it will eventually 401 and you'll have to re-extract it. Prefer
+container) - so it will eventually 401 and you'll have to re-extract it. Prefer
 the API key for anything left running. If both are set, the API key wins.
 
 Now messaging the bot gets a real Claude answer. The host passes the credential
 into the container (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`); the runner
 calls `claude.Query` per message and writes the result to outbound.
 
-**Conversation is multi-turn** — the runner persists Claude's session id per
+**Conversation is multi-turn** - the runner persists Claude's session id per
 conversation (in the session's `outbound.db`) and resumes it each message, so
 Claude remembers the thread. Two chat commands manage it, and the runner
 auto-compacts when the context window fills:
 
-- `/reset` — forget this conversation, start fresh.
-- `/compact` — summarize history to shrink context, keep the thread.
+- `/reset` - forget this conversation, start fresh.
+- `/compact` - summarize history to shrink context, keep the thread.
 
 > ⚠️ **Security note:** passing a credential into the container is the pragmatic
 > shortcut. NanoClaw's design (brief §8) routes container traffic through a
-> credential _vault_ proxy so the raw key never enters the container — that's the
+> credential _vault_ proxy so the raw key never enters the container - that's the
 > `internal/vault` stub, not yet wired. Until then, the runner container holds a
 > usable credential.
 
@@ -145,7 +145,7 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID> -once
 
 ### Without container launch
 
-Leave `GOCLAW_LAUNCH_RUNNER` unset to start a runner out of band instead —
+Leave `GOCLAW_LAUNCH_RUNNER` unset to start a runner out of band instead -
 useful for development without rebuilding the image. Point it at an agent
 group's sessions directory:
 

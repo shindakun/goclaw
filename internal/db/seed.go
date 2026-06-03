@@ -26,12 +26,12 @@ func (d *DB) UpsertUserWithIdentity(name, role, channel, senderID string) (int64
 
 	switch {
 	case err == nil:
-		// Identity exists — update the user's name/role to match.
+		// Identity exists - update the user's name/role to match.
 		if _, err := tx.Exec(`UPDATE users SET name = ?, role = ? WHERE id = ?`, name, role, userID); err != nil {
 			return 0, fmt.Errorf("update user: %w", err)
 		}
 	default:
-		// New identity — create the user and the identity row.
+		// New identity - create the user and the identity row.
 		res, err := tx.Exec(`INSERT INTO users (name, role) VALUES (?, ?)`, name, role)
 		if err != nil {
 			return 0, fmt.Errorf("insert user: %w", err)

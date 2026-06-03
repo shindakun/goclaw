@@ -83,7 +83,7 @@ func TestRoute_OwnerAutoWire(t *testing.T) {
 }
 
 // Without auto-wire, an unknown sender in an unwired chat is simply dropped
-// (recorded conversation, no wiring) — and must not error.
+// (recorded conversation, no wiring) - and must not error.
 func TestRoute_UnknownSenderNoWiringDrops(t *testing.T) {
 	d := testDB(t)
 	r := New(d, t.TempDir(), 0 /* no auto-wire */, nil /* no runner launch */, nil /* no sender */, nil /* no typer */, quietLogger())

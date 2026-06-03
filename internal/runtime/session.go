@@ -49,8 +49,8 @@ func (g GroupRunner) containerName() string {
 // EnsureGroupRunner starts the runner container for an agent group if one isn't
 // already running. It is safe to call on every inbound message and is robust to
 // a name collision: a running container on the CURRENT image is left alone; a
-// leftover stopped one — or a running one started from a DIFFERENT image (e.g.
-// after switching GOCLAW_RUNNER_IMAGE) — is removed before launching. (Otherwise
+// leftover stopped one - or a running one started from a DIFFERENT image (e.g.
+// after switching GOCLAW_RUNNER_IMAGE) - is removed before launching. (Otherwise
 // the config change would silently have no effect, and `podman run --name` on a
 // stopped name fails with exit 125.) The group's sessions dir is mounted
 // read-write at /sessions with :Z relabeling (brief §6.3).
@@ -66,13 +66,13 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		if m.runningCurrentImage(ctx, info, gr.Image) {
 			return nil // already up on the current image
 		}
-		// Image changed under it (different tag, OR a rebuild of the same tag) —
+		// Image changed under it (different tag, OR a rebuild of the same tag) -
 		// replace so the new image takes effect.
 		if err := m.remove(ctx, name); err != nil {
 			return err
 		}
 	case stateStopped:
-		// Stale container holding the name — remove it so the run can reuse it.
+		// Stale container holding the name - remove it so the run can reuse it.
 		if err := m.remove(ctx, name); err != nil {
 			return err
 		}
@@ -124,7 +124,7 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 	id = strings.TrimSpace(id)
 
 	// Verify the container actually came up. `podman run -d` reports success
-	// once the container is created, even if its process dies immediately — so
+	// once the container is created, even if its process dies immediately - so
 	// confirm it's running, and if not, surface the exit code + logs instead of
 	// silently leaving the group without a runner.
 	if st, err := m.containerState(ctx, name); err == nil && st != stateRunning {
@@ -135,7 +135,7 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 }
 
 // diagnose collects a one-line summary of why a container isn't running:
-// its exit code and the tail of its logs. Best-effort — used only for error
+// its exit code and the tail of its logs. Best-effort - used only for error
 // messages, so failures to gather detail are ignored.
 func (m *Manager) diagnose(ctx context.Context, name string) string {
 	exit := "?"
@@ -163,7 +163,7 @@ const (
 type containerInfo struct {
 	state   containerStatus
 	image   string // image reference, e.g. localhost/goclaw-claude:latest
-	imageID string // image ID (digest prefix) — distinguishes same-tag rebuilds
+	imageID string // image ID (digest prefix) - distinguishes same-tag rebuilds
 }
 
 // containerState reports whether a container with the given name exists and
@@ -176,7 +176,7 @@ func (m *Manager) containerState(ctx context.Context, name string) (containerSta
 // inspectContainer reports a named container's state and, when it exists, the
 // image and image ID it was started from. It lists all containers (running and
 // not) by exact name, reading the State column so a name reserved by a
-// non-running container is detected — that reservation is what causes
+// non-running container is detected - that reservation is what causes
 // `podman run --name` to fail. The image ID lets EnsureGroupRunner replace a
 // container whose image changed, INCLUDING a rebuild under the same tag (which a
 // name comparison alone misses). Fields are tab-delimited.
@@ -319,7 +319,7 @@ func (m *Manager) RunningGroupIDs(ctx context.Context) ([]int64, error) {
 		var id int64
 		// The runner name is exactly goclaw-<id>; parse the suffix.
 		if _, err := fmt.Sscanf(name, containerNamePrefix+"%d", &id); err != nil {
-			continue // not a group runner (or an unexpected name) — skip
+			continue // not a group runner (or an unexpected name) - skip
 		}
 		ids = append(ids, id)
 	}

@@ -17,5 +17,5 @@ its current status. Delete this file once real notes exist.
 ## Detail
 - Role / what it is: ...
 - Context: how it connects to [[example-concept]] and the owner's work.
-- History: notable events, each with a source URL inline and a recency marker —
+- History: notable events, each with a source URL inline and a recency marker -
   e.g. "shipped v1 (as of 2026-05, <url>)".

@@ -1,21 +1,21 @@
-# Second Brain — Operating Manual
+# Vault - Operating Manual
 
 You are the librarian of this vault. You are NOT a chatbot. Every turn either
 reads from or writes to this vault. Obey this contract; do not improvise structure.
 
 ## Layout
-- `raw/`             immutable sources — READ ONLY, never edit.
-- `wiki/entities/`   people, companies, tools — one page each.
+- `raw/`             immutable sources - READ ONLY, never edit.
+- `wiki/entities/`   people, companies, tools - one page each.
 - `wiki/concepts/`   ideas, frameworks, synthesis.
 - `wiki/projects/`   ongoing work.
 - `wiki/decisions/`  decision records (the *why* of a choice).
 - `wiki/resources/`  links, documents, references worth keeping (one per source).
-- `wiki/credentials/` access info — names/locations/hints only; NEVER raw secrets.
+- `wiki/credentials/` access info - names/locations/hints only; NEVER raw secrets.
 - `wiki/daily/`      day notes (`YYYY-MM-DD.md`).
 - `wiki/tasks/`      open/closed tasks.
-- `index.md`         page catalog — READ FIRST, update on every write.
+- `index.md`         page catalog - READ FIRST, update on every write.
 - `log.md`           append-only activity log.
-- `CRITICAL_FACTS.md`  tiny always-true facts — load every turn.
+- `CRITICAL_FACTS.md`  tiny always-true facts - load every turn.
 
 ## Context budget (climb only as needed)
 - L0: CRITICAL_FACTS.md + identity        (always)
@@ -34,7 +34,7 @@ domain: []                        # COARSE life area(s): home | health | work | 
 tags: []                          # FINE topic tags (≤3) within the domain(s)
 trust: trusted | untrusted        # channel/external input starts untrusted
 confidence: stated | high | medium | speculation
-entities: []                      # [{name, kind, role, org}] — structured lookup
+entities: []                      # [{name, kind, role, org}] - structured lookup
 unresolved_reference:             # a reference noted but not yet resolved (empty if none)
 ---
 ```
@@ -42,12 +42,12 @@ unresolved_reference:             # a reference noted but not yet resolved (empt
 `domain` and `tags` are two axes: `domain` is the broad life area ("which part
 of my life"), `tags` are the fine topics within it ("what about it"). Filtering
 by domain narrows fast; tags pinpoint. `entities` is a machine-readable list of
-the people/orgs/tools a note names — it complements `[[wikilinks]]` (links give
+the people/orgs/tools a note names - it complements `[[wikilinks]]` (links give
 the graph; entities give structured "find every note that mentions a plumber"
 lookup). `unresolved_reference` records a cross-reference the writer couldn't
 resolve at write time, for `reconcile` to close later.
 
-`credential` notes record WHERE a secret lives and how to find it — never the
+`credential` notes record WHERE a secret lives and how to find it - never the
 secret itself (e.g. "Wi-Fi password: in 1Password, item 'Home Wi-Fi'", not the
 password). The vault is plaintext Markdown; treat it as if anyone could read it.
 
@@ -70,17 +70,17 @@ blocked_on: <what, or empty>              # external blocker / human decision
 4. `[[wikilinks]]` to EVERY person / project / idea / decision named.
 
 ## Invariants (never violate)
-- SEARCH BEFORE CREATE — fuzzy-match existing names; update the page, don't duplicate.
-- PROPAGATE EVERY WRITE — update index.md and every linked page; append to log.md.
-- NO ORPHANS — every note is linked from somewhere.
-- PROVENANCE-FIRST — no claim without a source.
-- TWO OUTPUTS — every answer also files a vault update (decision → decision note,
+- SEARCH BEFORE CREATE - fuzzy-match existing names; update the page, don't duplicate.
+- PROPAGATE EVERY WRITE - update index.md and every linked page; append to log.md.
+- NO ORPHANS - every note is linked from somewhere.
+- PROVENANCE-FIRST - no claim without a source.
+- TWO OUTPUTS - every answer also files a vault update (decision → decision note,
   research → rewrite touched pages + a synthesis page).
-- BI-TEMPORAL — don't overwrite a changed fact; record what was believed, what
+- BI-TEMPORAL - don't overwrite a changed fact; record what was believed, what
   changed it, and when. Move the old claim's `state`, don't delete it.
-- UNTRUSTED IN → DRAFT — external input lands as `state: draft, trust: untrusted`;
+- UNTRUSTED IN → DRAFT - external input lands as `state: draft, trust: untrusted`;
   promotion to `active` is a deliberate, reviewed step.
-- AUDIT EVERY MUTATION — append one `log.md` line per mutating action, naming the
+- AUDIT EVERY MUTATION - append one `log.md` line per mutating action, naming the
   actor. `log.md` is append-only: never edit or delete past lines.
 
 ## Task discipline (claim before you work)
@@ -88,17 +88,17 @@ blocked_on: <what, or empty>              # external blocker / human decision
 Tasks are shared: multiple agent runs and the human all touch `wiki/tasks/`. To
 avoid two workers doing the same task, treat every task like a lease.
 
-- CLAIM BEFORE WORKING — set `state: claimed`, `claimed_by: <you>`, and
+- CLAIM BEFORE WORKING - set `state: claimed`, `claimed_by: <you>`, and
   `lease_until` to a short horizon (e.g. now + 30m). Append a claim line to the log.
-- HEARTBEAT — if still working as `lease_until` nears, extend it (re-claim).
-- A claim whose `lease_until` is in the PAST is STALE and reclaimable by anyone —
+- HEARTBEAT - if still working as `lease_until` nears, extend it (re-claim).
+- A claim whose `lease_until` is in the PAST is STALE and reclaimable by anyone -
   steal it, but read its prior notes first so work isn't lost.
 - NEVER touch a task that is `claimed` by someone else with a live lease; pick
   another `open` task instead.
-- BLOCK, don't abandon — if you can't finish, set `state: blocked`, fill
+- BLOCK, don't abandon - if you can't finish, set `state: blocked`, fill
   `blocked_on`, clear `claimed_by`/`lease_until`, and log why, so the next worker
   has the handoff context.
-- CLOSE explicitly — finished work is `state: done` with a final log line; never
+- CLOSE explicitly - finished work is `state: done` with a final log line; never
   delete a task note (history must survive).
 
 ## Operations
@@ -120,21 +120,21 @@ avoid two workers doing the same task, treat every task like a lease.
 - emerge            surface patterns I never explicitly named.
 - connect <A> <B>   bridge two unrelated pages for a non-obvious link.
 
-## log.md — the audit trail (append-only, never rewrite)
+## log.md - the audit trail (append-only, never rewrite)
 
 `log.md` is the vault's single source of truth for WHO did WHAT, WHEN. Every
 mutating action appends exactly one line; you never edit or delete past lines.
-This is what makes the bi-temporal and lifecycle rules auditable — a reader can
+This is what makes the bi-temporal and lifecycle rules auditable - a reader can
 reconstruct how any page reached its current state.
 
-Line format (keep greppable — one line, fixed prefix):
+Line format (keep greppable - one line, fixed prefix):
 
 ```text
-## [YYYY-MM-DD HH:MM] <actor> <action> — <one line> — pages: a.md, b.md
+## [YYYY-MM-DD HH:MM] <actor> <action> - <one line> - pages: a.md, b.md
 ```
 
-- `<actor>` — who acted (an agent run id, or the human). Required.
-- `<action>` — `ingest | query | reconcile | synthesize | lint | claim |
+- `<actor>` - who acted (an agent run id, or the human). Required.
+- `<action>` - `ingest | query | reconcile | synthesize | lint | claim |
   heartbeat | block | done | reclaim`.
 - Recent activity: `grep '^## \[' log.md | tail`. Per page: `grep <page>.md log.md`.
 

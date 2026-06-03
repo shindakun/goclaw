@@ -35,7 +35,7 @@ type ChannelAdapter interface {
 // ActionSender is an OPTIONAL capability: a channel that can show a transient
 // chat action (e.g. Telegram's "typing…"). The typing manager checks for it
 // with a type assertion, so channels that don't implement it simply show no
-// indicator — no change to the core ChannelAdapter contract.
+// indicator - no change to the core ChannelAdapter contract.
 type ActionSender interface {
 	// SendAction shows a transient action in a chat. kind is a normalized name
 	// ("typing", …); the adapter maps it to its channel-native action.

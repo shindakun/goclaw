@@ -1,7 +1,7 @@
 # Index
 
 The page catalog. Read this first to locate relevant pages before drilling in.
-Update on every write. Format: `[[page]] — one-line summary`.
+Update on every write. Format: `[[page]] - one-line summary`.
 
 ## Entities
 <!-- people, companies, tools -->

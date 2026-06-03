@@ -1,5 +1,5 @@
 // Package runtime manages per-agent-group container lifecycle on Podman
-// (brief §6). v0 shells out to the `podman` CLI — simplest, easy to audit, and
+// (brief §6). v0 shells out to the `podman` CLI - simplest, easy to audit, and
 // mirrors what the original container-runner.ts effectively did. Move to the
 // Podman Go bindings later if stronger typing is wanted (brief §6.2).
 //
@@ -81,7 +81,7 @@ func (m *Manager) WithEnv(env map[string]string) *Manager {
 // EnsureRunner implements the RunnerEnsurer interface used by the router and
 // sweep: it ensures a runner container is up for the given agent group,
 // launching one (mounting groupDir at /sessions, plus any extra mounts that
-// pass allowlist validation) if not. Idempotent — a running container is left
+// pass allowlist validation) if not. Idempotent - a running container is left
 // alone. extra mounts that fail validation are skipped (fail closed) and logged
 // by the caller via the returned-from-Validate errors collected here.
 func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string, extra ...mounts.Request) error {
@@ -98,7 +98,7 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir
 
 // claudeHomeFor derives the persistent claude-home dir for a group from its
 // sessions dir. groupDir is <data>/sessions/<id>; the home is
-// <data>/claude-home/<id> — a sibling tree outside the sessions scan.
+// <data>/claude-home/<id> - a sibling tree outside the sessions scan.
 func claudeHomeFor(groupDir string) string {
 	id := filepath.Base(groupDir)                   // <id>
 	dataDir := filepath.Dir(filepath.Dir(groupDir)) // <data>
@@ -106,7 +106,7 @@ func claudeHomeFor(groupDir string) string {
 }
 
 // validateExtra validates each requested mount against the allowlist, returning
-// only the ones that pass. A nil allowlist (or a failed entry) yields no mount —
+// only the ones that pass. A nil allowlist (or a failed entry) yields no mount -
 // fail closed (brief §6.3, §9).
 func (m *Manager) validateExtra(reqs []mounts.Request) []mounts.Mount {
 	if m.allowlist == nil || len(reqs) == 0 {
@@ -135,7 +135,7 @@ func (m *Manager) Run(ctx context.Context, spec Spec) (string, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		// Surface podman's stderr — a bare "exit status 125" is useless.
+		// Surface podman's stderr - a bare "exit status 125" is useless.
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
 			return "", fmt.Errorf("runtime: podman run: %w: %s", err, msg)

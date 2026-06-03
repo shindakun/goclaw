@@ -58,7 +58,7 @@ func (m *Manager) Start(ctx context.Context, channel, chatID string) {
 	}
 	sender, ok := adapter.(channels.ActionSender)
 	if !ok {
-		return // channel can't show actions — no indicator
+		return // channel can't show actions - no indicator
 	}
 
 	k := key(channel, chatID)

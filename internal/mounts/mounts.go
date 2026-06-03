@@ -23,7 +23,7 @@ import (
 
 // Validation errors. Callers may match these with errors.Is.
 var (
-	ErrNoAllowlist     = errors.New("mounts: allowlist absent — failing closed, no extra mounts")
+	ErrNoAllowlist     = errors.New("mounts: allowlist absent - failing closed, no extra mounts")
 	ErrNotAllowed      = errors.New("mounts: host path not under any allowlist entry")
 	ErrContainerPath   = errors.New("mounts: invalid container path")
 	ErrReadWriteDenied = errors.New("mounts: read-write requested but entry is read-only")
@@ -31,7 +31,7 @@ var (
 )
 
 // AllowEntry is one rule in the external allowlist
-// (~/.config/goclaw/mount-allowlist.json — outside the project root, never
+// (~/.config/goclaw/mount-allowlist.json - outside the project root, never
 // itself mounted, brief §6.3).
 type AllowEntry struct {
 	HostPath  string `json:"host_path"`  // a host directory prefix
@@ -58,7 +58,7 @@ type Mount struct {
 }
 
 // LoadAllowlist reads the allowlist JSON. A missing file is NOT an error from
-// loading's perspective — it yields an empty allowlist that denies everything
+// loading's perspective - it yields an empty allowlist that denies everything
 // (fail closed). Callers that requested mounts will then get ErrNotAllowed.
 func LoadAllowlist(path string) (*Allowlist, error) {
 	data, err := os.ReadFile(path)
