@@ -26,4 +26,10 @@ Your scratch working directory is `/work`: clones, temp files, build output. It 
 
 ## Memory
 
-Your live conversation is multi-turn, but it gets compacted when it grows large, and very old/large sessions are rotated. Before that happens the prior conversation is archived as readable markdown under `~/.claude/conversations/`. When a request refers to something from earlier that is no longer in your active context, grep `~/.claude/conversations/` to recall it. This is your base memory and works whether or not a knowledge vault is mounted; a mounted vault is an additional, richer store on top, never a replacement for it.
+You have three memory layers. The first two are your **base memory**: they work whether or not a knowledge vault is mounted. A mounted vault is a fourth, richer store layered on top, never a replacement for these.
+
+**1. Conversation recall (`~/.claude/conversations/`).** Your live conversation is multi-turn, but it gets compacted when it grows large, and very old/large sessions are rotated. Before that happens the prior conversation is archived as readable markdown under `~/.claude/conversations/`. When a request refers to something from earlier that is no longer in your active context, grep `~/.claude/conversations/` to recall it.
+
+**2. Durable curated memory (auto-memory).** When the user tells you something worth remembering across sessions - a preference, a recurring fact, project context, a decision and why - record it in your memory so it is there next time. Keep your memory **index** tight: one short line per fact or topic, and push any detail into a separate topic file that the index points to (load it only when relevant). The index is auto-loaded every session and is capped, so a bloated index simply stops being loaded - keep it lean, link don't duplicate, and prune what is stale. This curated memory is the difference between an assistant that remembers you and one that starts cold every time; maintaining it well is part of the job.
+
+Use conversation recall for "what did we say about X"; use curated memory for "what is true about the user / this work." When a vault is mounted, the vault's librarian discipline governs vault notes; your base memory above still applies for things that are not vault knowledge.

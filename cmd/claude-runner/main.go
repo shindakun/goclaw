@@ -353,6 +353,12 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 	// Work in /work, NOT /vault: scratch like cloned repos and temp files must
 	// not pollute the vault. The vault stays a known location at /vault that the
 	// agent reads/writes by absolute path (see the appended system prompt above).
+	//
+	// TRIPWIRE: the CLI derives its auto-memory directory key from this cwd
+	// (~/.claude/projects/<mangled-cwd>/memory). Keeping cwd stable at /work is
+	// what makes the agent's durable memory accumulate in ONE place across runs.
+	// Changing this cwd silently orphans all prior auto-memory under the old key.
+	// If you ever change it, migrate the memory dir too.
 	opts = append(opts, claude.WithCwd(workDir))
 	if resumeID != "" {
 		opts = append(opts, claude.WithResume(resumeID))
