@@ -100,6 +100,18 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 			continue
 		}
 
+		// Atomically claim the row (pending -> sending) before sending. If another
+		// drain (the poll can re-fire before this send + mark completes) already
+		// claimed it, skip - this is what stops the same reply being delivered
+		// twice.
+		claimed, err := sess.ClaimOutbound(m.ID)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			continue // someone else is handling this row
+		}
+
 		// The reply is ready: the runner is done, so stop the typing indicator
 		// regardless of whether the send below succeeds.
 		if d.typer != nil {

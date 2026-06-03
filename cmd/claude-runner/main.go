@@ -290,6 +290,22 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 			opts = append(opts, claude.WithSystemPromptFile(r.systemPromptFile))
 		}
 	}
+	if r.vaultMounted {
+		// The working directory is /work (scratch), not the vault, so a RELATIVE
+		// path like "wiki/tasks/" would resolve to /work and the agent would think
+		// the vault is empty. Tell it the vault's absolute root, and grant access
+		// to it (cwd is /work). The vault schema's "wiki/..." paths are relative to
+		// this root.
+		opts = append(opts,
+			claude.WithAppendSystemPrompt(
+				"Your knowledge vault is mounted at the ABSOLUTE path "+vaultDir+
+					". Always read and write vault notes under "+vaultDir+
+					" (e.g. "+vaultDir+"/wiki/tasks/, "+vaultDir+"/index.md, "+vaultDir+
+					"/log.md). Your current working directory ("+workDir+
+					") is scratch space for clones and temp files only; the vault is NOT there. "+
+					"When the vault manual says a path like \"wiki/tasks/\", it means "+vaultDir+"/wiki/tasks/."),
+			claude.WithAddDir(vaultDir))
+	}
 	// Headless: there is no human at a terminal to answer tool-permission
 	// prompts, so a prompting mode would hang the agent (e.g. on a `git clone`
 	// or any Bash command) with no way for the user to approve. Bypass prompts
@@ -300,7 +316,7 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 
 	// Work in /work, NOT /vault: scratch like cloned repos and temp files must
 	// not pollute the vault. The vault stays a known location at /vault that the
-	// agent reads/writes by absolute path per its schema.
+	// agent reads/writes by absolute path (see the appended system prompt above).
 	opts = append(opts, claude.WithCwd(workDir))
 	if resumeID != "" {
 		opts = append(opts, claude.WithResume(resumeID))

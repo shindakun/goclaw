@@ -258,6 +258,25 @@ func (s *SessionDBs) PendingOutbound() ([]OutboundMessage, error) {
 	return out, rows.Err()
 }
 
+// ClaimOutbound atomically flips an outbound row from 'pending' to 'sending',
+// returning true only if THIS call won the claim. The delivery loop claims a row
+// before sending it, so an overlapping drain (the 500ms poll can fire again
+// before a send + mark-delivered completes) can't pick up the same row and send
+// it twice. The host is the sole writer of outbound status, so this UPDATE is the
+// single point that decides who sends.
+func (s *SessionDBs) ClaimOutbound(id int64) (bool, error) {
+	res, err := s.Outbound.Exec(
+		`UPDATE messages SET status = 'sending' WHERE id = ? AND status = 'pending'`, id)
+	if err != nil {
+		return false, fmt.Errorf("claim outbound: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim outbound rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 // MarkOutboundDelivered flips an outbound row to 'delivered'.
 func (s *SessionDBs) MarkOutboundDelivered(id int64) error {
 	_, err := s.Outbound.Exec(
