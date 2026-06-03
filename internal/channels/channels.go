@@ -32,6 +32,16 @@ type ChannelAdapter interface {
 	Send(ctx context.Context, out OutboundMsg) error
 }
 
+// ActionSender is an OPTIONAL capability: a channel that can show a transient
+// chat action (e.g. Telegram's "typing…"). The typing manager checks for it
+// with a type assertion, so channels that don't implement it simply show no
+// indicator — no change to the core ChannelAdapter contract.
+type ActionSender interface {
+	// SendAction shows a transient action in a chat. kind is a normalized name
+	// ("typing", …); the adapter maps it to its channel-native action.
+	SendAction(ctx context.Context, chatID, kind string) error
+}
+
 // InboundMsg is a channel message normalized for the router. Everything here is
 // attacker-controllable and enters the trust-tiering regime (brief §11.6).
 type InboundMsg struct {

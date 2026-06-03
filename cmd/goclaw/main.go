@@ -25,6 +25,7 @@ import (
 	"github.com/shindakun/goclaw/internal/router"
 	"github.com/shindakun/goclaw/internal/runtime"
 	"github.com/shindakun/goclaw/internal/sweep"
+	"github.com/shindakun/goclaw/internal/typing"
 )
 
 func main() {
@@ -144,9 +145,11 @@ func run(log *slog.Logger) error {
 	}
 
 	// Wire the host loops. errgroup ties their lifetimes to ctx: if any returns
-	// a non-nil error, the group cancels and the rest unwind.
-	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, log)
-	del := delivery.New(central, registry, cfg.DataDir, log)
+	// a non-nil error, the group cancels and the rest unwind. The typing manager
+	// is shared: the router starts the indicator, the delivery loop stops it.
+	typer := typing.New(registry, log)
+	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, log)
+	del := delivery.New(central, registry, cfg.DataDir, typer, log)
 	swp := sweep.New(central, cfg.DataDir, runners, log)
 
 	g, gctx := errgroup.WithContext(ctx)

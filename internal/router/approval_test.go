@@ -47,7 +47,7 @@ func approvalSetup(t *testing.T) (*Router, *db.DB, *fakeSender, int64) {
 		t.Fatalf("wiring: %v", err)
 	}
 	fs := &fakeSender{}
-	r := New(d, t.TempDir(), 0, nil, fs, quietLogger())
+	r := New(d, t.TempDir(), 0, nil, fs, nil, quietLogger())
 	return r, d, fs, agID
 }
 

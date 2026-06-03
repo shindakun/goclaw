@@ -101,8 +101,36 @@ func (a *Adapter) Send(ctx context.Context, m channels.OutboundMsg) error {
 	if _, err := a.bot.Send(tgbotapi.NewMessage(chatID, m.Text)); err != nil {
 		return fmt.Errorf("telegram: send: %w", err)
 	}
-	// TODO: send m.Attachments and honor m.Action (typing indicator, etc.).
+	// TODO: send m.Attachments.
 	return nil
+}
+
+// SendAction implements channels.ActionSender, mapping a normalized action kind
+// to a Telegram chat action (sendChatAction). The indicator auto-expires after
+// ~5s, so callers that want it to persist must re-send periodically.
+func (a *Adapter) SendAction(ctx context.Context, chatID, kind string) error {
+	id, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: bad chat id %q: %w", chatID, err)
+	}
+	action := telegramAction(kind)
+	if action == "" {
+		return nil // unknown kind — no-op rather than error
+	}
+	if _, err := a.bot.Request(tgbotapi.NewChatAction(id, action)); err != nil {
+		return fmt.Errorf("telegram: chat action: %w", err)
+	}
+	return nil
+}
+
+// telegramAction maps a normalized action kind to a Telegram action string.
+func telegramAction(kind string) string {
+	switch kind {
+	case "typing":
+		return tgbotapi.ChatTyping
+	default:
+		return ""
+	}
 }
 
 func senderID(m *tgbotapi.Message) string {

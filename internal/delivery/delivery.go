@@ -20,17 +20,25 @@ import (
 // pollInterval is how often the delivery loop drains outbound queues.
 const pollInterval = 500 * time.Millisecond
 
+// Typer stops a chat's "typing…" indicator once its reply has been delivered.
+// internal/typing implements it; may be nil to disable.
+type Typer interface {
+	Stop(channel, chatID string)
+}
+
 // Deliverer drains outbound messages and dispatches them.
 type Deliverer struct {
 	central  *db.DB
 	registry *channels.Registry
 	dataDir  string
+	typer    Typer
 	log      *slog.Logger
 }
 
-// New constructs a Deliverer.
-func New(central *db.DB, registry *channels.Registry, dataDir string, log *slog.Logger) *Deliverer {
-	return &Deliverer{central: central, registry: registry, dataDir: dataDir, log: log}
+// New constructs a Deliverer. typer may be nil to disable typing-indicator
+// teardown.
+func New(central *db.DB, registry *channels.Registry, dataDir string, typer Typer, log *slog.Logger) *Deliverer {
+	return &Deliverer{central: central, registry: registry, dataDir: dataDir, typer: typer, log: log}
 }
 
 // Run polls outbound queues on a ticker until ctx is cancelled.
@@ -90,6 +98,12 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 				return err
 			}
 			continue
+		}
+
+		// The reply is ready: the runner is done, so stop the typing indicator
+		// regardless of whether the send below succeeds.
+		if d.typer != nil {
+			d.typer.Stop(m.Channel, m.ChatID)
 		}
 
 		out := channels.OutboundMsg{Channel: m.Channel, ChatID: m.ChatID, Text: m.Text}

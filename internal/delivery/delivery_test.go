@@ -57,7 +57,7 @@ func setup(t *testing.T) (*Deliverer, *db.DB, int64, string, *fakeAdapter) {
 	if err := reg.Register(fake); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	d := New(central, reg, dataDir, quiet())
+	d := New(central, reg, dataDir, nil, quiet())
 	return d, central, agID, dataDir, fake
 }
 

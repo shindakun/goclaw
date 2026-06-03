@@ -38,12 +38,20 @@ type Sender interface {
 	Send(ctx context.Context, out channels.OutboundMsg) error
 }
 
+// Typer shows a "typing…" indicator for a chat until Stop. internal/typing
+// implements it; may be nil to disable the indicator. Start is called when an
+// allowed message is enqueued; the delivery loop calls Stop after replying.
+type Typer interface {
+	Start(ctx context.Context, channel, chatID string)
+}
+
 // Router routes inbound messages to session inbound DBs.
 type Router struct {
 	central *db.DB
 	dataDir string
 	ensurer RunnerEnsurer
 	sender  Sender
+	typer   Typer
 	log     *slog.Logger
 
 	// autoWireAgentGroupID, when non-zero, lets the owner bootstrap a wiring by
@@ -56,13 +64,15 @@ type Router struct {
 
 // New constructs a Router over the central DB. autoWireAgentGroupID may be 0 to
 // disable owner auto-wiring; ensurer may be nil to disable container launch;
-// sender may be nil to disable host-sent messages (the approval-card flow).
-func New(central *db.DB, dataDir string, autoWireAgentGroupID int64, ensurer RunnerEnsurer, sender Sender, log *slog.Logger) *Router {
+// sender may be nil to disable host-sent messages (the approval-card flow);
+// typer may be nil to disable the typing indicator.
+func New(central *db.DB, dataDir string, autoWireAgentGroupID int64, ensurer RunnerEnsurer, sender Sender, typer Typer, log *slog.Logger) *Router {
 	return &Router{
 		central:              central,
 		dataDir:              dataDir,
 		ensurer:              ensurer,
 		sender:               sender,
+		typer:                typer,
 		log:                  log,
 		autoWireAgentGroupID: autoWireAgentGroupID,
 	}
@@ -301,6 +311,12 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 	}
 	r.log.Info("message enqueued to inbound",
 		"channel", msg.Channel, "agent_group", agentGroupID, "session", sessionKey, "msg_id", id)
+
+	// Show a "typing…" indicator while the runner works; the delivery loop stops
+	// it once the reply is sent (best-effort; no-op if the channel can't type).
+	if r.typer != nil {
+		r.typer.Start(ctx, msg.Channel, msg.ChatID)
+	}
 
 	// Make sure a runner is up to consume it. If no ensurer is configured, the
 	// runner is expected to be started out of band (e.g. the stub runner by hand).
