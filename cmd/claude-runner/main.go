@@ -306,6 +306,19 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 					"When the vault manual says a path like \"wiki/tasks/\", it means "+vaultDir+"/wiki/tasks/."),
 			claude.WithAddDir(vaultDir))
 	}
+	// Give the agent an AUTHORITATIVE current time. Without this it has no
+	// reliable clock and guesses - producing invalid stamps like "24:30" or
+	// dropping the HH:MM the vault protocol requires. Computed per turn so it is
+	// always fresh. The agent must use THIS for any timestamp it writes (log
+	// lines, lease_until, handoff notes) rather than inventing one.
+	now := time.Now()
+	opts = append(opts, claude.WithAppendSystemPrompt(
+		"The current date and time is "+now.Format("2006-01-02 15:04 MST")+
+			" (24-hour clock). Use THIS as 'now' for any timestamp you write - "+
+			"log lines, lease_until, handoff notes - in YYYY-MM-DD HH:MM form. "+
+			"Never guess the time, and never write an hour outside 00-23 (midnight "+
+			"is 00:00 of the next day, not 24:00)."))
+
 	// Headless: there is no human at a terminal to answer tool-permission
 	// prompts, so a prompting mode would hang the agent (e.g. on a `git clone`
 	// or any Bash command) with no way for the user to approve. Bypass prompts

@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -144,6 +146,14 @@ func run(log *slog.Logger) error {
 		claudeEnv["GIT_COMMITTER_EMAIL"] = cfg.GitUserEmail
 		// GitHub auth for gh (clone private, push, fork, open PRs). Empty -> dropped.
 		claudeEnv["GH_TOKEN"] = cfg.GitHubToken
+		// Timezone: the container base image is UTC, so without this the agent's
+		// clock (and any `date`) is hours off the user's wall time - it wrote
+		// vault stamps on the wrong day and invalid hours like "24:30". Pass the
+		// host's zone so the container, the agent, and the runner-injected "now"
+		// all agree with the user. (Falls back to UTC if the host zone is unnamed.)
+		if tz := hostTimezone(); tz != "" {
+			claudeEnv["TZ"] = tz
+		}
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir)
@@ -246,4 +256,24 @@ func stopRunners(runners sweep.RunnerManager, log *slog.Logger) {
 		}
 		log.Info("shutdown: stopped runner", "agent_group", id)
 	}
+}
+
+// hostTimezone returns the host's IANA timezone name (e.g. "America/Los_Angeles")
+// for passing to the container as TZ, so the agent's clock matches the user's
+// wall time instead of the base image's UTC. Resolution order: the TZ env var if
+// it already names a zone, else the target of the /etc/localtime symlink (the
+// path segment after ".../zoneinfo/"). Returns "" if neither yields a name, in
+// which case the caller leaves TZ unset (container stays UTC).
+func hostTimezone() string {
+	if tz := os.Getenv("TZ"); tz != "" {
+		return tz
+	}
+	target, err := filepath.EvalSymlinks("/etc/localtime")
+	if err != nil {
+		return ""
+	}
+	if i := strings.LastIndex(target, "zoneinfo/"); i >= 0 {
+		return target[i+len("zoneinfo/"):]
+	}
+	return ""
 }
