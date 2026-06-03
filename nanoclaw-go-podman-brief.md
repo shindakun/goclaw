@@ -64,7 +64,7 @@ Routing resolves a chain: **user → messaging group → agent group → session
 | `src/channels/` | Channel adapter infra (adapters skill-installed per fork) |
 | `src/providers/` | Host-side provider config (`claude` baked in) |
 | `container/agent-runner/` | The thing inside the container: poll loop, MCP tools, provider abstraction |
-| `groups/<folder>/` | Per-agent-group filesystem (`CLAUDE.md`, skills, container config) |
+| `container/CLAUDE.md`, `container/skills/` | Generic agent-first base prompt + skills, baked into the image (§11.0); the per-group `CLAUDE.md` is composed from these at launch |
 
 Everything from `src/index.ts` down to `src/db/` is **host-side** and is the target of the Go rewrite. `container/agent-runner/` is the part that needs the Agent SDK; you can leave it on TS to start (Option A) or port it to Go on `shindakun/agent-sdk-go` (Option A′) - see §4. Either way it stays decoupled from the host across the SQLite boundary.
 
@@ -327,10 +327,12 @@ internal/channels/            # ChannelAdapter interface + fan-in registry
 internal/channels/telegram/   # Telegram adapter (the v0 channel, §7.4)
 internal/vaultlock/           # OPTIONAL: flock single-writer guard for the shared vault (§11)
 container/agent-runner/       # TS Agent SDK (Option A) OR Go on shindakun/agent-sdk-go (Option A′); §4
-groups/<folder>/              # per-agent-group filesystem (CLAUDE.md, skills, container config)
+container/CLAUDE.md           # generic agent-first BASE prompt, baked to /app/CLAUDE.md (§11.0)
+container/skills/<name>/      # skills baked into the image (e.g. coding), at /app/skills (§11.0)
 internal/vaultinit/           # `goclaw vault init`: embeds template/, installs to ~/Vault (§11)
 ~/Vault/                      # OPTIONAL: shared knowledge vault - a git repo (§11):
-#   ├── CLAUDE.md             #   schema / behavioral contract (read on every session)
+#   ├── CLAUDE.md             #   short vault note pointing at the librarian skill (§11.0)
+#   ├── .claude/skills/librarian/SKILL.md  # the vault operating contract; auto-loaded for vault work
 #   ├── index.md              #   page catalog (read first)
 #   ├── log.md                #   append-only activity log
 #   ├── CRITICAL_FACTS.md     #   tiny always-loaded facts file
@@ -351,6 +353,17 @@ The `internal/mounts/` package deserves the most test coverage - it is the one p
 
 ## 11. Optional layer: a shared knowledge vault
 
+### 11.0 How the prompt is composed (agent-first; the vault is a bolt-on)
+
+goclaw is **agent-first**: the agent has an identity, safety rules, and a coding/ops capability whether or not a vault is mounted. The vault is an *optional* bolt-on brain, never a prerequisite for the agent to function. This is enforced by how the system prompt is built, mirroring NanoClaw's `claude-md-compose.ts` + skill-symlink model:
+
+- A generic **base prompt** (`container/CLAUDE.md`) is baked into the runner image at `/app/CLAUDE.md`: identity, safety, the cross-cutting invariants (do-the-deliverable-not-the-narration, honest reporting, timestamp discipline, no em-dashes), and a mode router. It mentions no vault and no librarian.
+- A **coding skill** (`container/skills/coding/SKILL.md`, baked at `/app/skills/coding`) is always available; the model auto-invokes it by `description` on software tasks.
+- The **librarian skill** lives in the *vault* (`/vault/.claude/skills/librarian/SKILL.md`), not the image. It carries the entire schema/operating contract below. It is symlinked in (and thus auto-invokable) **only when a vault is mounted**.
+- At each launch the host composes the group's `CLAUDE.md` into the container's `~/.claude` as an imports-only entry point (`@./.claude-shared.md` → `/app/CLAUDE.md`), and syncs `~/.claude/skills/<name>` symlinks: `coding` always, `librarian` only with a vault. The targets are container paths (dangling on the host, valid in the container).
+
+So with **no vault** you get a clean coding/ops agent with a real identity; with a vault mounted you get that same agent *plus* the librarian, auto-invoked on knowledge work. The librarian rules (including TWO OUTPUTS and the task-claim/lease discipline) are vault-scoped and never burden a coding turn. The note-writing schema in §11.2–§11.6 below is the *content* of that librarian skill.
+
 ### 11.1 The idea
 
 The vault is a directory of Markdown notes that the agent and you both read and write - you browse and edit it in Obsidian, the agent maintains it. The point is to move from query-time retrieval (where the agent re-derives everything from raw sources on every question) to a **compounding knowledge base**: each new source is read once, distilled, and merged into the existing notes, so cross-references, contradictions, and synthesis are already there next time. The vault gets richer with every message and every question instead of starting cold each session.
@@ -359,7 +372,7 @@ The mental model inversion is the whole point: **you stop maintaining the notes 
 
 **Why this beats RAG at personal scale.** Below roughly 50k–100k tokens (~150–200 dense pages), keeping the knowledge in plain context and letting the agent read the pages it needs gives 100% retrieval reliability, zero vector-DB overhead, and *global* reasoning across the whole corpus instead of stitched-together snippets. NanoClaw should target exactly this regime and lean on `index.md` for navigation (§11.4) - no embeddings, no vector store. Only once a vault outgrows that range does a hybrid (stable core in context, bulk records behind a local BM25/vector search) become worth it. Design for the no-RAG case first.
 
-This fits NanoClaw with almost no new host machinery, because **the vault is just a mount.** The intelligence lives in the agent's instructions (the group's `CLAUDE.md`) and the agent-runner - not in the Go host. What the host adds is the mount, a write-lock, and a couple of optional hooks.
+This fits NanoClaw with almost no new host machinery, because **the vault is just a mount.** The intelligence lives in the agent's instructions (the librarian skill, §11.0) and the agent-runner - not in the Go host. What the host adds is the mount, a write-lock, and a couple of optional hooks.
 
 ### 11.2 Where it sits in the architecture
 
@@ -379,7 +392,7 @@ The structure separates content cleanly by **who owns it**, so the agent always 
   - `credentials/` - where a secret lives and how to find it; never the secret itself.
   - `daily/` - day notes.
   - `tasks/` - open/closed task tracking.
-- the **schema** - the group's `CLAUDE.md`: it is the *behavioral contract*, the programming interface for the agent. Folder map, naming conventions, frontmatter schemas, create-vs-edit rules, link rules, reconcile procedure, lint criteria, and the note-writing discipline below. Read on every session start; it's what keeps the agent a disciplined librarian rather than drifting into generic-chatbot mode.
+- the **schema** - the *behavioral contract*, the programming interface for the agent. Folder map, naming conventions, frontmatter schemas, create-vs-edit rules, link rules, reconcile procedure, lint criteria, and the note-writing discipline below. In goclaw this lives in a **librarian skill** (`/vault/.claude/skills/librarian/SKILL.md`), NOT in the agent's identity prompt - see §11.0. The agent auto-loads it when it does vault work, which keeps it a disciplined librarian rather than drifting into generic-chatbot mode, *without* forcing every coding/ops turn through the librarian rulebook.
 
 A few small **always-loaded context files** at the vault root make the agent cheap to orient on every turn:
 
@@ -470,13 +483,19 @@ The shared, writable vault is the one spot that crosses session isolation, so ha
 
 ### 11.7 Quick-start: a minimal vault schema
 
-Everything above is configuration plus prompt discipline - the host barely changes. The discipline lives in one file, the group's `CLAUDE.md` at the vault root. Here is a minimal-but-complete skeleton an agent group can run with on day one; trim or extend per role preset.
+Everything above is configuration plus prompt discipline - the host barely changes. In goclaw the discipline lives in the **librarian skill** at `/vault/.claude/skills/librarian/SKILL.md` (§11.0), auto-loaded for vault work; the vault-root `CLAUDE.md` shrinks to a short note pointing at it. Here is a minimal-but-complete skeleton (the body of that SKILL.md) an agent group can run with on day one; trim or extend per role preset.
 
 ````markdown
-# Vault - Operating Manual
+---
+name: librarian
+description: Knowledge-vault librarian discipline. Use for vault work; not for plain coding.
+---
+# Vault Librarian
 
-You are the librarian of this vault. You are NOT a chatbot. Every turn either
-reads from or writes to this vault. Obey this contract; do not improvise structure.
+When working in the vault you are its librarian, not a chatbot. Every vault turn
+reads from or writes to it. Obey this contract; do not improvise structure. (The
+cross-cutting rules - do the deliverable, report honestly, timestamps - come from
+the base prompt; this skill adds the vault-specific discipline.)
 
 ## Layout
 - `raw/`             immutable sources - READ ONLY, never edit.
