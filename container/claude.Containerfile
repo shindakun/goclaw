@@ -77,7 +77,7 @@ ENV GOPATH=/work/go GOCACHE=/work/.gocache
 
 # The pinned CLI version the SDK is verified against (keep in sync with the SDK's
 # SupportedCLIVersion).
-RUN npm install -g @anthropic-ai/claude-code@2.1.160 \
+RUN npm install -g @anthropic-ai/claude-code@2.1.161 \
     && npm cache clean --force
 
 COPY --from=build /out/claude-runner /usr/local/bin/claude-runner

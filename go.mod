@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
-	github.com/shindakun/agent-sdk-go v0.0.0-20260602034635-c24407c2a7d3
+	github.com/shindakun/agent-sdk-go v0.1.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.45.0
 	golang.org/x/time v0.15.0
