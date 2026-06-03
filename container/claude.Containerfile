@@ -26,6 +26,11 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.160 \
 
 COPY --from=build /out/claude-runner /usr/local/bin/claude-runner
 
+# /work is the agent's scratch working directory: clones, temp files, and any
+# command output land here, NOT in the mounted /vault (which would pollute it).
+# Ephemeral with the container; owned by the runtime uid so the agent can write.
+RUN mkdir -p /work && chown 1000:1000 /work
+
 # Run as a non-root uid that matches the host's --user 1000:1000 (brief §9).
 # node:22-slim ships a "node" user at uid 1000; reuse it and give it a HOME the
 # claude CLI can write its config/cache into.

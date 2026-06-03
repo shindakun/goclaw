@@ -38,6 +38,9 @@ const (
 	vaultDir = "/vault"
 	// vaultManualPath is the vault's operating manual, used as the system prompt.
 	vaultManualPath = vaultDir + "/CLAUDE.md"
+	// workDir is the agent's scratch working directory (clones, temp files), kept
+	// separate from /vault so command output never pollutes the vault.
+	workDir = "/work"
 )
 
 func main() {
@@ -284,15 +287,18 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 			opts = append(opts, claude.WithSystemPromptFile(r.systemPromptFile))
 		}
 	}
-	if r.vaultMounted {
-		// Headless: there is no human to approve tool prompts, and the container
-		// IS the security sandbox (the agent can only reach /sessions, /vault, and
-		// its own ~/.claude). Auto-approve edits so the librarian can actually
-		// write the vault, and run with the vault as the working dir.
-		opts = append(opts,
-			claude.WithPermissionMode(claude.PermissionAcceptEdits),
-			claude.WithCwd(vaultDir))
-	}
+	// Headless: there is no human at a terminal to answer tool-permission
+	// prompts, so a prompting mode would hang the agent (e.g. on a `git clone`
+	// or any Bash command) with no way for the user to approve. Bypass prompts
+	// entirely. This is safe because the CONTAINER is the security sandbox: the
+	// agent can only reach its mounts (/sessions, /vault, ~/.claude, /work) and
+	// the network, never anything on the host (brief §9).
+	opts = append(opts, claude.WithPermissionMode(claude.PermissionBypass))
+
+	// Work in /work, NOT /vault: scratch like cloned repos and temp files must
+	// not pollute the vault. The vault stays a known location at /vault that the
+	// agent reads/writes by absolute path per its schema.
+	opts = append(opts, claude.WithCwd(workDir))
 	if resumeID != "" {
 		opts = append(opts, claude.WithResume(resumeID))
 	}
