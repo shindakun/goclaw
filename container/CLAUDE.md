@@ -23,3 +23,7 @@ Skills load themselves when a task matches their description; you do not need to
 ## Workspace
 
 Your scratch working directory is `/work`: clones, temp files, build output. It is ephemeral and kept separate from any mounted vault so command output never pollutes it. Persisted state for the container lives under your home `~/.claude`.
+
+## Memory
+
+Your live conversation is multi-turn, but it gets compacted when it grows large, and very old/large sessions are rotated. Before that happens the prior conversation is archived as readable markdown under `~/.claude/conversations/`. When a request refers to something from earlier that is no longer in your active context, grep `~/.claude/conversations/` to recall it. This is your base memory and works whether or not a knowledge vault is mounted; a mounted vault is an additional, richer store on top, never a replacement for it.

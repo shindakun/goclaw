@@ -166,10 +166,18 @@ func (r *runner) maybeRotateTranscript(sessionID string) string {
 	if reason == "" {
 		return ""
 	}
-	// Preserve the heavy transcript by moving it out of the resume path. (Phase B
-	// will first render a summary into conversations/.) A rename failure is not
-	// fatal: we still drop the session id so the agent stops trying to resume a
-	// transcript too large to load.
+	// Render a readable summary into conversations/ before discarding the live
+	// session, so the content is recallable (base memory; see archive.go).
+	// Archival failure is non-fatal - never let it block rotating away a
+	// transcript too large to resume.
+	if dest, err := archiveTranscript(path, "rotated-"+sessionID, time.Now()); err != nil {
+		r.log.Warn("archive before rotate failed", "path", path, "err", err)
+	} else if dest != "" {
+		r.log.Info("archived conversation before rotate", "to", dest)
+	}
+	// Preserve the heavy transcript by also moving the raw file out of the resume
+	// path. A rename failure is not fatal: we still drop the session id so the
+	// agent stops trying to resume a transcript too large to load.
 	aside := fmt.Sprintf("%s.rotated-%d", path, time.Now().UnixNano())
 	if err := os.Rename(path, aside); err != nil {
 		r.log.Warn("could not move rotated transcript aside", "path", path, "err", err)

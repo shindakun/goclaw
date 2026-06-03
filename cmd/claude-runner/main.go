@@ -358,6 +358,13 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 		opts = append(opts, claude.WithResume(resumeID))
 	}
 
+	// Archive the conversation to conversations/ just before the CLI compacts it,
+	// so the about-to-be-summarized history stays recallable (base memory, always
+	// on - see archive.go). The hook payload carries the transcript path.
+	opts = append(opts, claude.WithHooks(map[claude.HookEvent][]claude.HookMatcher{
+		claude.HookPreCompact: {{Callbacks: []claude.HookCallback{r.preCompactArchive}}},
+	}))
+
 	for msg, qErr := range claude.Query(ctx, prompt, opts...) {
 		if qErr != nil {
 			// The CLI subprocess failed. A failed --resume often surfaces here as
