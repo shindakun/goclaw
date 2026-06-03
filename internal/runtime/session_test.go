@@ -30,7 +30,13 @@ func withFakePodman(t *testing.T, psBefore, psAfter string, record *[]string) {
 	ran := false
 	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		*record = append(*record, name+" "+strings.Join(args, " "))
-		isPS := len(args) > 0 && args[0] == "ps"
+		kind := "other"
+		switch {
+		case len(args) > 0 && args[0] == "ps":
+			kind = "ps"
+		case len(args) > 1 && args[0] == "image" && args[1] == "inspect":
+			kind = "imageinspect"
+		}
 		psOutput := psBefore
 		if ran {
 			psOutput = psAfter
@@ -38,18 +44,21 @@ func withFakePodman(t *testing.T, psBefore, psAfter string, record *[]string) {
 		if len(args) > 0 && args[0] == "run" {
 			ran = true
 		}
-		cs := []string{"-test.run=TestHelperProcess", "--", psOutput}
-		if isPS {
-			cs = append(cs, "ps")
-		}
-		cmd := exec.Command(os.Args[0], cs...)
+		cmd := exec.Command(os.Args[0],
+			"-test.run=TestHelperProcess", "--", kind, psOutput)
 		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 		return cmd
 	}
 }
 
-// TestHelperProcess is not a real test; it stands in for podman. For a `ps`
-// invocation it prints the scripted names; otherwise it prints a fake id.
+// fakeImageID is the image ID the fake podman reports for `image inspect`, so
+// fixtures can match it in the ImageID column to model "running the current
+// image".
+const fakeImageID = "abc123def456"
+
+// TestHelperProcess is not a real test; it stands in for podman. argv after "--"
+// is: <kind> <psOutput>. ps → scripted lines; image inspect → fakeImageID;
+// anything else → a fake container id.
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
@@ -61,17 +70,19 @@ func TestHelperProcess(t *testing.T) {
 			break
 		}
 	}
-	psOutput := ""
-	isPS := false
+	kind, psOutput := "", ""
 	if len(args) > 0 {
-		psOutput = args[0]
+		kind = args[0]
 	}
-	if len(args) > 1 && args[1] == "ps" {
-		isPS = true
+	if len(args) > 1 {
+		psOutput = args[1]
 	}
-	if isPS {
+	switch kind {
+	case "ps":
 		os.Stdout.WriteString(psOutput)
-	} else {
+	case "imageinspect":
+		os.Stdout.WriteString(fakeImageID + "\n")
+	default:
 		os.Stdout.WriteString("fake-container-id\n")
 	}
 	os.Exit(0)
@@ -80,7 +91,7 @@ func TestHelperProcess(t *testing.T) {
 func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 	var calls []string
 	// Absent before launch; running after (post-launch health check passes).
-	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\n", &calls)
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	// Use a RELATIVE group dir: podman would treat a relative -v source as a
@@ -127,7 +138,7 @@ func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 func TestEnsureGroupRunner_SkipsWhenRunning(t *testing.T) {
 	var calls []string
 	name := "goclaw-1"
-	withFakePodman(t, name+"\trunning\tgoclaw-runner:latest\n" /* already running, same image */, name+"\trunning\tgoclaw-runner:latest\n", &calls)
+	withFakePodman(t, name+"\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n" /* already running, current image */, name+"\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	gr := GroupRunner{
@@ -138,9 +149,12 @@ func TestEnsureGroupRunner_SkipsWhenRunning(t *testing.T) {
 	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	// Only the ps check; no run.
-	if len(calls) != 1 || !strings.Contains(calls[0], "ps") {
-		t.Fatalf("expected a single ps call, got: %v", calls)
+	// ps (state) + image inspect (current-image check); no rm, no run.
+	if !containsCall(calls, "ps") {
+		t.Fatalf("expected a ps state check, got: %v", calls)
+	}
+	if didLaunchOrRemove(calls) {
+		t.Fatalf("expected no replace for a current-image container, got: %v", calls)
 	}
 }
 
@@ -149,7 +163,7 @@ func TestEnsureGroupRunner_RemovesStaleStoppedThenRuns(t *testing.T) {
 	name := "goclaw-1"
 	// Before: ps -a reports the name stopped → must rm then run.
 	// After: ps -a reports it running → post-launch health check passes.
-	withFakePodman(t, name+"\texited\tgoclaw-runner:latest\n", name+"\trunning\tgoclaw-runner:latest\n", &calls)
+	withFakePodman(t, name+"\texited\tgoclaw-runner:latest\t"+fakeImageID+"\n", name+"\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	gr := GroupRunner{
@@ -205,7 +219,7 @@ func TestRunningGroupIDs_ParsesNames(t *testing.T) {
 func TestStopGroupRunner_RemovesWhenPresent(t *testing.T) {
 	var calls []string
 	// containerState sees it running; StopGroupRunner should rm it.
-	withFakePodman(t, "goclaw-3\trunning\tgoclaw-runner:latest\n", "", &calls)
+	withFakePodman(t, "goclaw-3\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", "", &calls)
 
 	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
 	if err := m.StopGroupRunner(context.Background(), 3); err != nil {
@@ -217,48 +231,79 @@ func TestStopGroupRunner_RemovesWhenPresent(t *testing.T) {
 	}
 }
 
-// A running container started from a DIFFERENT image is replaced when the
-// configured image changes (e.g. switching stub → claude).
+// A running container whose image ID differs from the current image (e.g. the
+// tag was rebuilt under the same name) is replaced.
 func TestEnsureGroupRunner_ReplacesOnImageChange(t *testing.T) {
 	var calls []string
 	name := "goclaw-1"
-	// Running, but on the OLD image; after replacement it runs the new one.
-	withFakePodman(t, name+"\trunning\tlocalhost/goclaw-runner:latest\n",
-		name+"\trunning\tlocalhost/goclaw-claude:latest\n", &calls)
-
-	m := New("podman", "goclaw-claude:latest", RuntimeCrun, nil) // desired = claude
-	gr := GroupRunner{Image: "goclaw-claude:latest", AgentGroupID: 1, GroupDir: "/data/x"}
-	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
-		t.Fatalf("ensure: %v", err)
-	}
-	// ps (sees old image) → rm → run → ps (health check).
-	if len(calls) != 4 {
-		t.Fatalf("expected ps + rm + run + ps, got %d: %v", len(calls), calls)
-	}
-	if !strings.Contains(calls[1], "rm -f "+name) {
-		t.Errorf("call 1 should remove the wrong-image container: %q", calls[1])
-	}
-	if !strings.Contains(calls[2], "run") || !strings.Contains(calls[2], "goclaw-claude:latest") {
-		t.Errorf("call 2 should run the new image: %q", calls[2])
-	}
-}
-
-// A running container on the SAME image (modulo localhost/ prefix) is left alone.
-func TestEnsureGroupRunner_KeepsOnSameImagePrefixed(t *testing.T) {
-	var calls []string
-	name := "goclaw-1"
-	// podman reports localhost/-prefixed; desired is the bare ref.
-	withFakePodman(t, name+"\trunning\tlocalhost/goclaw-claude:latest\n",
-		name+"\trunning\tlocalhost/goclaw-claude:latest\n", &calls)
+	// Running on an OLD image ID; the fake `image inspect` returns fakeImageID
+	// for the current tag, so the IDs differ → replace. After launch it's running.
+	withFakePodman(t, name+"\trunning\tlocalhost/goclaw-claude:latest\toldimageid000\n",
+		name+"\trunning\tlocalhost/goclaw-claude:latest\t"+fakeImageID+"\n", &calls)
 
 	m := New("podman", "goclaw-claude:latest", RuntimeCrun, nil)
 	gr := GroupRunner{Image: "goclaw-claude:latest", AgentGroupID: 1, GroupDir: "/data/x"}
 	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if len(calls) != 1 {
-		t.Fatalf("expected a single ps (no replace), got %d: %v", len(calls), calls)
+	if !containsCall(calls, "rm -f "+name) {
+		t.Errorf("expected a remove of the stale container: %v", calls)
 	}
+	if !didLaunchOrRemove(calls) {
+		t.Errorf("expected a run of the new image: %v", calls)
+	}
+}
+
+// A running container on the CURRENT image ID is left alone, even when the
+// reported image name has a localhost/ prefix.
+func TestEnsureGroupRunner_KeepsOnCurrentImage(t *testing.T) {
+	var calls []string
+	name := "goclaw-1"
+	// ImageID matches the fake `image inspect` (fakeImageID) → keep.
+	withFakePodman(t, name+"\trunning\tlocalhost/goclaw-claude:latest\t"+fakeImageID+"\n",
+		name+"\trunning\tlocalhost/goclaw-claude:latest\t"+fakeImageID+"\n", &calls)
+
+	m := New("podman", "goclaw-claude:latest", RuntimeCrun, nil)
+	gr := GroupRunner{Image: "goclaw-claude:latest", AgentGroupID: 1, GroupDir: "/data/x"}
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if didLaunchOrRemove(calls) {
+		t.Fatalf("expected no replace (kept current image), got: %v", calls)
+	}
+}
+
+// containsCall reports whether any recorded podman invocation contains substr.
+func containsCall(calls []string, substr string) bool {
+	for _, c := range calls {
+		if strings.Contains(c, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// podmanSubcmd returns the podman subcommand of a recorded "podman <sub> …"
+// call (e.g. "run", "rm", "ps", "image"). Matching the subcommand avoids false
+// hits from substrings like the "run" inside "goclaw-runner".
+func podmanSubcmd(call string) string {
+	f := strings.Fields(call)
+	if len(f) >= 2 {
+		return f[1]
+	}
+	return ""
+}
+
+// didLaunchOrRemove reports whether any call launched (run) or removed (rm) a
+// container — i.e. a replacement happened.
+func didLaunchOrRemove(calls []string) bool {
+	for _, c := range calls {
+		switch podmanSubcmd(c) {
+		case "run", "rm":
+			return true
+		}
+	}
+	return false
 }
 
 func TestSameImage(t *testing.T) {
@@ -281,7 +326,7 @@ func TestSameImage(t *testing.T) {
 
 func TestEnsureRunner_AppliesAllowlistedExtraMount(t *testing.T) {
 	var calls []string
-	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\n", &calls)
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
 
 	// Allowlist permits a temp dir rw; request that as an extra mount plus a
 	// non-allowlisted one (which must be dropped).

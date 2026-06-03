@@ -57,16 +57,17 @@ func (g GroupRunner) containerName() string {
 func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 	name := gr.containerName()
 
-	state, img, err := m.containerStateWithImage(ctx, name)
+	info, err := m.inspectContainer(ctx, name)
 	if err != nil {
 		return err
 	}
-	switch state {
+	switch info.state {
 	case stateRunning:
-		if sameImage(img, gr.Image) {
-			return nil // already up on the right image
+		if m.runningCurrentImage(ctx, info, gr.Image) {
+			return nil // already up on the current image
 		}
-		// Image changed under it — replace so the new image takes effect.
+		// Image changed under it (different tag, OR a rebuild of the same tag) —
+		// replace so the new image takes effect.
 		if err := m.remove(ctx, name); err != nil {
 			return err
 		}
@@ -158,39 +159,88 @@ const (
 	stateStopped                        // exists but not running (created/exited/...)
 )
 
+// containerInfo is the state of a named container plus the image it runs.
+type containerInfo struct {
+	state   containerStatus
+	image   string // image reference, e.g. localhost/goclaw-claude:latest
+	imageID string // image ID (digest prefix) — distinguishes same-tag rebuilds
+}
+
 // containerState reports whether a container with the given name exists and
 // whether it is running.
 func (m *Manager) containerState(ctx context.Context, name string) (containerStatus, error) {
-	st, _, err := m.containerStateWithImage(ctx, name)
-	return st, err
+	info, err := m.inspectContainer(ctx, name)
+	return info.state, err
 }
 
-// containerStateWithImage reports the container's state and, when it exists, the
-// image it was started from. It lists all containers (running and not) by exact
-// name, reading the State column so a name reserved by a non-running container
-// is detected — that reservation is what causes `podman run --name` to fail. The
-// image lets EnsureGroupRunner replace a container started from a now-changed
-// image. Fields are tab-delimited so an image reference with no spaces parses
-// cleanly.
-func (m *Manager) containerStateWithImage(ctx context.Context, name string) (containerStatus, string, error) {
+// inspectContainer reports a named container's state and, when it exists, the
+// image and image ID it was started from. It lists all containers (running and
+// not) by exact name, reading the State column so a name reserved by a
+// non-running container is detected — that reservation is what causes
+// `podman run --name` to fail. The image ID lets EnsureGroupRunner replace a
+// container whose image changed, INCLUDING a rebuild under the same tag (which a
+// name comparison alone misses). Fields are tab-delimited.
+func (m *Manager) inspectContainer(ctx context.Context, name string) (containerInfo, error) {
 	cmd := execCommand(ctx, m.podmanBin,
-		"ps", "--all", "--filter", "name=^"+name+"$", "--format", "{{.Names}}\t{{.State}}\t{{.Image}}")
+		"ps", "--all", "--filter", "name=^"+name+"$", "--format", "{{.Names}}\t{{.State}}\t{{.Image}}\t{{.ImageID}}")
 	out, err := cmd.Output()
 	if err != nil {
-		return stateAbsent, "", fmt.Errorf("runtime: podman ps: %w", err)
+		return containerInfo{}, fmt.Errorf("runtime: podman ps: %w", err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) < 3 || fields[0] != name {
+		if len(fields) < 4 || fields[0] != name {
 			continue
 		}
-		img := strings.TrimSpace(fields[2])
-		if fields[1] == "running" {
-			return stateRunning, img, nil
+		info := containerInfo{
+			image:   strings.TrimSpace(fields[2]),
+			imageID: strings.TrimSpace(fields[3]),
 		}
-		return stateStopped, img, nil
+		if fields[1] == "running" {
+			info.state = stateRunning
+		} else {
+			info.state = stateStopped
+		}
+		return info, nil
 	}
-	return stateAbsent, "", nil
+	return containerInfo{state: stateAbsent}, nil
+}
+
+// currentImageID returns the image ID for a reference (the rebuilt-under-same-tag
+// discriminator). Empty if the image isn't present locally (e.g. pulled on run),
+// in which case the caller falls back to a name comparison.
+func (m *Manager) currentImageID(ctx context.Context, ref string) string {
+	out, err := execCommand(ctx, m.podmanBin,
+		"image", "inspect", ref, "--format", "{{.ID}}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// runningCurrentImage reports whether a running container is on the desired
+// image. It prefers an image-ID match (so a rebuild under the same tag is
+// detected as a change), and falls back to comparing image names when the ID
+// can't be resolved locally.
+func (m *Manager) runningCurrentImage(ctx context.Context, info containerInfo, desired string) bool {
+	if want := m.currentImageID(ctx, desired); want != "" && info.imageID != "" {
+		return sameImageID(info.imageID, want)
+	}
+	return sameImage(info.image, desired)
+}
+
+// sameImageID compares two podman image IDs, tolerating the short/long forms
+// (podman ps reports a 12-char prefix; image inspect a full or sha256: id).
+func sameImageID(a, b string) bool {
+	a = strings.TrimPrefix(a, "sha256:")
+	b = strings.TrimPrefix(b, "sha256:")
+	if a == "" || b == "" {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	return strings.HasPrefix(b, a)
 }
 
 // sameImage compares a container's reported image against a desired image,
