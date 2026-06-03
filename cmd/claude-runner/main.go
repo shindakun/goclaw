@@ -78,6 +78,7 @@ func main() {
 		model:            *model,
 		systemPromptFile: promptFile,
 		vaultMounted:     vaultMounted,
+		rotate:           loadRotateConfig(),
 		log:              log,
 	}
 	if err := r.run(*dir, *once, *interval); err != nil {
@@ -90,6 +91,7 @@ type runner struct {
 	model            string
 	systemPromptFile string
 	vaultMounted     bool
+	rotate           rotateConfig
 	log              *slog.Logger
 }
 
@@ -230,6 +232,18 @@ func (r *runner) handle(ctx context.Context, sess *db.SessionDBs, tag, text stri
 // container restart), the id is dropped and the turn retried fresh.
 func (r *runner) ask(ctx context.Context, sess *db.SessionDBs, tag, prompt string) (string, error) {
 	resumeID, _, _ := sess.GetMeta(metaSessionID)
+
+	// Rotation guard: if the resume transcript has grown too big or too old to
+	// reload within the host's idle ceiling, move it aside and start fresh -
+	// otherwise the cold container hangs reloading it and gets killed before it
+	// can reply (see rotate.go). Common case: no transcript over the cap, no-op.
+	if resumeID != "" {
+		if reason := r.maybeRotateTranscript(resumeID); reason != "" {
+			r.log.Info("rotating session - "+reason+"; starting fresh", "session", tag)
+			_ = sess.DeleteMeta(metaSessionID)
+			resumeID = ""
+		}
+	}
 
 	result, sessionID, inputTokens, err := r.query(ctx, resumeID, prompt)
 	if errors.Is(err, errStaleResume) {

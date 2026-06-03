@@ -154,6 +154,11 @@ func run(log *slog.Logger) error {
 		if tz := hostTimezone(); tz != "" {
 			claudeEnv["TZ"] = tz
 		}
+		// Transcript rotation thresholds (optional operator overrides; the runner
+		// has sane defaults of 12MB / 14 days). Pass through only when set so the
+		// runner's defaults apply otherwise. (WithEnv drops empties anyway.)
+		claudeEnv["GOCLAW_TRANSCRIPT_ROTATE_BYTES"] = os.Getenv("GOCLAW_TRANSCRIPT_ROTATE_BYTES")
+		claudeEnv["GOCLAW_TRANSCRIPT_ROTATE_AGE_DAYS"] = os.Getenv("GOCLAW_TRANSCRIPT_ROTATE_AGE_DAYS")
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir)
