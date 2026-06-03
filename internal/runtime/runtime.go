@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/shindakun/goclaw/internal/mounts"
 )
@@ -50,6 +51,15 @@ type Manager struct {
 	allowlist *mounts.Allowlist // validates extra group mounts (may be nil)
 	env       map[string]string // env vars set on every launched container
 	vaultDir  string            // host knowledge-vault dir, mounted at /vault (may be empty)
+
+	// ensureMu serializes EnsureGroupRunner per agent group. The router (on a new
+	// message) and the sweep (recovery) both call EnsureRunner concurrently; the
+	// check-then-remove-then-run sequence must be atomic, or two callers can both
+	// pass the "not running / wrong image" check and launch/replace at once -
+	// briefly running TWO containers for one group, which duplicates and drops
+	// replies (and cancels in-flight work). A per-group lock makes it atomic.
+	muMapMu  sync.Mutex
+	ensureMu map[int64]*sync.Mutex
 }
 
 // New constructs a Manager. binary defaults to "podman" and runtime to crun if
@@ -62,7 +72,25 @@ func New(binary, image string, rt Runtime, allowlist *mounts.Allowlist) *Manager
 	if rt == "" {
 		rt = RuntimeCrun
 	}
-	return &Manager{podmanBin: binary, image: image, runtime: rt, allowlist: allowlist}
+	return &Manager{
+		podmanBin: binary,
+		image:     image,
+		runtime:   rt,
+		allowlist: allowlist,
+		ensureMu:  make(map[int64]*sync.Mutex),
+	}
+}
+
+// groupLock returns the per-agent-group ensure lock, creating it on first use.
+func (m *Manager) groupLock(agentGroupID int64) *sync.Mutex {
+	m.muMapMu.Lock()
+	defer m.muMapMu.Unlock()
+	mu, ok := m.ensureMu[agentGroupID]
+	if !ok {
+		mu = &sync.Mutex{}
+		m.ensureMu[agentGroupID] = mu
+	}
+	return mu
 }
 
 // WithEnv sets environment variables passed into every launched runner

@@ -60,6 +60,14 @@ func (g GroupRunner) containerName() string {
 // stopped name fails with exit 125.) The group's sessions dir is mounted
 // read-write at /sessions with :Z relabeling (brief §6.3).
 func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
+	// Serialize per group: the router and the sweep both call this concurrently,
+	// and the inspect -> remove -> run sequence below must be atomic or two
+	// callers can both launch a container for the same group (duplicate replies,
+	// canceled in-flight work). See Manager.ensureMu.
+	lock := m.groupLock(gr.AgentGroupID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	name := gr.containerName()
 
 	info, err := m.inspectContainer(ctx, name)

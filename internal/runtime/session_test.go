@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shindakun/goclaw/internal/mounts"
@@ -374,5 +375,61 @@ func TestStopGroupRunner_NoopWhenAbsent(t *testing.T) {
 	}
 	if len(calls) != 1 || !strings.Contains(calls[0], "ps") {
 		t.Fatalf("expected only a ps check, got %v", calls)
+	}
+}
+
+// TestEnsureGroupRunner_ConcurrentLaunchesOnce verifies the per-group lock makes
+// concurrent EnsureRunner calls (router + sweep racing) launch exactly one
+// container, not several. Without the lock, multiple callers pass the
+// "absent / not-running" check and each issue `podman run`.
+func TestEnsureGroupRunner_ConcurrentLaunchesOnce(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		runs    int  // how many `podman run` were issued
+		running bool // becomes true after the first run; ps then reports it running
+	)
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		mu.Lock()
+		kind := ""
+		var out string
+		switch {
+		case len(args) > 0 && args[0] == "ps":
+			if running {
+				out = "goclaw-1\trunning\tgoclaw-img:latest\t" + fakeImageID + "\n"
+			} else {
+				out = ""
+			}
+			kind = "ps"
+		case len(args) > 1 && args[0] == "image" && args[1] == "inspect":
+			out, kind = fakeImageID+"\n", "imageinspect"
+		case len(args) > 0 && args[0] == "run":
+			runs++
+			running = true // after a launch, the container is running
+			kind = "other"
+		default:
+			kind = "other"
+		}
+		mu.Unlock()
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--", kind, out)
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+
+	m := New("podman", "goclaw-img:latest", RuntimeCrun, nil)
+	gr := GroupRunner{Image: "goclaw-img:latest", AgentGroupID: 1, GroupDir: "/data/x"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = m.EnsureGroupRunner(context.Background(), gr) }()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if runs != 1 {
+		t.Fatalf("expected exactly 1 container launch under concurrency, got %d", runs)
 	}
 }
