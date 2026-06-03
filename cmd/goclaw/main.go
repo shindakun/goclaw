@@ -21,6 +21,7 @@ import (
 	"github.com/shindakun/goclaw/internal/config"
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/delivery"
+	"github.com/shindakun/goclaw/internal/maintenance"
 	"github.com/shindakun/goclaw/internal/mounts"
 	"github.com/shindakun/goclaw/internal/router"
 	"github.com/shindakun/goclaw/internal/runtime"
@@ -135,6 +136,12 @@ func run(log *slog.Logger) error {
 		} else if cfg.ClaudeCodeOAuthToken != "" {
 			claudeEnv["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.ClaudeCodeOAuthToken
 		}
+		// Git identity, so the agent can commit (the vault repo, cloned repos).
+		// git honors GIT_AUTHOR_*/GIT_COMMITTER_* without a writable git config.
+		claudeEnv["GIT_AUTHOR_NAME"] = cfg.GitUserName
+		claudeEnv["GIT_AUTHOR_EMAIL"] = cfg.GitUserEmail
+		claudeEnv["GIT_COMMITTER_NAME"] = cfg.GitUserName
+		claudeEnv["GIT_COMMITTER_EMAIL"] = cfg.GitUserEmail
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir)
@@ -167,6 +174,21 @@ func run(log *slog.Logger) error {
 	g.Go(func() error { return rtr.Run(gctx, inbound) })
 	g.Go(func() error { return del.Run(gctx) })
 	g.Go(func() error { return swp.Run(gctx) })
+
+	// Scheduled vault maintenance (brief §11.5): only when a vault is configured
+	// and we know the owner (so jobs have a session to run in and a chat for the
+	// summary). Targets the owner's DM with the default agent group.
+	if cfg.VaultDir != "" && cfg.OwnerTelegramID != "" && ensurer != nil {
+		target := maintenance.Target{
+			AgentGroupID: agentGroupID,
+			SessionKey:   "telegram:" + cfg.OwnerTelegramID,
+			Channel:      "telegram",
+			ChatID:       cfg.OwnerTelegramID,
+		}
+		sched := maintenance.New(central, cfg.DataDir, ensurer, target, log)
+		g.Go(func() error { return sched.Run(gctx) })
+		log.Info("vault maintenance enabled", "owner", cfg.OwnerTelegramID)
+	}
 
 	log.Info("goclaw host started")
 	err = g.Wait()

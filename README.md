@@ -162,6 +162,12 @@ the sandbox. The agent then maintains the vault per the schema: typed notes,
 frontmatter, an `index.md` catalog, and an append-only `log.md` audit trail. You
 browse and edit the same folder in Obsidian; git tracks every change.
 
+**Scheduled upkeep** runs automatically when a vault and an owner are configured
+(brief §11.5): a morning day-note pass, a nightly reconcile + synthesize, and a
+weekly lint. Each runs the agent against the vault and posts a one-line summary
+to the owner's chat. The agent commits its changes with git, so set
+`GOCLAW_GIT_USER_NAME` / `GOCLAW_GIT_USER_EMAIL` to your identity (defaults work).
+
 ### Without container launch
 
 Leave `GOCLAW_LAUNCH_RUNNER` unset to start a runner out of band instead -

@@ -153,6 +153,32 @@ func (d *DB) HasAgentDestination(agentGroupID int64, channel, chatID string) (bo
 	return n > 0, nil
 }
 
+// GetKV returns a host-state value, or ("", false) if unset. Backed by the
+// central DB's kv table (e.g. maintenance-job last-run timestamps).
+func (d *DB) GetKV(key string) (string, bool, error) {
+	var v string
+	err := d.QueryRow(`SELECT value FROM kv WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get kv %q: %w", key, err)
+	}
+	return v, true, nil
+}
+
+// SetKV upserts a host-state value.
+func (d *DB) SetKV(key, value string) error {
+	_, err := d.Exec(`
+		INSERT INTO kv (key, value, updated_at) VALUES (?, ?, datetime('now'))
+		ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+		key, value)
+	if err != nil {
+		return fmt.Errorf("set kv %q: %w", key, err)
+	}
+	return nil
+}
+
 // Session is a resolved session row (the central-DB record; the on-disk DB pair
 // is opened separately via OpenSession).
 type Session struct {

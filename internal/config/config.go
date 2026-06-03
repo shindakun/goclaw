@@ -43,6 +43,11 @@ type Config struct {
 	// prompt (brief §11). Empty disables the knowledge vault. Create one with
 	// `goclaw vault init`.
 	VaultDir string
+	// GitUserName / GitUserEmail set the agent's git identity inside the
+	// container (so `git commit` works on the vault and on cloned repos). Passed
+	// in as GIT_AUTHOR_*/GIT_COMMITTER_* env. Sensible defaults applied.
+	GitUserName  string
+	GitUserEmail string
 	// OwnerTelegramID, if set, is seeded at startup as the owner user's Telegram
 	// identity so the first real user can get past the access gate without
 	// hand-editing the DB (brief §3.4). Empty disables the bootstrap.
@@ -85,6 +90,8 @@ func Load() (*Config, error) {
 		AnthropicAPIKey:         os.Getenv("GOCLAW_ANTHROPIC_API_KEY"),
 		ClaudeCodeOAuthToken:    os.Getenv("GOCLAW_CLAUDE_CODE_OAUTH_TOKEN"),
 		VaultDir:                expandHome(os.Getenv("GOCLAW_VAULT_DIR"), home),
+		GitUserName:             getenv("GOCLAW_GIT_USER_NAME", "goclaw agent"),
+		GitUserEmail:            getenv("GOCLAW_GIT_USER_EMAIL", "agent@goclaw.local"),
 	}
 	return cfg, nil
 }
