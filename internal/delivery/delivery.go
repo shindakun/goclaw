@@ -103,6 +103,7 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 		// The reply is ready: the runner is done, so stop the typing indicator
 		// regardless of whether the send below succeeds.
 		if d.typer != nil {
+			d.log.Info("typing stop", "channel", m.Channel, "chat", m.ChatID)
 			d.typer.Stop(m.Channel, m.ChatID)
 		}
 

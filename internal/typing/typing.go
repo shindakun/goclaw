@@ -93,7 +93,7 @@ func (m *Manager) Stop(channel, chatID string) {
 func (m *Manager) loop(ctx context.Context, sender channels.ActionSender, chatID string) {
 	send := func() {
 		if err := sender.SendAction(ctx, chatID, "typing"); err != nil && ctx.Err() == nil {
-			m.log.Debug("typing action failed", "chat", chatID, "err", err)
+			m.log.Warn("typing action failed", "chat", chatID, "err", err)
 		}
 	}
 	send()
