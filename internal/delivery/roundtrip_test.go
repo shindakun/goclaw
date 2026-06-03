@@ -43,8 +43,8 @@ func TestRoundTrip(t *testing.T) {
 		if _, err := sess.EnqueueOutbound(m.Channel, m.ChatID, fmt.Sprintf("echo: %s", m.Text)); err != nil {
 			t.Fatalf("enqueue outbound: %v", err)
 		}
-		if err := sess.MarkInboundConsumed(m.ID); err != nil {
-			t.Fatalf("mark consumed: %v", err)
+		if err := sess.SetInboundHWM(m.ID); err != nil {
+			t.Fatalf("advance hwm: %v", err)
 		}
 	}
 	sess.Close()

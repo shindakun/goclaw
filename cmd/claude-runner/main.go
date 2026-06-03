@@ -177,7 +177,10 @@ func (r *runner) processSession(ctx context.Context, dir string) (int, error) {
 		if _, err := sess.EnqueueOutbound(m.Channel, m.ChatID, reply); err != nil {
 			return 0, err
 		}
-		if err := sess.MarkInboundConsumed(m.ID); err != nil {
+		// Advance the processed high-water mark in outbound.db (the runner's own
+		// DB). The runner never writes inbound.db, so the host's inbound inserts
+		// can't be clobbered (brief §5.1, single-writer per DB).
+		if err := sess.SetInboundHWM(m.ID); err != nil {
 			return 0, err
 		}
 		r.log.Info("answered", "session", filepath.Base(dir), "in_id", m.ID)

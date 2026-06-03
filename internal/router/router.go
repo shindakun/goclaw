@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/db"
@@ -299,14 +300,18 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 		return err
 	}
 
-	sess, err := db.OpenSession(r.dataDir, agentGroupID, sessionKey)
+	// Write the message into inbound.db with a verified, retried enqueue. The
+	// session DB is shared with the container across a bind mount, where a
+	// concurrent writer can lose a committed insert; EnqueueInbound reads the row
+	// back, and we retry a few times before giving up. We only proceed (and log
+	// success) once the write is confirmed durable.
+	id, err := r.enqueueDurable(agentGroupID, sessionKey, msg)
 	if err != nil {
-		return err
-	}
-	defer sess.Close()
-
-	id, err := sess.EnqueueInbound(msg.Channel, msg.ChatID, msg.SenderID, msg.Sender, msg.Text)
-	if err != nil {
+		// The message was NOT accepted. Say so plainly, and tell the user so they
+		// can resend rather than silently believing it was received.
+		r.log.Error("message NOT enqueued (write not durable)",
+			"channel", msg.Channel, "agent_group", agentGroupID, "session", sessionKey, "err", err)
+		r.notifyDropped(ctx, msg)
 		return err
 	}
 	r.log.Info("message enqueued to inbound",
@@ -340,6 +345,50 @@ func (r *Router) enqueue(ctx context.Context, msg channels.InboundMsg, agentGrou
 		}
 	}
 	return nil
+}
+
+// enqueueInboundAttempts is how many times enqueueDurable retries a verified
+// inbound write before declaring the message lost.
+const enqueueInboundAttempts = 4
+
+// enqueueDurable writes the message into the session inbound and confirms it
+// persisted, retrying on a non-durable write (the session DB is shared with the
+// container across a bind mount, where a concurrent writer can clobber an
+// insert). Returns the row id only on a verified write; otherwise the final
+// error so the caller can tell the user the message was not accepted.
+func (r *Router) enqueueDurable(agentGroupID int64, sessionKey string, msg channels.InboundMsg) (int64, error) {
+	var lastErr error
+	for attempt := 1; attempt <= enqueueInboundAttempts; attempt++ {
+		// Re-open per attempt so each retry gets a fresh handle/view of the file.
+		sess, err := db.OpenSession(r.dataDir, agentGroupID, sessionKey)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		id, err := sess.EnqueueInbound(msg.Channel, msg.ChatID, msg.SenderID, msg.Sender, msg.Text)
+		sess.Close()
+		if err == nil {
+			return id, nil
+		}
+		lastErr = err
+		r.log.Warn("inbound write not durable, retrying",
+			"session", sessionKey, "attempt", attempt, "err", err)
+		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	}
+	return 0, fmt.Errorf("inbound write failed after %d attempts: %w", enqueueInboundAttempts, lastErr)
+}
+
+// notifyDropped tells the user their message was not accepted, so they can
+// resend rather than assume it was received. Best-effort; needs a sender.
+func (r *Router) notifyDropped(ctx context.Context, msg channels.InboundMsg) {
+	if r.sender == nil {
+		return
+	}
+	_ = r.sender.Send(ctx, channels.OutboundMsg{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Text:    "⚠️ I couldn't save your message (a storage write failed), so it was NOT received. Please send it again.",
+	})
 }
 
 // extraMountRequests loads an agent group's requested extra mounts and converts

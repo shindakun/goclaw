@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	_ "modernc.org/sqlite"
 )
@@ -64,13 +65,18 @@ const (
 	journalDelete journalMode = "DELETE"
 )
 
-// applyPragmas sets the journal mode, foreign keys, and busy timeout on a fresh
-// handle.
+// applyPragmas sets the journal mode, durability, foreign keys, and busy timeout
+// on a fresh handle. synchronous=FULL is important for the session DBs: they are
+// written by two processes (host + container) across a podman bind mount, where
+// a less-durable mode can leave a committed write unflushed and lose it to a
+// concurrent writer. A long busy_timeout lets a writer wait out the other's lock
+// instead of failing.
 func applyPragmas(sqlDB *sql.DB, journal journalMode) error {
 	for _, p := range []string{
 		"PRAGMA journal_mode = " + string(journal) + ";",
+		"PRAGMA synchronous = FULL;",
 		"PRAGMA foreign_keys = ON;",
-		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA busy_timeout = 10000;",
 	} {
 		if _, err := sqlDB.Exec(p); err != nil {
 			return fmt.Errorf("pragma %q: %w", p, err)
@@ -201,7 +207,23 @@ func (s *SessionDBs) EnqueueInbound(channel, chatID, senderID, senderName, text 
 	if err != nil {
 		return 0, fmt.Errorf("enqueue inbound: %w", err)
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("enqueue inbound: last id: %w", err)
+	}
+	// Verify the row actually persisted. The session inbound is written by both
+	// the host and the container across a bind mount, where a concurrent writer
+	// can clobber a committed insert; without this check we would report a write
+	// that was silently lost. Read it back on the same handle.
+	var got string
+	err = s.Inbound.QueryRow(`SELECT text FROM messages WHERE id = ?`, id).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && got != text) {
+		return 0, fmt.Errorf("enqueue inbound: write not durable (row %d missing or mismatched after insert)", id)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("enqueue inbound: verify: %w", err)
+	}
+	return id, nil
 }
 
 // OutboundMessage is one row read from a session's outbound queue.
@@ -273,13 +295,44 @@ type InboundMessage struct {
 	Text       string
 }
 
-// PendingInbound returns inbound rows the container hasn't consumed yet.
+// metaInboundHWM is the outbound.meta key holding the highest inbound message id
+// the runner has processed. The runner advances it in its OWN database
+// (outbound.db) instead of writing inbound.db, so inbound.db keeps a single
+// writer (the host) and a concurrent insert can't be clobbered (brief §5.1).
+const metaInboundHWM = "inbound_hwm"
+
+// InboundHWM returns the runner's processed high-water mark (0 if unset).
+func (s *SessionDBs) InboundHWM() (int64, error) {
+	v, ok, err := s.GetMeta(metaInboundHWM)
+	if err != nil || !ok {
+		return 0, err
+	}
+	hwm, perr := strconv.ParseInt(v, 10, 64)
+	if perr != nil {
+		return 0, fmt.Errorf("parse inbound hwm %q: %w", v, perr)
+	}
+	return hwm, nil
+}
+
+// SetInboundHWM records the runner's processed high-water mark (runner side,
+// written to outbound.db which the runner owns).
+func (s *SessionDBs) SetInboundHWM(id int64) error {
+	return s.SetMeta(metaInboundHWM, strconv.FormatInt(id, 10))
+}
+
+// PendingInbound returns inbound rows the runner hasn't processed yet, i.e. with
+// id greater than the runner's high-water mark. Reads only; the runner never
+// writes inbound.db.
 func (s *SessionDBs) PendingInbound() ([]InboundMessage, error) {
+	hwm, err := s.InboundHWM()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.Inbound.Query(`
 		SELECT id, channel, chat_id, sender_id, COALESCE(sender_name, ''), text
 		FROM messages
-		WHERE status = 'pending'
-		ORDER BY id ASC`)
+		WHERE id > ?
+		ORDER BY id ASC`, hwm)
 	if err != nil {
 		return nil, fmt.Errorf("read pending inbound: %w", err)
 	}
@@ -296,27 +349,21 @@ func (s *SessionDBs) PendingInbound() ([]InboundMessage, error) {
 	return out, rows.Err()
 }
 
-// HasPendingInbound reports whether the session has any unconsumed inbound
-// messages. The sweep uses this to decide whether a session needs its runner
-// (re)launched (brief §3.3).
+// HasPendingInbound reports whether any inbound message is past the runner's
+// high-water mark. The sweep uses this to decide whether a session needs its
+// runner (re)launched (brief §3.3).
 func (s *SessionDBs) HasPendingInbound() (bool, error) {
+	hwm, err := s.InboundHWM()
+	if err != nil {
+		return false, err
+	}
 	var n int
 	if err := s.Inbound.QueryRow(
-		`SELECT count(*) FROM messages WHERE status = 'pending'`,
+		`SELECT count(*) FROM messages WHERE id > ?`, hwm,
 	).Scan(&n); err != nil {
 		return false, fmt.Errorf("count pending inbound: %w", err)
 	}
 	return n > 0, nil
-}
-
-// MarkInboundConsumed flips an inbound row to 'consumed' (runner side).
-func (s *SessionDBs) MarkInboundConsumed(id int64) error {
-	_, err := s.Inbound.Exec(
-		`UPDATE messages SET status = 'consumed', consumed_at = datetime('now') WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("mark inbound consumed: %w", err)
-	}
-	return err
 }
 
 // EnqueueOutbound writes a reply into the session's outbound queue as 'pending'

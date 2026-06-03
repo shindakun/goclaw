@@ -126,7 +126,8 @@ func processSession(dir string, log *slog.Logger) (int, error) {
 		if _, err := sess.EnqueueOutbound(m.Channel, m.ChatID, reply); err != nil {
 			return 0, err
 		}
-		if err := sess.MarkInboundConsumed(m.ID); err != nil {
+		// Advance the high-water mark in outbound.db; never write inbound.db.
+		if err := sess.SetInboundHWM(m.ID); err != nil {
 			return 0, err
 		}
 		log.Info("echoed", "session", filepath.Base(dir), "in_id", m.ID, "text", m.Text)
