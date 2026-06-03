@@ -114,6 +114,17 @@ avoid two workers doing the same task, treat every task like a lease.
   has the handoff context.
 - CLOSE explicitly - finished work is `state: done` with a final log line; never
   delete a task note (history must survive).
+- DONE MEANS THE DELIVERABLE EXISTS - only set `state: done` after the task's
+  actual output has happened: the message was SENT, the file was WRITTEN, the
+  command was RUN. If the task is "say X", you are done only once an outbound
+  message containing X has actually gone out - sending a summary that *says* you
+  said X is NOT doing the task. Never write "did X" / "said X" / "ran X" in a
+  reply or a handoff note unless you genuinely performed X this turn; describing
+  an action is not performing it. When you report completion, reflect what you
+  actually emitted (quote it), don't assert an action you didn't take.
+- TIMESTAMP HANDOFF LINES - every Notes/handoff and log line carries a full
+  `YYYY-MM-DD HH:MM`, not a bare date, so a status line is unambiguously "true at
+  THAT time" rather than a standing present-tense claim. (`- 2026-06-03 14:05 — ...`)
 
 ## Operations
 - ingest <source>   read it → search vault → update the 10–15 pages it touches →
