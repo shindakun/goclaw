@@ -88,8 +88,22 @@ blocked_on: <what, or empty>              # external blocker / human decision
 Tasks are shared: multiple agent runs and the human all touch `wiki/tasks/`. To
 avoid two workers doing the same task, treat every task like a lease.
 
+> **STOP. "Claim" is a FILE WRITE, not an intention.** Before you read sources,
+> run a command, edit a page, or do ANY task work, your FIRST action must be to
+> edit the task note's frontmatter (`state: claimed`, `claimed_by`, `lease_until`)
+> and append a claim line to `log.md`. If you have not yet written those, you have
+> not claimed the task - do that edit now, before anything else. Saying "I'm
+> claiming X" and then immediately doing X without the edit is the exact bug this
+> rule exists to stop: the task still reads `open` on disk, so another run (or the
+> morning maintenance pass that pulls open/overdue tasks) can claim and redo the
+> same work. Sequence is mandatory: (1) confirm it is `open` or a stale lease,
+> (2) WRITE the claim, (3) only then work, (4) close as `done`. Never fold step 2
+> into step 3.
+
 - CLAIM BEFORE WORKING - set `state: claimed`, `claimed_by: <you>`, and
   `lease_until` to a short horizon (e.g. now + 30m). Append a claim line to the log.
+  This persisted write IS the lease; until it lands on disk no claim exists, no
+  matter what you intended.
 - HEARTBEAT - if still working as `lease_until` nears, extend it (re-claim).
 - A claim whose `lease_until` is in the PAST is STALE and reclaimable by anyone -
   steal it, but read its prior notes first so work isn't lost.

@@ -85,6 +85,23 @@ func applyPragmas(sqlDB *sql.DB, journal journalMode) error {
 	return nil
 }
 
+// applyReadPragmas sets only the connection-level pragmas that are safe on a
+// READ-ONLY handle. journal_mode and synchronous are WRITES (journal_mode mutates
+// the db header), so running them on a mode=ro handle errors with "attempt to
+// write a readonly database". busy_timeout is the one that matters for a reader:
+// it lets a read wait out the runner's write lock instead of failing immediately.
+func applyReadPragmas(sqlDB *sql.DB) error {
+	for _, p := range []string{
+		"PRAGMA foreign_keys = ON;",
+		"PRAGMA busy_timeout = 10000;",
+	} {
+		if _, err := sqlDB.Exec(p); err != nil {
+			return fmt.Errorf("read pragma %q: %w", p, err)
+		}
+	}
+	return nil
+}
+
 // SessionDBs holds the two per-session handles. Each session sees only its own
 // inbound/outbound pair (brief §3.4, session isolation).
 //
@@ -209,9 +226,10 @@ func OpenSessionHostDir(dir string) (*SessionDBs, error) {
 		inbound.Close()
 		return nil, fmt.Errorf("open outbound.db (ro): %w", err)
 	}
-	// journal_mode is a no-op on a read-only handle; set the rest (busy_timeout,
-	// foreign_keys, synchronous) which apply to readers too.
-	if err := applyPragmas(outbound, journalDelete); err != nil {
+	// Read-only handle: only set reader-safe pragmas. journal_mode/synchronous
+	// are writes and error on a mode=ro db (776), which is what broke the first
+	// drain after the read-only change.
+	if err := applyReadPragmas(outbound); err != nil {
 		inbound.Close()
 		outbound.Close()
 		return nil, err
