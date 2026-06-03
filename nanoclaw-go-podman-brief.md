@@ -326,7 +326,7 @@ internal/channels/telegram/   # Telegram adapter (the v0 channel, §7.4)
 internal/vaultlock/           # OPTIONAL: flock single-writer guard for the shared vault (§11)
 container/agent-runner/       # TS Agent SDK (Option A) OR Go on shindakun/agent-sdk-go (Option A′); §4
 groups/<folder>/              # per-agent-group filesystem (CLAUDE.md, skills, container config)
-vault-template/               # OPTIONAL: starter vault template, copied to ~/Vault (§11)
+internal/vaultinit/           # `goclaw vault init`: embeds template/, installs to ~/Vault (§11)
 ~/Vault/                      # OPTIONAL: shared knowledge vault - a git repo (§11):
 #   ├── CLAUDE.md             #   schema / behavioral contract (read on every session)
 #   ├── index.md              #   page catalog (read first)

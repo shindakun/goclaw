@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Config holds the host's runtime configuration.
@@ -37,6 +38,11 @@ type Config struct {
 	// Code-credentials"); extract it into this env var. Takes precedence over
 	// AnthropicAPIKey when both are set.
 	ClaudeCodeOAuthToken string
+	// VaultDir, if set, is a host directory mounted read-write at /vault in the
+	// agent-group container, and the runner reads /vault/CLAUDE.md as its system
+	// prompt (brief §11). Empty disables the knowledge vault. Create one with
+	// `goclaw vault init`.
+	VaultDir string
 	// OwnerTelegramID, if set, is seeded at startup as the owner user's Telegram
 	// identity so the first real user can get past the access gate without
 	// hand-editing the DB (brief §3.4). Empty disables the bootstrap.
@@ -78,6 +84,7 @@ func Load() (*Config, error) {
 		RunnerImage:             getenv("GOCLAW_RUNNER_IMAGE", "goclaw-runner:latest"),
 		AnthropicAPIKey:         os.Getenv("GOCLAW_ANTHROPIC_API_KEY"),
 		ClaudeCodeOAuthToken:    os.Getenv("GOCLAW_CLAUDE_CODE_OAUTH_TOKEN"),
+		VaultDir:                expandHome(os.Getenv("GOCLAW_VAULT_DIR"), home),
 	}
 	return cfg, nil
 }
@@ -87,4 +94,15 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// expandHome replaces a leading "~" with home so GOCLAW_VAULT_DIR=~/Vault works.
+func expandHome(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }

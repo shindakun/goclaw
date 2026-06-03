@@ -49,6 +49,7 @@ type Manager struct {
 	runtime   Runtime           // OCI runtime for launched containers
 	allowlist *mounts.Allowlist // validates extra group mounts (may be nil)
 	env       map[string]string // env vars set on every launched container
+	vaultDir  string            // host knowledge-vault dir, mounted at /vault (may be empty)
 }
 
 // New constructs a Manager. binary defaults to "podman" and runtime to crun if
@@ -78,6 +79,14 @@ func (m *Manager) WithEnv(env map[string]string) *Manager {
 	return m
 }
 
+// WithVault sets the host knowledge-vault directory, mounted read-write at
+// /vault in every launched runner container (brief §11). Empty disables it.
+// Returns m for chaining.
+func (m *Manager) WithVault(dir string) *Manager {
+	m.vaultDir = dir
+	return m
+}
+
 // EnsureRunner implements the RunnerEnsurer interface used by the router and
 // sweep: it ensures a runner container is up for the given agent group,
 // launching one (mounting groupDir at /sessions, plus any extra mounts that
@@ -92,6 +101,7 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir
 		AgentGroupID: agentGroupID,
 		GroupDir:     groupDir,
 		ClaudeHome:   claudeHomeFor(groupDir),
+		VaultDir:     m.vaultDir,
 		ExtraMounts:  validated,
 	})
 }

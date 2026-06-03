@@ -25,12 +25,17 @@ type GroupRunner struct {
 	AgentGroupID int64
 	GroupDir     string         // host path to the dir holding this group's session subdirs
 	ClaudeHome   string         // OPTIONAL host dir persisted as the container's ~/.claude
+	VaultDir     string         // OPTIONAL host knowledge-vault dir, mounted rw at /vault
 	ExtraMounts  []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
 
 // claudeHomePath is where the container's claude CLI keeps its config + session
 // history. Matches HOME=/home/node in container/claude.Containerfile.
 const claudeHomePath = "/home/node/.claude"
+
+// vaultMountPath is where the knowledge vault is mounted in the container; the
+// runner reads vaultMountPath/CLAUDE.md as its system prompt (brief §11).
+const vaultMountPath = "/vault"
 
 // containerNamePrefix is the common prefix of every runner container's name.
 const containerNamePrefix = "goclaw-"
@@ -106,6 +111,20 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		groupMounts = append(groupMounts, mounts.Mount{
 			HostPath:      home,
 			ContainerPath: claudeHomePath,
+			ReadWrite:     true,
+		})
+	}
+
+	// Mount the knowledge vault read-write at /vault so the agent can read its
+	// CLAUDE.md (system prompt) and read/write notes (brief §11).
+	if gr.VaultDir != "" {
+		vault, err := filepath.Abs(gr.VaultDir)
+		if err != nil {
+			return fmt.Errorf("runtime: resolve vault dir %q: %w", gr.VaultDir, err)
+		}
+		groupMounts = append(groupMounts, mounts.Mount{
+			HostPath:      vault,
+			ContainerPath: vaultMountPath,
 			ReadWrite:     true,
 		})
 	}

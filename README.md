@@ -29,7 +29,7 @@ internal/permissions/ roles, sender policy, access gate (REAL)
 internal/vault/       OneCLI credential-proxy wiring at spawn time (stub)
 internal/vaultlock/   flock single-writer guard for the shared vault
 container/            Containerfiles: runner (echo stub) + claude (real runner)
-vault-template/       optional knowledge-vault starter (brief §11)
+internal/vaultinit/   `goclaw vault init` installer + embedded vault template (brief §11)
 ```
 
 ## Build & run
@@ -142,6 +142,25 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID> -once
 #   -model              override the model
 #   -system-prompt-file e.g. a group's CLAUDE.md
 ```
+
+### Knowledge vault
+
+Give the agent a persistent, Obsidian-style Markdown vault it reads and writes
+(brief §11). Install one from the embedded template, then point goclaw at it:
+
+```sh
+goclaw vault init              # installs to ~/Vault (or: goclaw vault init /path)
+
+# .env
+GOCLAW_VAULT_DIR=~/Vault
+```
+
+The host mounts the vault read-write at `/vault` in the agent-group container.
+The runner reads `/vault/CLAUDE.md` as its system prompt (so the agent behaves as
+the vault's librarian) and runs with edits auto-approved, since the container is
+the sandbox. The agent then maintains the vault per the schema: typed notes,
+frontmatter, an `index.md` catalog, and an append-only `log.md` audit trail. You
+browse and edit the same folder in Obsidian; git tracks every change.
 
 ### Without container launch
 

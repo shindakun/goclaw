@@ -31,19 +31,18 @@ once you have real notes.
 
 ## Setup
 
-1. Copy this directory to your vault location (the brief uses `~/Vault/`):
+1. Install a vault from this template (defaults to `~/Vault`, runs `git init`):
 
    ```sh
-   cp -R vault-template ~/Vault
-   cd ~/Vault && git init && git add -A && git commit -m "init vault"
+   goclaw vault init            # or: goclaw vault init /path/to/Vault
    ```
 
 2. Fill in `CRITICAL_FACTS.md` (owner, purpose, timezone).
-3. Open the folder in Obsidian - the graph view and Dataview work out of the box.
-4. Wire it into a goclaw agent group: add `~/Vault` as a **read-write**
-   mount-allowlist entry mounted at `/vault` (`:Z` under Podman), and point the group's
-   container `CLAUDE.md` at this manual. See §11.5 of the brief for the `flock` write
-   guard and scheduled-maintenance jobs.
+3. Open the folder in Obsidian: the graph view and Dataview work out of the box.
+4. Point goclaw at it: set `GOCLAW_VAULT_DIR=~/Vault` and restart. The host mounts
+   it read-write at `/vault` in the agent-group container (`:Z` under Podman),
+   points the runner's system prompt at this manual, and takes a `flock` write
+   guard. See §11.5 of the brief for the guard and scheduled-maintenance jobs.
 
 ## Why git
 

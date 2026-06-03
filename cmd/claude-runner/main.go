@@ -30,19 +30,42 @@ import (
 	"github.com/shindakun/goclaw/internal/db"
 )
 
+// vaultManualPath is where the knowledge vault's operating manual lands when the
+// host mounts the vault at /vault (brief §11). When present, the runner uses it
+// as the system prompt so the agent behaves as the vault librarian.
+const (
+	// vaultDir is the in-container mount point of the knowledge vault (brief §11).
+	vaultDir = "/vault"
+	// vaultManualPath is the vault's operating manual, used as the system prompt.
+	vaultManualPath = vaultDir + "/CLAUDE.md"
+)
+
 func main() {
 	dir := flag.String("dir", "/sessions", "agent-group sessions directory (parent of per-session subdirs)")
 	model := flag.String("model", "", "Claude model id (empty = CLI default)")
-	systemPromptFile := flag.String("system-prompt-file", "", "path to a system prompt file (e.g. the group's CLAUDE.md)")
+	systemPromptFile := flag.String("system-prompt-file", "", "path to a system prompt file (e.g. the vault's CLAUDE.md)")
 	once := flag.Bool("once", false, "process the current backlog once and exit")
 	interval := flag.Duration("interval", 1*time.Second, "poll interval")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
+	// Detect a mounted vault: default the system prompt to its CLAUDE.md so the
+	// agent runs as the vault librarian without any extra wiring (brief §11).
+	vaultMounted := false
+	if _, err := os.Stat(vaultManualPath); err == nil {
+		vaultMounted = true
+	}
+	promptFile := *systemPromptFile
+	if promptFile == "" && vaultMounted {
+		promptFile = vaultManualPath
+		log.Info("using vault system prompt", "path", promptFile)
+	}
+
 	r := &runner{
 		model:            *model,
-		systemPromptFile: *systemPromptFile,
+		systemPromptFile: promptFile,
+		vaultMounted:     vaultMounted,
 		log:              log,
 	}
 	if err := r.run(*dir, *once, *interval); err != nil {
@@ -54,6 +77,7 @@ func main() {
 type runner struct {
 	model            string
 	systemPromptFile string
+	vaultMounted     bool
 	log              *slog.Logger
 }
 
@@ -259,6 +283,15 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 		if _, statErr := os.Stat(r.systemPromptFile); statErr == nil {
 			opts = append(opts, claude.WithSystemPromptFile(r.systemPromptFile))
 		}
+	}
+	if r.vaultMounted {
+		// Headless: there is no human to approve tool prompts, and the container
+		// IS the security sandbox (the agent can only reach /sessions, /vault, and
+		// its own ~/.claude). Auto-approve edits so the librarian can actually
+		// write the vault, and run with the vault as the working dir.
+		opts = append(opts,
+			claude.WithPermissionMode(claude.PermissionAcceptEdits),
+			claude.WithCwd(vaultDir))
 	}
 	if resumeID != "" {
 		opts = append(opts, claude.WithResume(resumeID))

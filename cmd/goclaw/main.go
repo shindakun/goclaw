@@ -31,6 +31,15 @@ import (
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	// Subcommands. With no subcommand, goclaw runs the host (the default).
+	if len(os.Args) > 1 && os.Args[1] == "vault" {
+		if err := runVault(os.Args[2:]); err != nil {
+			log.Error("vault", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(log); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
@@ -127,12 +136,14 @@ func run(log *slog.Logger) error {
 			claudeEnv["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.ClaudeCodeOAuthToken
 		}
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
-			WithEnv(claudeEnv)
+			WithEnv(claudeEnv).
+			WithVault(cfg.VaultDir)
 		ensurer = mgr
 		runners = mgr
 		log.Info("runner launch enabled", "image", cfg.RunnerImage,
 			"mount_allowlist", cfg.MountAllowlistPath,
-			"claude_auth", claudeAuthKind(cfg))
+			"claude_auth", claudeAuthKind(cfg),
+			"vault", vaultStatus(cfg.VaultDir))
 		// A Claude Code OAuth token is short-lived (~12h) and the container can't
 		// refresh it - it WILL eventually 401. Steer toward a long-lived API key.
 		if cfg.ClaudeCodeOAuthToken != "" && cfg.AnthropicAPIKey == "" {
@@ -170,6 +181,14 @@ func run(log *slog.Logger) error {
 		return nil // clean shutdown
 	}
 	return err
+}
+
+// vaultStatus reports the vault dir for the startup log, or "disabled".
+func vaultStatus(dir string) string {
+	if dir == "" {
+		return "disabled"
+	}
+	return dir
 }
 
 // claudeAuthKind reports which Claude credential the runner will use, for the

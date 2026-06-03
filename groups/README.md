@@ -16,5 +16,6 @@ DB (`internal/db/schema.sql`) points at the subdirectory here.
 
 `groups/` is intentionally empty in the scaffold; create a `groups/<name>/`
 directory when you wire up the first agent group. If a group enables the optional
-knowledge vault (brief §11), its `CLAUDE.md` is the vault schema - see
-[`../vault-template/`](../vault-template/) for a starting point.
+knowledge vault (brief §11), its `CLAUDE.md` is the vault schema - run
+`goclaw vault init` to install a starter vault (template in
+[`../internal/vaultinit/template/`](../internal/vaultinit/template/)).
