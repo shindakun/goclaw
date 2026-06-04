@@ -11,7 +11,7 @@ unresolved_reference:
 ---
 
 Example resource note: a link, document, or reference worth keeping, with a
-2–3 sentence note on what it is and why it's useful. Delete once real notes exist.
+2 to 3 sentence note on what it is and why it's useful. Delete once real notes exist.
 
 ## Detail
 - Link: <url>

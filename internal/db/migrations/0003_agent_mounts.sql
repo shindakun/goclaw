@@ -1,4 +1,4 @@
--- 0003_agent_mounts — extra host directories an agent group's runner container
+-- 0003_agent_mounts - extra host directories an agent group's runner container
 -- mounts, beyond its own sessions dir (brief §6.3). Every entry is validated
 -- against the external mount allowlist at launch; an entry that isn't permitted
 -- is skipped (fail closed), never silently widened.

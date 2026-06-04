@@ -27,7 +27,7 @@ func TestParseTranscript_ExtractsTextTurnsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	// user "what is 2+2", assistant "It is 4.", user "thanks" — tool-use + system skipped.
+	// user "what is 2+2", assistant "It is 4.", user "thanks" - tool-use + system skipped.
 	if len(msgs) != 3 {
 		t.Fatalf("expected 3 text turns, got %d: %+v", len(msgs), msgs)
 	}

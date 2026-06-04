@@ -10,7 +10,7 @@ entities: [{name: Example Person, kind: person, role: example, org: Example Co}]
 unresolved_reference:
 ---
 
-Example entity page. A 2–3 sentence preamble goes here so the agent can judge
+Example entity page. A 2 to 3 sentence preamble goes here so the agent can judge
 relevance before reading on: who/what this is, why it matters to the owner, and
 its current status. Delete this file once real notes exist.
 

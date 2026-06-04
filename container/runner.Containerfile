@@ -16,7 +16,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Build a static binary (CGO disabled — modernc.org/sqlite is pure Go).
+# Build a static binary (CGO disabled - modernc.org/sqlite is pure Go).
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/stub-runner ./cmd/stub-runner
 

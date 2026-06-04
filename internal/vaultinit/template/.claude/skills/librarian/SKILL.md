@@ -1,6 +1,6 @@
 ---
 name: librarian
-description: Knowledge-vault librarian discipline for an Obsidian-style Markdown vault mounted at /vault. Use for any knowledge work against the vault — ingesting sources, answering from notes with citations, reconciling contradictions, synthesizing themes, linting, day-notes, and claiming/working vault tasks. Governs the vault's folder layout, frontmatter schema, note shape, invariants (search-before-create, propagate-every-write, provenance, bi-temporal, two-outputs), and the append-only audit log. Do NOT use for plain coding/ops work that doesn't touch the vault.
+description: Knowledge-vault librarian discipline for an Obsidian-style Markdown vault mounted at /vault. Use for any knowledge work against the vault: ingesting sources, answering from notes with citations, reconciling contradictions, synthesizing themes, linting, day-notes, and claiming/working vault tasks. Governs the vault's folder layout, frontmatter schema, note shape, invariants (search-before-create, propagate-every-write, provenance, bi-temporal, two-outputs), and the append-only audit log. Do NOT use for plain coding/ops work that doesn't touch the vault.
 ---
 
 # Vault Librarian
@@ -68,7 +68,7 @@ blocked_on: <what, or empty>              # external blocker / human decision
 ```
 
 ## Note shape
-1. A 2–3 sentence summary preamble at the very top (judge relevance before reading on).
+1. A 2 to 3 sentence summary preamble at the very top (judge relevance before reading on).
 2. Body, with a source URL inline beside every external claim.
 3. Recency markers on volatile facts: "raised $24M (as of 2026-04, <url>)".
 4. `[[wikilinks]]` to EVERY person / project / idea / decision named.
@@ -122,10 +122,10 @@ avoid two workers doing the same task, treat every task like a lease.
   doing it.
 - TIMESTAMP HANDOFF LINES - every Notes/handoff and log line carries a full
   `YYYY-MM-DD HH:MM` (use the time the runtime gives you), so a status line is
-  unambiguously "true at THAT time". (`- 2026-06-03 14:05 — ...`)
+  unambiguously "true at THAT time". (`- 2026-06-03 14:05 ...`)
 
 ## Operations
-- ingest <source>   read it → search vault → update the 10–15 pages it touches →
+- ingest <source>   read it → search vault → update the 10 to 15 pages it touches →
                     create only what's missing → link → log.
 - query <question>  search vault first → read relevant pages → answer with citations
                     → file the answer back as a note.

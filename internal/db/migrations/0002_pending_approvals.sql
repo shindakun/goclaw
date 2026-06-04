@@ -1,4 +1,4 @@
--- 0002_pending_approvals — holds messages from unknown senders awaiting an
+-- 0002_pending_approvals - holds messages from unknown senders awaiting an
 -- owner/admin decision under the request_approval policy (brief §3.4).
 --
 -- On request: a row is created and an approval card is sent to the owner.

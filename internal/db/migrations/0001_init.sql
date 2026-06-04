@@ -1,4 +1,4 @@
--- 0001_init — initial central schema for the goclaw host.
+-- 0001_init - initial central schema for the goclaw host.
 -- Mirrors the brief's v2 schema so an existing install's data migrates 1:1 (brief §5).
 --
 -- Migrations are pure DDL: connection pragmas (WAL, foreign_keys) are applied

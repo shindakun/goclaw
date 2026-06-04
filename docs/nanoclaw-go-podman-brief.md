@@ -374,15 +374,15 @@ goclaw is **agent-first**: the agent has an identity, safety rules, and a coding
 - The **librarian skill** lives in the *vault* (`/vault/.claude/skills/librarian/SKILL.md`), not the image. It carries the entire schema/operating contract below. It is symlinked in (and thus auto-invokable) **only when a vault is mounted**.
 - At each launch the host composes the group's `CLAUDE.md` into the container's `~/.claude` as an imports-only entry point (`@./.claude-shared.md` → `/app/CLAUDE.md`), and syncs `~/.claude/skills/<name>` symlinks: `coding` always, `librarian` only with a vault. The targets are container paths (dangling on the host, valid in the container).
 
-So with **no vault** you get a clean coding/ops agent with a real identity; with a vault mounted you get that same agent *plus* the librarian, auto-invoked on knowledge work. The librarian rules (including TWO OUTPUTS and the task-claim/lease discipline) are vault-scoped and never burden a coding turn. The note-writing schema in §11.2–§11.6 below is the *content* of that librarian skill.
+So with **no vault** you get a clean coding/ops agent with a real identity; with a vault mounted you get that same agent *plus* the librarian, auto-invoked on knowledge work. The librarian rules (including TWO OUTPUTS and the task-claim/lease discipline) are vault-scoped and never burden a coding turn. The note-writing schema in §11.2-§11.6 below is the *content* of that librarian skill.
 
 ### 11.1 The idea
 
 The vault is a directory of Markdown notes that the agent and you both read and write - you browse and edit it in Obsidian, the agent maintains it. The point is to move from query-time retrieval (where the agent re-derives everything from raw sources on every question) to a **compounding knowledge base**: each new source is read once, distilled, and merged into the existing notes, so cross-references, contradictions, and synthesis are already there next time. The vault gets richer with every message and every question instead of starting cold each session.
 
-The mental model inversion is the whole point: **you stop maintaining the notes and the vault rewrites itself with every input.** The human's job shrinks to curating sources and asking good questions; everything else - cross-referencing, contradiction resolution, consistency, synthesis - is the agent's job, and at near-zero marginal cost because the agent does it inline on every ingest and query. Over weeks the vault's density and utility grow non-linearly: each source typically touches ~10–15 existing pages rather than adding one, each good answer becomes a new page, and each maintenance pass surfaces connections nobody named.
+The mental model inversion is the whole point: **you stop maintaining the notes and the vault rewrites itself with every input.** The human's job shrinks to curating sources and asking good questions; everything else - cross-referencing, contradiction resolution, consistency, synthesis - is the agent's job, and at near-zero marginal cost because the agent does it inline on every ingest and query. Over weeks the vault's density and utility grow non-linearly: each source typically touches ~10-15 existing pages rather than adding one, each good answer becomes a new page, and each maintenance pass surfaces connections nobody named.
 
-**Why this beats RAG at personal scale.** Below roughly 50k–100k tokens (~150–200 dense pages), keeping the knowledge in plain context and letting the agent read the pages it needs gives 100% retrieval reliability, zero vector-DB overhead, and *global* reasoning across the whole corpus instead of stitched-together snippets. NanoClaw should target exactly this regime and lean on `index.md` for navigation (§11.4) - no embeddings, no vector store. Only once a vault outgrows that range does a hybrid (stable core in context, bulk records behind a local BM25/vector search) become worth it. Design for the no-RAG case first.
+**Why this beats RAG at personal scale.** Below roughly 50k-100k tokens (~150-200 dense pages), keeping the knowledge in plain context and letting the agent read the pages it needs gives 100% retrieval reliability, zero vector-DB overhead, and *global* reasoning across the whole corpus instead of stitched-together snippets. NanoClaw should target exactly this regime and lean on `index.md` for navigation (§11.4) - no embeddings, no vector store. Only once a vault outgrows that range does a hybrid (stable core in context, bulk records behind a local BM25/vector search) become worth it. Design for the no-RAG case first.
 
 This fits NanoClaw with almost no new host machinery, because **the vault is just a mount.** The intelligence lives in the agent's instructions (the librarian skill, §11.0) and the agent-runner - not in the Go host. What the host adds is the mount, a write-lock, and a couple of optional hooks.
 
@@ -417,7 +417,7 @@ A few small **always-loaded context files** at the vault root make the agent che
 
 The highest-leverage design choice: write notes for *future-agent retrieval*, not human browsing. A note pulled by search later may arrive with no surrounding context, so each note must carry its own. Concretely, every agent-written note should have:
 
-- a 2–3 sentence summary preamble at the top (a "for future retrieval" header), so the agent can judge relevance at a glance before reading the whole note;
+- a 2-3 sentence summary preamble at the top (a "for future retrieval" header), so the agent can judge relevance at a glance before reading the whole note;
 - machine-readable frontmatter (`type`, `date`, `state`, and type-specific fields) - this also lets Obsidian's Dataview query the vault;
 - **two tag axes**: a coarse `domain` (the life area - home / health / work) and fine `tags` (topics within it); filtering by domain narrows fast, tags pinpoint;
 - a structured `entities` list (`[{name, kind, role, org}]`) alongside the prose, so the agent can do "find every note mentioning a plumber" lookups that `[[wikilinks]]` alone don't support;
@@ -440,7 +440,7 @@ The core operations are the librarian's day job:
 
 | Operation | What the agent does |
 |---|---|
-| **Ingest** | Read a new source; search the vault for the entities/concepts it touches; **update the existing pages** rather than just appending a new one, creating pages only when nothing matches; add wikilinks; append a `log.md` entry. One source typically touches 10–15 pages. |
+| **Ingest** | Read a new source; search the vault for the entities/concepts it touches; **update the existing pages** rather than just appending a new one, creating pages only when nothing matches; add wikilinks; append a `log.md` entry. One source typically touches 10-15 pages. |
 | **Query** | Search the vault first, read the relevant notes, synthesize an answer with citations - and file good answers back as new notes (the two-output rule), so explorations compound too. |
 | **Reconcile** | Find notes that contradict each other and *resolve* them by comparing sources, dates, and confidence - not merely flag the conflict - recording the rationale and advancing page `state`. |
 | **Synthesize** | Scan for recurring but un-named themes and write synthesis pages on its own initiative. |
@@ -456,7 +456,7 @@ A second tier of **thinking tools** turns the vault from a passive store into so
 
 Two navigation aids make this work without embedding-based RAG at personal scale: an `index.md` catalog (every page, a one-line summary, updated on each ingest) and an append-only `log.md` with a consistent line prefix so it stays greppable (`grep '^## \[' log.md | tail`). Add a local Markdown search tool (shell-out or MCP) only once the vault outgrows the index.
 
-**Progressive context loading.** Don't load the whole vault. Define budget tiers the agent climbs only as needed: **L0** = `CRITICAL_FACTS.md` + identity (always, ~hundreds of tokens); **L1** = `index.md` to locate relevant pages; **L2** = the specific pages a task touches; **L3** = follow `[[wikilinks]]` outward only when the answer demands it. Most turns never go past L1–L2, which keeps the no-RAG model affordable even as the vault grows.
+**Progressive context loading.** Don't load the whole vault. Define budget tiers the agent climbs only as needed: **L0** = `CRITICAL_FACTS.md` + identity (always, ~hundreds of tokens); **L1** = `index.md` to locate relevant pages; **L2** = the specific pages a task touches; **L3** = follow `[[wikilinks]]` outward only when the answer demands it. Most turns never go past L1-L2, which keeps the no-RAG model affordable even as the vault grows.
 
 Invariants worth enforcing in the schema: **search before create** (no duplicates; fuzzy-match existing names), **propagate every write** (a new note updates the index and any linked pages), **no orphans** (every note is linked from somewhere), and **provenance-first** (no claim without a source). During lint, **randomize the page-visit order** rather than walking ingestion order - it surfaces cross-cutting contradictions that an ordered pass tends to miss.
 
@@ -543,7 +543,7 @@ unresolved_reference:             # a reference noted but not yet resolved
 ---
 
 ## Note shape
-1. A 2–3 sentence summary preamble at the very top (judge relevance before reading on).
+1. A 2-3 sentence summary preamble at the very top (judge relevance before reading on).
 2. Body, with a source URL inline beside every external claim.
 3. Recency markers on volatile facts: "raised $24M (as of 2026-04, <url>)".
 4. `[[wikilinks]]` to EVERY person / project / idea / decision named.
@@ -561,7 +561,7 @@ unresolved_reference:             # a reference noted but not yet resolved
   promotion to `active` is a deliberate, reviewed step.
 
 ## Operations
-- ingest <source>   read it → search vault → update the 10–15 pages it touches →
+- ingest <source>   read it → search vault → update the 10-15 pages it touches →
                     create only what's missing → link → log.
 - query <question>  search vault first → read relevant pages → answer with citations
                     → file the answer back as a note.
@@ -602,7 +602,7 @@ unresolved_reference:             # a reference noted but not yet resolved
 3. **Phase 2 - Runtime hardening.** Mount validation + allowlist, `:Z` relabeling, rootless user mapping, `--init`/`tini`, runtime selection (crun default; gVisor/Kata opt-in).
 4. **Phase 3 - Permissions + credentials.** Roles, sender policies, approval flows, OneCLI credential-vault proxy wiring, delivery authorization.
 5. **Phase 4 - More channels + ops.** Additional adapters (Discord, then Slack - same `ChannelAdapter` interface, §7), Quadlet/systemd units, installer rewrite, rework `/add-*` and `/customize` skills for the Go layout.
-6. **Phase 5 - Knowledge vault (optional).** Read-write vault mount + `flock` write guard; the AI-first schema in the group `CLAUDE.md` (folder map, frontmatter, bi-temporal facts, page lifecycle, two-output + propagation invariants); the always-loaded context files (`index.md` / `log.md` / `CRITICAL_FACTS.md`) and progressive L0–L3 loading; the write-time validator hook; the ingest/query/reconcile/synthesize/lint operations plus the challenge/emerge/connect thinking tools; scheduled maintenance (morning / nightly / weekly / health); trust-tiering for untrusted channel input; and the ingest-from-channel path. Target the no-RAG regime (≤~100k tokens); defer hybrid search until the vault outgrows it.
+6. **Phase 5 - Knowledge vault (optional).** Read-write vault mount + `flock` write guard; the AI-first schema in the group `CLAUDE.md` (folder map, frontmatter, bi-temporal facts, page lifecycle, two-output + propagation invariants); the always-loaded context files (`index.md` / `log.md` / `CRITICAL_FACTS.md`) and progressive L0-L3 loading; the write-time validator hook; the ingest/query/reconcile/synthesize/lint operations plus the challenge/emerge/connect thinking tools; scheduled maintenance (morning / nightly / weekly / health); trust-tiering for untrusted channel input; and the ingest-from-channel path. Target the no-RAG regime (≤~100k tokens); defer hybrid search until the vault outgrows it.
 7. **Phase 6 - (Optional) Go runner, single language (Option A′).** Once the host is stable on the TS runner, port `container/agent-runner/` to Go on [`shindakun/agent-sdk-go`](https://github.com/shindakun/agent-sdk-go). The runner still drives the `claude` CLI, so the loop, tools, Skills, and subagents are preserved; the win is one language across the repo. Validate the SDK's parity against your CLI version and run it against real traffic in parallel with the TS runner before cutting over. (Only fall back to a Client-SDK hand-built loop - old Option B - if dropping the `claude`-CLI/Node dependency is itself a hard requirement.)
 
 ---

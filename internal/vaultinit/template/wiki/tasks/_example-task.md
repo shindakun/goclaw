@@ -32,5 +32,5 @@ did it is not doing it. Never delete the note.
 ## Notes / handoff
 <!-- append progress notes, newest at the bottom, each stamped `YYYY-MM-DD HH:MM`
      so a status line is true AT THAT TIME, e.g.:
-     - 2026-06-01 09:14 — filed by agent:librarian; not yet claimed.
-     - 2026-06-01 09:40 — claimed by agent:librarian, lease_until 2026-06-01 10:10. -->
+     - 2026-06-01 09:14 filed by agent:librarian; not yet claimed.
+     - 2026-06-01 09:40 claimed by agent:librarian, lease_until 2026-06-01 10:10. -->

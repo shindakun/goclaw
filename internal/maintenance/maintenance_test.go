@@ -70,7 +70,7 @@ func TestDue_DailyBoundary_NoDrift(t *testing.T) {
 	if err := d.SetKV(kvPrefix+job.Name, lastNight.Format(time.RFC3339)); err != nil {
 		t.Fatalf("setkv: %v", err)
 	}
-	// Host starts 2026-06-03 at 09:00 — past today's 07:00 boundary, not run since it.
+	// Host starts 2026-06-03 at 09:00 - past today's 07:00 boundary, not run since it.
 	if due, err := s.due(job, atDay(3, 9)); err != nil || !due {
 		t.Fatalf("expected morning due at 09:00 the next day, got due=%v err=%v", due, err)
 	}
@@ -109,7 +109,7 @@ func TestDue_WeeklyStaysWeekly(t *testing.T) {
 	if err := d.SetKV(kvPrefix+job.Name, ran.Format(time.RFC3339)); err != nil {
 		t.Fatalf("setkv: %v", err)
 	}
-	// Next day past 09:00: boundary passed, but Every (6d) has not — not due.
+	// Next day past 09:00: boundary passed, but Every (6d) has not - not due.
 	if due, _ := s.due(job, atDay(4, 10)); due {
 		t.Fatal("weekly job should not fire the next day")
 	}
