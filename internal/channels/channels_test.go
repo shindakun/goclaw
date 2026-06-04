@@ -52,6 +52,50 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 	}
 }
 
+func TestRegistry_Unregister(t *testing.T) {
+	r := NewRegistry()
+	a, b := newFake("telegram"), newFake("discord")
+	_ = r.Register(a)
+	_ = r.Register(b)
+
+	// Unregistering an absent name reports false and changes nothing.
+	if r.Unregister("absent") {
+		t.Fatal("Unregister(absent) = true, want false")
+	}
+	if len(r.All()) != 2 {
+		t.Fatalf("All() = %d after no-op unregister, want 2", len(r.All()))
+	}
+
+	// Unregistering a present name reports true and makes it un-Gettable...
+	if !r.Unregister("telegram") {
+		t.Fatal("Unregister(telegram) = false, want true")
+	}
+	if _, ok := r.Get("telegram"); ok {
+		t.Fatal("telegram still Gettable after Unregister")
+	}
+	// ...while leaving the other adapter intact.
+	if _, ok := r.Get("discord"); !ok {
+		t.Fatal("Unregister(telegram) wrongly removed discord")
+	}
+	if len(r.All()) != 1 {
+		t.Fatalf("All() = %d after unregister, want 1", len(r.All()))
+	}
+
+	// The freed name can be registered again (hot-reload reinstall path).
+	if err := r.Register(newFake("telegram")); err != nil {
+		t.Fatalf("re-Register after Unregister: %v", err)
+	}
+
+	// A second unregister of the same (now re-registered) name still works, and a
+	// third reports false (idempotent).
+	if !r.Unregister("telegram") {
+		t.Fatal("second Unregister(telegram) = false, want true")
+	}
+	if r.Unregister("telegram") {
+		t.Fatal("third Unregister(telegram) = true, want false")
+	}
+}
+
 func TestRegistry_Send(t *testing.T) {
 	r := NewRegistry()
 	a := newFake("discord")

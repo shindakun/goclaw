@@ -30,6 +30,22 @@ func (r *Registry) Register(a ChannelAdapter) error {
 	return nil
 }
 
+// Unregister removes the adapter for name, returning whether one was present. It
+// is safe to call on an absent name (returns false). Hot-removing a channel plugin
+// uses this: when the plugin's dir disappears, the host unregisters its relay so the
+// router and delivery loop stop dispatching to it. Unregister only drops the
+// registry entry; stopping the adapter itself (its Start goroutine, any socket) is
+// the caller's responsibility, since the registry does not own those.
+func (r *Registry) Unregister(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.adapters[name]; !ok {
+		return false
+	}
+	delete(r.adapters, name)
+	return true
+}
+
 // Get returns the adapter for a channel name, or false if absent.
 func (r *Registry) Get(name string) (ChannelAdapter, bool) {
 	r.mu.RLock()
