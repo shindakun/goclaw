@@ -6,20 +6,32 @@ host. The deciding constraint and the whole reason this doc exists: a channel ne
 network front door, the sandbox cannot bind a hot-added one, and we refuse to run
 untrusted code on the host.
 
-The conclusion splits by shape (sections 4, 6):
+The conclusion splits THREE ways by how the channel reaches the outside world
+(sections 4, 6). The ordering is not arbitrary: surveying how real chat transports are
+built, every platform that CAN be driven by dialing out IS driven that way (a long-poll
+loop, a gateway websocket, a provider socket), and a public inbound listener is the
+FALLBACK a platform forces on you only when it offers no outbound option at all. A
+self-hosted bot behind NAT should prefer dialing out for exactly that reason. So:
 
-- An **outbound-dialer** channel (a Discord/Matrix/IRC bridge that dials an upstream)
-  IS a hot-added, sandbox-built plugin: a downloaded binary in the container behind a
-  **host-side relay** (trusted, first-party). This is where untrusted third-party
-  protocol code belongs, and it hot-adds cleanly because it needs no inbound port.
-- An **inbound-listener** channel (the webhook shape) is NOT a hot-added plugin: a
+- PRIMARY: an **outbound-dialer** channel (an IRC/Discord/Matrix/Telegram bridge that
+  dials an upstream and holds the connection) IS a hot-added, sandbox-built plugin: a
+  downloaded binary in the container behind a **host-side relay** (trusted, first-party).
+  This is where untrusted third-party protocol code belongs, and it hot-adds cleanly
+  because it needs no inbound port. This is the shape to build, and the one nearly every
+  real chat platform supports.
+- SECONDARY (fallback only): an **internet-inbound** channel (a public webhook receiver)
+  is needed only for platforms that cannot dial out at all (some non-chat integrations:
+  inbound-only webhooks, certain enterprise platforms). It is NOT a hot-added plugin: a
   hot-added container cannot get an externally-reachable port without a restart
-  (section 4.0), so the production inbound webhook is a **first-party host-ingress
-  feature**. goclawkit's `cmd/webhook` survives as the SDK's protocol demo, not as an
-  installed plugin.
+  (section 4.0), so it is a **first-party host-ingress feature**. goclawkit's
+  `cmd/webhook` survives as the SDK's protocol demo, not as an installed plugin.
+- LOCAL: a **local-bridge** channel (an editor or CLI on the same machine talking over
+  loopback or a Unix socket) is also a first-party feature, not a download: it binds a
+  `127.0.0.1`/unix endpoint nothing external can reach. It is neither a sandboxed plugin
+  nor public ingress; it is a trusted local endpoint the host owns (section 4c).
 
-Either way the untrusted half sits BEHIND the boundary; the external front door is
-always first-party host code.
+Either way the untrusted half sits BEHIND the boundary; the external front door (when
+there is one at all) is always first-party host code.
 
 Read `docs/plugins-design.md` first (the tool-plugin system this builds on) and
 `docs/security.md` ("Plugins run in the sandbox") for the threat model. The
@@ -36,18 +48,19 @@ A tool plugin (roll) is **agent-initiated and self-contained in the sandbox**:
   goes in, a result comes out. The container is its whole world. That is exactly why
   putting it in the sandbox cost us nothing: it never needed the host.
 
-A channel plugin (webhook, or a hypothetical third-party Slack/Matrix/IRC bridge) is
+A channel plugin (a third-party IRC/Matrix/Slack bridge, or a webhook) is
 **outside-world-initiated and inherently networked**:
 
-- Messages arrive UNPROMPTED from outside (an HTTP POST, a websocket frame from a
-  chat gateway). The plugin's job is to be the front door.
+- Messages arrive UNPROMPTED from outside (a websocket frame from a chat gateway, an
+  IRC `PRIVMSG`, and in the rarer fallback case an HTTP POST). The channel's job is to
+  carry that traffic, dialing out to the platform in the usual case.
 - It is long-lived and bidirectional: it streams inbound up (`channel.inbound`
   events) for the life of the host, and accepts outbound down (`channel.send`
   requests) concurrently.
-- It therefore wants to BIND A PORT or DIAL AN UPSTREAM, which the agent container
-  (rootless, no host network namespace, dies with the agent group) is the wrong
-  place for, and which is precisely the host's existing job: `internal/channels`
-  (Telegram, Discord) runs on the host today.
+- It therefore wants to DIAL AN UPSTREAM (the normal case) or BIND A PORT (the fallback),
+  which the agent container (rootless, no host network namespace, dies with the agent
+  group) is the wrong place for inbound, and which is precisely the host's existing job:
+  `internal/channels` (Telegram, Discord) runs on the host today.
 
 So the naive move (drop a channel binary in `/plugins`, let the runner launch it like
 a tool) fails twice: the sandbox cannot host the front door, and even if it could, a
@@ -131,14 +144,15 @@ implements). It does not know or care that the "host" on the other end is actual
 relay reached across a container boundary. That is what makes the plugin code
 identical whether it ran on the host or in the box.
 
-IMPORTANT SCOPE NOTE: the diagram above is the OUTBOUND-DIALER shape (4b), the only
-shape with an in-container plugin process. The INBOUND shape (4a, webhook) has NO
-in-container binary: section 4.0's frozen-ports constraint means a hot-added inbound
-listener cannot be reached inside the container, so inbound is a first-party HOST
-ingress feature instead (section 4a/6b). The relay, boundary, and `ChannelAdapter`
-wiring are shared; the "downloaded binary in the box" half applies only to 4b.
+IMPORTANT SCOPE NOTE: the diagram above is the OUTBOUND-DIALER shape (4a), the only
+shape with an in-container plugin process, and the primary one. The other two shapes
+have NO in-container binary: internet-inbound (4b) is a first-party host ingress and
+local-bridge (4c) is a first-party loopback endpoint, both because section 4.0's
+frozen-ports constraint means a hot-added listener cannot be reached inside the
+container. The relay, boundary, and `ChannelAdapter` wiring are shared; the "downloaded
+binary in the box" half applies only to 4a.
 
-## 4. Who owns the front door? Two channel sub-shapes
+## 4. Who owns the front door? Three channel shapes
 
 ### 4.0. The constraint that drives everything: container mounts and ports are FROZEN
 
@@ -162,44 +176,16 @@ MUST follow that pattern: pre-mount a directory at container start, create per-c
 files inside it at hot-add time. A per-channel mount or per-channel published port is
 forbidden because it cannot be done without a restart.
 
-### 4a. Inbound-listener channels (the webhook shape): host owns the ingress
+### 4a. Outbound-dialer channels (PRIMARY): the real hot-added plugin
 
-The channel is a SERVER: something outside POSTs to it. The naive read is "the plugin
-binds `WEBHOOK_ADDR` inside the container, the host just publishes that port." Section
-4.0 kills that for the dynamic case: a hot-added inbound channel cannot get a published
-port without a container restart. So for a channel that is added at runtime, the
-externally-reachable listener CANNOT live in the container. It must live on the host.
-
-The answer (and it is how every real webhook gateway works: Stripe, GitHub, one host,
-many paths) is ONE always-on host ingress, multiplexed by PATH, not per-channel ports:
-
-- The host binds ONE public listener at startup, fixed forever (e.g. `:8080`).
-- A hot-added inbound channel gets a ROUTE, not a port: `POST /channels/<name>/inbound`.
-  Adding a channel adds an in-memory route to the host's mux (instant, no port, no
-  mount, no restart). Removing it drops the route.
-- The host relay authenticates the POST, namespaces identity (section 7), and pushes
-  the normalized inbound across the PRE-MOUNTED socket dir (section 5) to the
-  in-container plugin, which emits `channel.inbound`.
-
-The consequence, stated honestly: in this model the HOST relay holds the listener and
-does auth + identity, so the webhook plugin's own `Start()` listener and `authOK` are
-NOT used. The plugin shrinks to "normalize a decoded inbound," which is thin enough that
-a pure inbound webhook does not need a plugin process at all: it is a FIRST-PARTY HOST
-FEATURE configured with a token + an outbound target. This is resolved in section 6:
-inbound webhook = first-party host feature; goclawkit's `cmd/webhook` survives as the
-SDK's protocol demo (and its `-selftest`), not as a thing you `/plugin add`.
-
-This is also a SECURITY GAIN: untrusted code that hot-adds never owns the external front
-door. The front door is always first-party host code; untrusted code sits behind it.
-
-### 4b. Outbound-dialer channels (the chat-gateway shape): the real hot-added plugin
-
-The channel is a CLIENT: it dials an upstream and holds the connection (Discord
-gateway websocket, an IRC server, an XMPP server). This is the shape that genuinely
+The channel is a CLIENT: it dials an upstream and holds the connection (an IRC server, a
+Discord/Matrix gateway websocket, a provider socket). This is the shape that genuinely
 needs a long-lived plugin process, and it HOT-ADDS CLEANLY precisely because it needs no
 inbound port: it dials OUT over the container's existing egress, so section 4.0's frozen
 -ports problem never bites. This is where untrusted third-party protocol code belongs,
-and it is the shape that actually justifies a channel PLUGIN.
+it is the shape that justifies a channel PLUGIN, and it is the shape nearly every real
+chat platform supports (each is normally driven by a dial-out: a long-poll loop, a
+gateway websocket, a provider socket). Build this one.
 
 For this shape the question is WHERE the outbound dial happens:
 
@@ -213,8 +199,8 @@ For this shape the question is WHERE the outbound dial happens:
   third-party protocol parsing back onto the host, which is most of what we were
   trying to avoid. Reject unless egress policy forbids A.
 
-WORKED EXAMPLE: an IRC gateway. IRC is the cleanest 4b case (cleaner than webhook ever
-was) and worth walking because it exercises what webhook's stateless POSTs never did.
+WORKED EXAMPLE: an IRC gateway. IRC is the cleanest dialer case and worth walking
+because it exercises everything a stateless inbound POST never would.
 
 - ONE dial-out, no listener. The plugin opens a single long-lived TCP connection to
   `irc.example.net:6697` and never binds anything (DCC, which does listen, is a side
@@ -229,25 +215,55 @@ was) and worth walking because it exercises what webhook's stateless POSTs never
   re-`JOIN` after a netsplit. The goclawkit `Channel` contract already delegates this
   ("the implementation owns reconnect/backoff", channel.go). This is what proves the
   boundary socket must stay up for the life of the container, not be torn down between
-  messages, a property webhook never tested.
+  messages.
 - ChatID / identity mapping is REAL work here, and it is the plugin's job: a `PRIVMSG`
   to `#go-nuts` is a group message (ChatID = the channel name); a `PRIVMSG` to the bot's
   own nick is a DM (ChatID = the sender's nick). The IRC server ASSERTS the sender nick
   and does NOT authenticate it (absent SASL/NickServ), so per section 7 the relay
-  namespaces it (`irc:<network>/<nick>`) and never trusts it as an owner id. IRC makes
-  the "identity is not the plugin's to assert" rule concrete in a way webhook's single
-  asserted sender did not.
+  namespaces it (`irc:<network>/<nick>`) and never trusts it as an owner id.
 
-This is the example to BUILD first (section 9): it has no inbound port, so it isolates
-the boundary + hot-reload + long-lived-connection mechanics with nothing else in the way.
+This is the example to BUILD first (section 9): no inbound port, so it isolates the
+boundary + hot-reload + long-lived-connection mechanics with nothing else in the way.
 Discord/Matrix/XMPP are the same shape with heavier protocols.
 
-The recommendation (section 9): build 4b (outbound dialer) FIRST as the real
-hot-addable channel plugin, because it needs no inbound port and so exercises the
-boundary + hot-reload with no ingress complications. Build 4a (inbound webhook) as a
-first-party host-ingress feature, validated by goclawkit's `cmd/webhook` as the SDK
-protocol demo. (This reverses an earlier draft that built 4a first; section 4.0's
-frozen-ports constraint is why.)
+### 4b. Internet-inbound channels (SECONDARY, fallback only): host owns the ingress
+
+The channel is a SERVER: something outside POSTs to it (a public webhook receiver). This
+is needed ONLY for platforms that cannot dial out at all: inbound-only webhooks and
+certain enterprise integrations that push events to a URL and offer no socket/poll to
+pull from. For anything that can be driven by dialing out, prefer 4a; do not reach for an
+inbound listener by default, it is the harder and rarer case.
+
+The naive read is "the plugin binds a port inside the container, the host just publishes
+it." Section 4.0 kills that for hot-add: a hot-added inbound channel cannot get a
+published port without a container restart. So the externally-reachable listener CANNOT
+live in the container; it must live on the host. The shape (how every real webhook
+gateway works: one host, many paths) is ONE always-on host ingress, multiplexed by PATH:
+
+- The host binds ONE public listener at startup, fixed forever (e.g. `:8080`).
+- A hot-added inbound channel gets a ROUTE, not a port: `POST /channels/<name>/inbound`.
+  Adding a channel adds an in-memory route to the host's mux (instant, no port, no
+  mount, no restart). Removing it drops the route.
+- The host relay authenticates the POST, namespaces identity (section 7), and emits the
+  normalized inbound directly.
+
+In this model the HOST relay holds the listener and does auth + identity, so there is no
+untrusted process in the inbound path. A pure inbound webhook therefore does not need a
+plugin process at all: it is a FIRST-PARTY HOST FEATURE configured with a token + an
+outbound target. goclawkit's `cmd/webhook` survives as the SDK's protocol demo (and its
+`-selftest`), not as a thing you `/plugin add`. This is also a SECURITY GAIN: untrusted
+code never owns the external front door; the front door is always first-party host code.
+
+### 4c. Local-bridge channels (LOCAL): a first-party loopback endpoint
+
+The channel is an editor or CLI ON THE SAME MACHINE talking to the host over loopback
+(`127.0.0.1:<port>`) or a Unix socket. Nothing external can reach it, so it needs no
+public ingress and no published container port. Like 4b it is a FIRST-PARTY host feature,
+not a download: the host binds the local endpoint, authenticates (a bearer token is
+typical even on loopback), and registers a `ChannelAdapter`. The "untrusted plugin in the
+box" model does not apply because there is no untrusted code: this is host-owned code
+talking to a trusted local process. Treat it like the credential proxy: a built-in the
+host stands up, not something installed from a git URL.
 
 ## 5. The boundary: Unix socket vs the SQLite pair
 
@@ -320,14 +336,14 @@ for hot-add) it adds ONE mount, the socket dir, with per-channel sockets as file
 inside it. The relay treating socket input as untrusted is the same posture we already
 hold for every other input.
 
-## 6. What changes in the webhook plugin (and the goclawkit SDK)
+## 6. What changes in the goclawkit SDK and the webhook example
 
 This is the crux of "does the worked example still work, and does the SDK need to
 change." Short answer: **the SDK needs NO wire change and `-selftest` keeps working
 untouched. The webhook PLUGIN, as a thing you `/plugin add`, does not fit the hot-add
 inbound case (section 4.0): its in-container listener cannot be reached from outside
 without a container restart. So the production inbound webhook becomes a FIRST-PARTY
-HOST FEATURE (host ingress, section 4a), and goclawkit's `cmd/webhook` survives as the
+HOST FEATURE (host ingress, section 4b), and goclawkit's `cmd/webhook` survives as the
 SDK's protocol demo, not as an installable plugin.**
 
 ### 6a. The goclawkit SDK: no wire/protocol change needed
@@ -352,7 +368,7 @@ started. So for a webhook installed AT RUNTIME, the in-container listener is unr
 from outside, full stop. The plugin's `Start()` HTTP listener cannot be the front door.
 
 That is why inbound webhook resolves to a FIRST-PARTY HOST FEATURE, not an installable
-plugin (section 4a): the host owns one always-on ingress and routes `/channels/<name>/
+plugin (section 4b): the host owns one always-on ingress and routes `/channels/<name>/
 inbound` to a host relay that authenticates, namespaces identity, and forwards the
 normalized inbound across the pre-mounted socket dir. In that model the host does the
 listening and the auth, so the webhook plugin's `Start()` listener and `authOK` are not
@@ -379,20 +395,14 @@ working verbatim (verified: `go run ./cmd/webhook -selftest` prints the inbound 
 delivered outbound and exits 0). Whatever we do host-side, `-selftest` stays the
 no-host local smoke test it is today.
 
-### 6d. The shape that justifies a channel PLUGIN: 4b (outbound dialer)
+### 6d. The dialer (4a) is what the SDK's channel side is FOR
 
-A Discord/Matrix/IRC bridge dials an upstream and parses a real third-party protocol.
-THAT is untrusted code we genuinely want in the box and genuinely cannot reasonably
-ship first-party for every chat network. For 4b:
-
-- The plugin's `Start()` dials the upstream (in-container, if egress allows) and emits
-  normalized `Inbound` for each upstream message. `Send()` pushes outbound to the
-  upstream. The boundary carries ONLY normalized inbound/outbound, never the raw
-  gateway protocol.
-- The webhook plugin does NOT exercise this shape (it is a listener, not a dialer), so
-  a SECOND worked example in goclawkit would be valuable: a minimal outbound-dialer
-  channel (even one that dials a localhost echo upstream) to prove the 4b path. That is
-  an SDK addition (a new `cmd/<example>`), not a wire change.
+The outbound dialer (section 4a) is the shape that justifies a channel PLUGIN: untrusted
+third-party protocol code we want in the box. `cmd/webhook` does NOT exercise it (it is a
+listener, not a dialer), so a SECOND worked example in goclawkit would be valuable: a
+minimal outbound-dialer channel (even one that dials a localhost echo upstream, or the
+IRC gateway from section 4a) to prove the dialer path end to end. That is an SDK addition
+(a new `cmd/<example>`), not a wire change. `ServeChannel` already supports it unchanged.
 
 ## 7. Security review
 
@@ -429,17 +439,17 @@ gains ONLY a byte-moving relay it fully controls.
   treats as untrusted. It does NOT touch the inbound.db/outbound.db invariant (that pair
   is untouched). Each socket is created with tight permissions (0600, host user) and
   unlinked on channel removal; the dir itself is created once.
-- THE EXTERNAL FRONT DOOR IS ALWAYS FIRST-PARTY. For inbound channels (section 4a) the
-  host owns the always-on ingress and the auth; untrusted code never binds the
-  externally-reachable port. For outbound dialers (4b) there is no inbound port at all.
+- THE EXTERNAL FRONT DOOR IS ALWAYS FIRST-PARTY. For internet-inbound channels (section
+  4b) the host owns the always-on ingress and the auth; untrusted code never binds the
+  externally-reachable port. For outbound dialers (4a) there is no inbound port at all.
   Either way the untrusted plugin is behind the boundary, never in front of it.
 
 ## 8. Lifecycle and hot-reload
 
-The two shapes hot-add differently, because only the outbound dialer is an installed
-plugin PROCESS (section 6b).
+The shapes hot-add differently, because only the outbound dialer is an installed plugin
+PROCESS (section 6b); internet-inbound and local-bridge are first-party host features.
 
-OUTBOUND-DIALER CHANNELS (4b), the real channel plugin:
+OUTBOUND-DIALER CHANNELS (4a), the real channel plugin:
 
 - A `kind: channel` dir appears in `data/plugins/<name>/` (installed via `/plugin add`
   exactly like a tool). The host (NOT just the runner) must learn about it, because the
@@ -460,19 +470,22 @@ OUTBOUND-DIALER CHANNELS (4b), the real channel plugin:
   nothing dialed) and the plugin tolerates the socket not being ready (retry the dial).
   Same "launch is lazy / first message is slower" posture the container already has.
 
-INBOUND CHANNELS (4a), the first-party host feature:
+INTERNET-INBOUND CHANNELS (4b) and LOCAL-BRIDGE CHANNELS (4c), the first-party features:
 
-- These are NOT an in-container plugin process. Hot-add is even simpler and never
-  touches the container: the host adds a ROUTE (`/channels/<name>/inbound`) to its
-  always-on ingress mux and registers a `ChannelAdapter`. Hot-remove drops the route and
-  unregisters. No socket file, no plugin process, no `/plugins` dir involvement.
-- Config (the channel name, its inbound token, its outbound target) is host-side state,
-  not a downloaded artifact. Adding/removing one is a host config change, applied live.
+- These are NOT in-container plugin processes. Hot-add is even simpler and never touches
+  the container: for 4b the host adds a ROUTE (`/channels/<name>/inbound`) to its
+  always-on ingress mux and registers a `ChannelAdapter`; for 4c the host binds a
+  loopback/unix endpoint and registers a `ChannelAdapter`. Hot-remove drops the route /
+  closes the endpoint and unregisters. No socket file, no plugin process, no `/plugins`
+  dir involvement.
+- Config (channel name, token, outbound/local target) is host-side state, not a
+  downloaded artifact. Adding/removing one is a host config change, applied live.
 
 ## 9. Recommended build order
 
-Build the boundary, then the OUTBOUND DIALER first (it is the real hot-add plugin and
-needs no ingress), then the inbound host feature.
+Build the boundary, then the OUTBOUND DIALER first (it is the real hot-add plugin, needs
+no ingress, and is the shape nearly every chat platform supports). Internet-inbound and
+local-bridge are first-party host features built only when a target platform forces them.
 
 1. Pre-mounted socket dir: mount `<dataDir>/run/channels/` -> `/run/goclaw/channels/`
    read-write at container start (section 5a). One mount, fixed at run time.
@@ -482,7 +495,7 @@ needs no ingress), then the inbound host feature.
 3. Host channel relay implementing `channels.ChannelAdapter` over the boundary, reading
    `channel.inbound`, writing `channel.send`. Register it; make the router treat it like
    Telegram. Enforce identity namespacing in the relay (section 7).
-4. Sub-shape 4b (outbound dialer) as the FIRST end-to-end channel plugin and a worked
+4. Sub-shape 4a (outbound dialer) as the FIRST end-to-end channel plugin and a worked
    goclawkit example. An IRC GATEWAY is the recommended first one: a single dial-out, no
    inbound port, so it isolates discovery, the socket boundary, hot-reload, and the
    long-lived stateful connection (PING/PONG, reconnect, re-JOIN) with nothing else in
@@ -490,25 +503,27 @@ needs no ingress), then the inbound host feature.
    server-asserted nicks namespaced per section 7). Validates that untrusted
    upstream-protocol parsing stays in the box. Discord/Matrix/XMPP follow as the same
    shape with heavier protocols.
-5. Host-side `kind: channel` discovery and hot-reload for 4b (section 8).
+5. Host-side `kind: channel` discovery and hot-reload for 4a (section 8).
    `channels.Registry.Unregister` is already in place for the hot-remove path.
-6. Inbound host ingress (section 4a): one always-on listener, `/channels/<name>/inbound`
-   routes, host-side auth + identity, forwarding over the boundary. This is the
-   production inbound webhook, a FIRST-PARTY feature; goclawkit's `cmd/webhook` is the
-   SDK protocol demo for it, not an installed plugin.
+6. (Only if a target platform forces it) Internet-inbound host ingress (section 4b): one
+   always-on listener, `/channels/<name>/inbound` routes, host-side auth + identity. This
+   is the fallback inbound webhook, a FIRST-PARTY feature; goclawkit's `cmd/webhook` is
+   the SDK protocol demo for it, not an installed plugin. Local-bridge (4c) is the same
+   first-party pattern on a loopback/unix endpoint.
 7. Manifest: flip `internal/plugin/manifest.go`'s `case "channel"` from
    "not supported yet" to validated (a channel manifest has no `command`, lists its
-   env var NAMES, declares `kind: channel`). Note this is for the 4b dialer shape; the
-   inbound feature is host config, not a plugin manifest.
+   env var NAMES, declares `kind: channel`). Note this is for the 4a dialer shape; the
+   inbound and local-bridge features are host config, not a plugin manifest.
 
 ## 10. Open questions to resolve during build
 
-- Container egress for 4b dialers: does the egress policy permit a chat-gateway dial
+- Container egress for 4a dialers: does the egress policy permit a chat-gateway dial
   from the container, or must specific upstreams be allowlisted (like the credential
-  proxy's per-host injection)? Determines whether 4b option A (plugin dials) is viable.
+  proxy's per-host injection)? Determines whether 4a option A (plugin dials) is viable.
 - RESOLVED (section 4.0 / 6b): a pure inbound webhook is a FIRST-PARTY host-ingress
   feature, not a hot-added plugin, because a hot-added channel cannot get an externally
-  -reachable container port without a restart. goclawkit's `cmd/webhook` is the SDK
+  -reachable container port without a restart. It is also a FALLBACK shape, reached only
+  when a platform cannot be driven by dialing out. goclawkit's `cmd/webhook` is the SDK
   protocol demo. The only remaining sub-question: do we EVER support a webhook as a
   pre-declared (restart-required, not hot-added) installed plugin? Default no.
 - Pre-mounted socket dir on rootless podman: SELinux `:Z` relabel interplay with a
