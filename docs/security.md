@@ -101,11 +101,14 @@ non-root container (the runner image, which carries git and the Go toolchain):
    Linux binary; CGO-off both enforces purity and matches how the plugin must run.
    The exact source commit is recorded so an install is reproducible and an update
    is an explicit re-fetch.
-4. **Only the artifact leaves the sandbox.** Just the built binary, its `plugin.yml`,
-   and the pinned commit are copied out (via the single mounted `/out` dir) into
-   `data/plugins/<name>/`. None of the untrusted source ever reaches the host
-   filesystem. The host then stages the dir atomically; the runner's filesystem
-   watch loads the new plugin live (no host or container restart).
+4. **Only the artifact leaves the sandbox.** The clone and `go build` happen in the
+   container's own `/work`; the host never sees the source. Only the built binary,
+   its `plugin.yml`, and the pinned commit are handed back, through the single
+   mounted `/out` dir, which on the host is a staging area (`data/plugins-staging/`)
+   separate from the watched plugins dir. The host then copies just those files into
+   `data/plugins/<name>/` (atomically, via a hidden rename), where the runner's
+   filesystem watch loads the new plugin live (no host or container restart). None
+   of the untrusted source ever reaches the host filesystem.
 
 So untrusted plugin code is isolated at BOTH points it could run: at build (in the
 sandbox container) and at runtime (in the agent's sandbox). The host orchestrator,

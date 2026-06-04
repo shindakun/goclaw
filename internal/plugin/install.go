@@ -17,22 +17,23 @@ import (
 // launches it. The host never clones, scans, builds, or executes the plugin.
 type Installer struct {
 	pluginsDir string // host plugins dir: ONLY finished, installed plugins live here
-	buildDir   string // host scratch dir for in-progress builds (sibling of plugins)
+	stagingDir string // host dir the container hands the finished artifact back to
 	image      string // OCI image with git + the Go toolchain (the runner image)
 	podmanBin  string // podman binary
 }
 
 // NewInstaller builds an Installer. image must contain git and a Go toolchain
-// (goclaw-claude:latest does); pluginsDir is the host plugins directory. Build
-// scratch goes in a sibling `<pluginsDir>-build` dir so the plugins dir (which the
-// runner watches) only ever contains finished plugins, never build noise.
+// (goclaw-claude:latest does); pluginsDir is the host plugins directory. The
+// container hands its output back via a sibling `<pluginsDir>-staging` dir so the
+// plugins dir (which the runner watches) only ever contains finished plugins. The
+// actual build runs in the container (in /work), not in this dir.
 func NewInstaller(pluginsDir, image, podmanBin string) *Installer {
 	if podmanBin == "" {
 		podmanBin = "podman"
 	}
 	return &Installer{
 		pluginsDir: pluginsDir,
-		buildDir:   pluginsDir + "-build",
+		stagingDir: pluginsDir + "-staging",
 		image:      image,
 		podmanBin:  podmanBin,
 	}
@@ -56,17 +57,18 @@ func (in *Installer) Add(ctx context.Context, gitURL string) (*InstallResult, er
 		return nil, err
 	}
 
-	// A per-install staging dir for the build container's /out mount, in the BUILD
-	// dir, NOT the plugins dir: the plugins dir is watched by the runner and must
-	// contain only finished plugins, never an in-progress build. The build dir lives
-	// under the data dir (a path podman can bind-mount), unlike the OS temp dir which
-	// may be a per-process path podman cannot see. The build container writes only
+	// A per-install staging dir the container hands its output back through (the
+	// /out mount). It lives in the STAGING dir, NOT the plugins dir: the plugins dir
+	// is watched by the runner and must contain only finished plugins. The actual
+	// build runs in the container (in /work); this dir just receives the result. It
+	// lives under the data dir (a path podman can bind-mount), unlike the OS temp dir
+	// which may be a per-process path podman cannot see. The container writes only
 	// the verified binary + plugin.yml + the pinned commit here; nothing else from
 	// the untrusted source reaches the host.
-	if err := os.MkdirAll(in.buildDir, 0o755); err != nil {
-		return nil, fmt.Errorf("install: create build dir: %w", err)
+	if err := os.MkdirAll(in.stagingDir, 0o755); err != nil {
+		return nil, fmt.Errorf("install: create staging dir: %w", err)
 	}
-	out, err := os.MkdirTemp(in.buildDir, "build-*")
+	out, err := os.MkdirTemp(in.stagingDir, "out-*")
 	if err != nil {
 		return nil, fmt.Errorf("install: staging dir: %w", err)
 	}

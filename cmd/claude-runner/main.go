@@ -84,7 +84,7 @@ func main() {
 	// Discover and launch plugins INSIDE the container (untrusted code stays in the
 	// sandbox, never on the host). Their tools are exposed to the agent as local MCP
 	// tools. nil when there are no plugins.
-	r.plugins = loadPlugins(context.Background(), pluginsDir, log)
+	r.plugins = startPlugins(context.Background(), pluginsDir, log)
 	defer r.plugins.Close()
 
 	if err := r.run(*dir, *once, *interval); err != nil {
@@ -367,7 +367,7 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 
 	// Expose plugin tools to the agent as local MCP tools (the plugins run in THIS
 	// container; nothing crosses back to the host). Only when plugins are present.
-	if r.plugins != nil && r.plugins.server != nil {
+	if r.plugins.hasServerTools() {
 		opts = append(opts, claude.WithSDKMCPServer(r.plugins.server.Name, r.plugins.server))
 	}
 

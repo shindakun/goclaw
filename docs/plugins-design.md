@@ -223,30 +223,29 @@ would re-fetch). Both are informational to the host launch path; only `git` is
 load-bearing, and only for the add/update front-ends, not for launching an
 already-present plugin.
 
-Enable/disable is HOST-owned state, kept OUT of the author's `plugin.yml` so the
-host never mutates a shipped artifact: a small host-owned sidecar (e.g.
-`plugins/.state.yml` mapping plugin name -> enabled, or a `.disabled` marker file
-per dir). The `/plugin` chat command edits that sidecar, never `plugin.yml`. The
-directory plus the sidecar together ARE the registry; `plugins.yaml` as a single
-hand-maintained manifest is dropped.
+The directory IS the registry: a plugin is installed iff its dir is present, so
+`/plugin add` and `/plugin remove` are just "create the dir" and "delete the dir".
+There is no central `plugins.yaml` manifest. (An enable/disable-WITHOUT-removing
+toggle, which would need a host-owned sidecar so the author's `plugin.yml` is never
+mutated, is an optional follow-up; today removal is the off switch.)
 
 ### Triggers: a plugin tool can fire two ways
 
-The same plugin `tool.invoke` frame is reached by two paths:
+The same plugin `tool.invoke` frame is reached by two paths, and since plugins run
+IN the agent container (see "Where plugins run"), both resolve there:
 
-- **User slash command** (host-routed, no agent). A plugin that declares
-  `command: roll` registers `/roll`. When a user sends `/roll 2d6`, the host's
-  message router matches the command, maps the argument string to the tool's args
-  (a tool whose schema is a single string field takes the raw remainder; richer
-  schemas can define their own parse), invokes the plugin's tool directly, and
-  sends the result back to the user. The agent is not involved.
+- **User slash command** (no LLM turn). A plugin that declares `command: roll`
+  registers `/roll`. The host routes a plugin slash command inward (it is a
+  pass-through in the host's `/commands` registry); the in-container runner
+  intercepts `/roll 2d6`, maps the argument string to the tool's args (a single
+  string-field schema takes the raw remainder), invokes the plugin's tool directly,
+  and the reply returns to the user. The agent is not involved.
 - **Agent tool** (LLM-invoked). The plugin's advertised tools (from the handshake
-  `Info.Tools`) are exposed to the in-container agent so the model can call them.
-  This path crosses the container boundary (see "Open: agent tool bridge"); it is
-  deferred behind the host-side spike below.
+  `Info.Tools`) are registered as local MCP tools the agent can call in-process to
+  the container, no boundary crossing.
 
-Both call the same `Client.Invoke`; only the trigger and where the result goes
-differ.
+Both call the same plugin `Client.Invoke` inside the container; only the trigger
+and where the result goes differ.
 
 ### Hot add and hot reload
 
@@ -258,8 +257,8 @@ several files):
   register its tools and slash command (HOT ADD), no container restart,
 - a plugin dir is removed (`/plugin remove`) -> stop the plugin process and drop its
   command (HOT REMOVE),
-- the runner skips hidden `.build-*` dirs (an in-progress install) until the
-  finished dir is renamed into place.
+- the runner skips hidden (dot-prefixed) dirs, so an install's brief hidden staging
+  dir is ignored until the finished, non-hidden dir is renamed into place.
 
 The watch lives in the RUNNER, not the host: the host only stages binaries into the
 mounted dir, and the change propagates inward. This needs no host rebuild (plugins
@@ -284,40 +283,43 @@ that end state, so the launch core is built first and distribution is additive.
 
 ### Build-on-install (the `/plugin add` mechanics)
 
-`/plugin add github.com/owner/roll` does, host-side and idempotently:
+`/plugin add <git-url>` runs the WHOLE clone + scan + build INSIDE a throwaway
+container, so untrusted code never executes on the host (full threat model in
+`docs/security.md`):
 
-1. Resolve a temp workspace and `git clone --depth 1 <url>` into it (the `git:` URL
-   in a plugin's own `plugin.yml` is the canonical source; `/plugin add` may also
-   take a bare URL).
-2. Locate the plugin's `plugin.yml` and its command package, then `go build` the
-   binary into `plugins/<name>/`, copying the `plugin.yml` alongside it. `<name>`
-   comes from the manifest's `name`, not the URL, so it matches the handshake.
-3. Validate: load the manifest, launch the plugin, confirm the handshake `name`
-   matches and the protocol version is compatible. On any failure, discard the
-   staged dir and report why (never leave a half-installed plugin).
-4. Leave the new plugin DISABLED by default (a fresh download should not auto-run
-   untrusted code); the operator runs `/plugin enable <name>` to start it. The
-   fsnotify watcher then launches it live, no host restart.
+1. The host runs a one-off, rootless container from the runner image (which has git
+   + the Go toolchain), mounting only a single staging dir at `/out`.
+2. Inside that container: bare PUBLIC `git clone --depth 1` into `/work` (no creds,
+   no proxy; a private URL fails fast); a red-flag scan (reject cgo, `//go:generate`,
+   a `go.mod` `replace`; require a `goclawkit` import); then a pure-Go Linux build
+   (`CGO_ENABLED=0 GOOS=linux go build -o /out/<exec>`), where `<exec>` is the
+   `exec:` field from the repo's `plugin.yml`. The source commit is pinned.
+3. The container writes ONLY the built binary, the `plugin.yml`, and the pinned
+   commit to `/out`. On the host that is a staging area
+   (`<data>/plugins-staging/`), separate from the watched plugins dir. The build
+   itself happens in the container's `/work`, never in this dir.
+4. The host copies just those files into `<data>/plugins/<name>/` (atomically, via a
+   hidden rename; `<name>` is the manifest `name`). The runner's `fsnotify` watch
+   then loads the new plugin live, no host or container restart. A failed build
+   leaves nothing behind and reports the reason.
 
-Building the PLUGIN (a small binary) is cheap and isolated: only the plugin is
-compiled, never the host. The Go toolchain requirement is the price; the
-release-pull path exists for hosts without it.
+Only the PLUGIN is compiled (a small binary), never the host, and even that
+compilation is sandboxed. The Go toolchain requirement is met by the runner image;
+a release-pull path (download a prebuilt binary) could serve hosts that want to skip
+the build entirely.
 
 ### The `/plugin` command set
 
-A built-in `/plugin` command (owner-only) with subcommands, all host-side:
+A built-in `/plugin` command (owner-only) with subcommands:
 
-- `add <git-url>`: build-on-install as above. Lands disabled.
-- `enable <name>` / `disable <name>`: flip the host-owned enable sidecar. Instant,
-  no build; the watcher launches or gracefully stops the plugin.
-- `list`: show installed plugins with `name`, `version`, `author`, enabled state,
-  and the command each registers (reads `plugin.yml` + the sidecar).
-- `remove <name>`: stop the plugin, deregister its commands, and delete its
-  `plugins/<name>/` dir.
-- `update <name>` (later): re-clone its `git:` URL, rebuild, and relaunch.
+- `add <git-url>`: sandboxed build-on-install as above; the plugin loads live.
+- `list`: show installed plugins (name, version, author, and the slash command each
+  registers), read from each `plugin.yml` under the plugins dir.
+- `remove <name>`: delete the plugin's dir; the runner's watch stops it and the host
+  drops its `/commands` listing.
 
-`enable`/`disable` only change sidecar state. `add`/`remove`/`update` change what is
-on disk; the watcher reconciles the running set either way.
+(An enable/disable-without-removing toggle, an `update <name>` that re-clones and
+rebuilds, and private-repo installs are noted as optional follow-ups, not built.)
 
 ### Optional later: a marketplace as data, not an engine
 
@@ -370,10 +372,10 @@ can (its mounts: `/sessions`, `/vault`, a mounted `/plugins`), never the host.
 The architecture, mirroring the host-side model one level in:
 
 - The host stages plugin binaries into a directory it mounts into the container
-  read-only (e.g. host `plugins/` mounted at `/plugins`, alongside `/sessions` and
-  `/vault`). Installing a plugin (`/plugin add`, enable/disable) stays a HOST
-  operation: the host owns what lands in that dir and the enable sidecar. The host
-  never executes the plugin.
+  read-only (host `<data>/plugins` mounted at `/plugins`, alongside `/sessions` and
+  `/vault`). Installing or removing a plugin (`/plugin add`/`remove`) stays a HOST
+  operation: the host owns what lands in that dir. The host never executes the
+  plugin.
 - The RUNNER (`cmd/claude-runner`, already a long-running loop in the container)
   becomes the in-container plugin manager. It does exactly what the host manager
   does now, one level in: walk `/plugins`, read each `plugin.yml`, launch the
@@ -420,7 +422,7 @@ call.
 
 ### Threat-model delta (summary)
 
-| | host-side (today) | in-container (proposed) |
+| | host-side (an earlier version) | in-container (SHIPPED) |
 |---|---|---|
 | Plugin runs as | the host user | rootless `1000:1000` in the sandbox |
 | Can read host filesystem | yes | no (only container mounts) |
@@ -430,12 +432,12 @@ call.
 | Slash command | host-local, instant | crosses inward via the session DBs |
 | Hot reload | host watcher relaunches | runner watcher relaunches (container stays up) |
 
-This is a planned migration, not a rewrite: the wire protocol, `plugin.yml`,
-the manager logic, and the `/plugin` command set are unchanged; the manager simply
-moves from the host into the runner, and the host's job narrows to staging binaries
-into the mounted dir. The container is not a perfect sandbox (it is not a microVM),
-but "rootless container with explicit mounts" is a large, real improvement over
-"runs as you on the host" for code you downloaded and compiled.
+This was a migration, not a rewrite: the wire protocol, `plugin.yml`, the manager
+logic, and the `/plugin` command set are shared; the manager moved from the host
+into the runner, and the host's job narrowed to staging binaries into the mounted
+dir. The container is not a perfect sandbox (it is not a microVM), but "rootless
+container with explicit mounts" is a large, real improvement over "runs as you on
+the host" for code you downloaded and compiled.
 
 ## Extensibility: channels (and more) later
 
@@ -483,14 +485,12 @@ goclawkit (the SDK + the `roll` demo) is DONE: `pkg/ipc` (frames/Session),
 
 ## Open questions
 
-- Agent tool bridge (the spike resolves this): the agent runs INSIDE the Podman
-  container; plugins run on the host. How does a host-launched plugin's tool become
-  callable by the in-container agent? Candidates: the host exposes plugin tools as
-  an MCP endpoint the container reaches, or proxies tool calls over the existing
-  host-mediated channel. The slash-command path needs none of this (it is
-  host-only), which is why it ships first.
-- Supervision policy: relaunch forever with backoff, or give up after N crashes and
-  mark the plugin failed in the sidecar/status?
-- Do plugins get the credential proxy from day one, or env tokens first and proxy
-  later? Proposed: env first, proxy as a fast follow, since the proxy is already
-  built.
+- Agent tool bridge: RESOLVED. Moving plugins into the agent container dissolved it,
+  the plugin is on the agent's side, so its tools are local MCP tools with no
+  boundary to cross.
+- Supervision policy: when a plugin process exits unexpectedly, relaunch forever
+  with backoff, or give up after N crashes and mark it failed? Currently it is
+  dropped on exit and reloaded when its dir changes.
+- Do plugins need the credential proxy? Tool plugins so far make their own outbound
+  calls from inside the container, which already routes through the proxy. A plugin
+  that needs a specific host secret is a future case.
