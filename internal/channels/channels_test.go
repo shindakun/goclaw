@@ -1,9 +1,105 @@
 package channels
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// fakeAdapter is a minimal ChannelAdapter for registry tests.
+type fakeAdapter struct {
+	name string
+	in   chan InboundMsg
+	mu   sync.Mutex
+	sent []OutboundMsg
+}
+
+func newFake(name string) *fakeAdapter {
+	return &fakeAdapter{name: name, in: make(chan InboundMsg, 1)}
+}
+
+func (f *fakeAdapter) Name() string { return f.name }
+func (f *fakeAdapter) Start(ctx context.Context) (<-chan InboundMsg, error) {
+	return f.in, nil
+}
+func (f *fakeAdapter) Send(ctx context.Context, out OutboundMsg) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, out)
+	return nil
+}
+
+func TestRegistry_RegisterAndGet(t *testing.T) {
+	r := NewRegistry()
+	a := newFake("telegram")
+	if err := r.Register(a); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Duplicate name is rejected.
+	if err := r.Register(newFake("telegram")); err == nil {
+		t.Fatal("expected error registering duplicate name")
+	}
+	got, ok := r.Get("telegram")
+	if !ok || got != a {
+		t.Fatalf("Get returned %v, %v", got, ok)
+	}
+	if _, ok := r.Get("absent"); ok {
+		t.Fatal("Get on absent channel should be false")
+	}
+	if len(r.All()) != 1 {
+		t.Fatalf("All() = %d, want 1", len(r.All()))
+	}
+}
+
+func TestRegistry_Send(t *testing.T) {
+	r := NewRegistry()
+	a := newFake("discord")
+	r.Register(a)
+
+	if err := r.Send(context.Background(), OutboundMsg{Channel: "discord", Text: "hi"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(a.sent) != 1 || a.sent[0].Text != "hi" {
+		t.Fatalf("adapter did not receive send: %+v", a.sent)
+	}
+	// Unknown channel errors.
+	if err := r.Send(context.Background(), OutboundMsg{Channel: "nope"}); err == nil {
+		t.Fatal("expected error sending to unregistered channel")
+	}
+}
+
+// StartAll fans every adapter's inbound into one channel, and closes it on
+// context cancel once goroutines drain.
+func TestRegistry_StartAllFanIn(t *testing.T) {
+	r := NewRegistry()
+	a, b := newFake("telegram"), newFake("discord")
+	r.Register(a)
+	r.Register(b)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fan, err := r.StartAll(ctx)
+	if err != nil {
+		t.Fatalf("StartAll: %v", err)
+	}
+
+	a.in <- InboundMsg{Channel: "telegram", Text: "from-a"}
+	b.in <- InboundMsg{Channel: "discord", Text: "from-b"}
+
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		msg := <-fan
+		got[msg.Channel] = true
+	}
+	if !got["telegram"] || !got["discord"] {
+		t.Fatalf("fan-in missing a channel: %v", got)
+	}
+
+	// Cancel and confirm the fan-in channel closes.
+	cancel()
+	for range fan { //nolint:revive // drain until closed
+	}
+}
 
 func TestSplitMessage(t *testing.T) {
 	cases := []struct {
