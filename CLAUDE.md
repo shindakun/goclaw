@@ -54,6 +54,12 @@ go test -race ./...           # concurrency-touching packages exist; use -race w
 go run ./cmd/goclaw           # run the host (reads .env; see .env.example)
 ```
 
+Install the pre-commit hook once after cloning: `./.githooks/install.sh`. It gates
+every commit on gofmt + go vet + `go build ./...` + `go test ./...`, so a tree that
+does not compile or whose tests fail cannot be committed (a broken HEAD has slipped
+through before). Live container tests are gated behind `GOCLAW_LIVE_INSTALL` and
+skip in the hook. Bypass only in a real emergency with `git commit --no-verify`.
+
 Container images (only when launching real runners):
 
 ```sh

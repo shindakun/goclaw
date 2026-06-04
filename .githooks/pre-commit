@@ -1,0 +1,39 @@
+#!/bin/sh
+# goclaw pre-commit hook: the tree must build and the suite must pass before a
+# commit lands. This exists because a broken HEAD (e.g. a rename committed in one
+# file but not its call site) is exactly the failure that slips through otherwise.
+#
+# Install once with: ./.githooks/install.sh  (sets core.hooksPath to .githooks)
+# Bypass in a genuine emergency with: git commit --no-verify
+#
+# Gates, fast ones only (the full race suite + golangci-lint run in CI):
+#   - gofmt    (no unformatted tracked Go files, excluding the vault template)
+#   - go vet   (suspicious constructs)
+#   - go build ./...   (the tree MUST compile)
+#   - go test ./...    (the suite MUST pass; live container tests are gated off
+#                       behind GOCLAW_LIVE_INSTALL and skip here)
+
+set -e
+
+# Run from the repo root regardless of where git invoked us.
+cd "$(git rev-parse --show-toplevel)"
+
+echo "pre-commit: gofmt"
+unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^internal/vaultinit/template/') 2>/dev/null || true)
+if [ -n "$unformatted" ]; then
+	echo "  not gofmt-clean:"
+	echo "$unformatted" | sed 's/^/    /'
+	echo "  run: gofmt -w <files>"
+	exit 1
+fi
+
+echo "pre-commit: go vet"
+go vet ./... || { echo "  go vet failed"; exit 1; }
+
+echo "pre-commit: go build"
+go build ./... || { echo "  build failed (the tree must compile)"; exit 1; }
+
+echo "pre-commit: go test"
+go test ./... || { echo "  tests failed"; exit 1; }
+
+echo "pre-commit: ok"
