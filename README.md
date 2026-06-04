@@ -15,9 +15,10 @@ drives Claude (multi-turn, with `/reset` and `/compact`), reads and writes a
 knowledge vault, can clone repos and open pull requests, and runs scheduled
 vault maintenance. The host pieces (router, delivery, sweep, permissions, mount
 validation) are real and tested. An optional built-in **credential proxy** keeps
-the raw Anthropic key out of the agent container (see
-[Credential proxy](#credential-proxy)); without it, the container holds the key
-directly as a pragmatic shortcut.
+the raw API tokens (Anthropic and GitHub) out of the agent container, injecting
+them on the wire so the container only ever sees a placeholder (see
+[Credential proxy](#credential-proxy)); without it, the container holds the
+tokens directly as a pragmatic shortcut.
 
 ## Layout
 
