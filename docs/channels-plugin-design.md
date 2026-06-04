@@ -1,13 +1,25 @@
 # Channel plugins: running an untrusted channel in the sandbox
 
 Status: DESIGN (nothing here is built yet). This doc covers how a third-party
-**channel** plugin can be added to goclaw the same way a tool plugin is (a
-downloaded, sandbox-built binary, hot-reloadable, no host rebuild), WITHOUT giving
-that untrusted binary a foothold on the host. The deciding constraint and the whole
-reason this doc exists: a channel needs a network front door, the sandbox cannot
-bind one, and we refuse to run untrusted code on the host. The answer is a
-**host-side relay** (trusted, first-party) in front of an **in-container channel
-plugin** (untrusted, sandboxed).
+**channel** can be added to goclaw WITHOUT giving untrusted code a foothold on the
+host. The deciding constraint and the whole reason this doc exists: a channel needs a
+network front door, the sandbox cannot bind a hot-added one, and we refuse to run
+untrusted code on the host.
+
+The conclusion splits by shape (sections 4, 6):
+
+- An **outbound-dialer** channel (a Discord/Matrix/IRC bridge that dials an upstream)
+  IS a hot-added, sandbox-built plugin: a downloaded binary in the container behind a
+  **host-side relay** (trusted, first-party). This is where untrusted third-party
+  protocol code belongs, and it hot-adds cleanly because it needs no inbound port.
+- An **inbound-listener** channel (the webhook shape) is NOT a hot-added plugin: a
+  hot-added container cannot get an externally-reachable port without a restart
+  (section 4.0), so the production inbound webhook is a **first-party host-ingress
+  feature**. goclawkit's `cmd/webhook` survives as the SDK's protocol demo, not as an
+  installed plugin.
+
+Either way the untrusted half sits BEHIND the boundary; the external front door is
+always first-party host code.
 
 Read `docs/plugins-design.md` first (the tool-plugin system this builds on) and
 `docs/security.md` ("Plugins run in the sandbox") for the threat model. The
@@ -119,38 +131,75 @@ implements). It does not know or care that the "host" on the other end is actual
 relay reached across a container boundary. That is what makes the plugin code
 identical whether it ran on the host or in the box.
 
+IMPORTANT SCOPE NOTE: the diagram above is the OUTBOUND-DIALER shape (4b), the only
+shape with an in-container plugin process. The INBOUND shape (4a, webhook) has NO
+in-container binary: section 4.0's frozen-ports constraint means a hot-added inbound
+listener cannot be reached inside the container, so inbound is a first-party HOST
+ingress feature instead (section 4a/6b). The relay, boundary, and `ChannelAdapter`
+wiring are shared; the "downloaded binary in the box" half applies only to 4b.
+
 ## 4. Who owns the front door? Two channel sub-shapes
 
-"A channel binds a port" hides a fork. It decides WHERE the network endpoint lives,
-which in turn decides the goclaw-side deployment wiring (section 6 shows the webhook
-plugin itself needs no code change either way). There are two sub-shapes:
+### 4.0. The constraint that drives everything: container mounts and ports are FROZEN
 
-### 4a. Inbound-listener channels (the webhook shape)
+A podman container's mounts AND published ports are fixed at `podman run` time. There
+is no "add a mount" or "publish a port" to an ALREADY-RUNNING container
+(`internal/runtime/session.go`'s `EnsureGroupRunner` builds the whole mount set before
+`Run`; nothing adds to it after). Hot-add means installing a channel WITHOUT restarting
+the container. So:
 
-The channel is a SERVER: something outside POSTs to it. `cmd/webhook` binds
-`WEBHOOK_ADDR` itself inside `Start()`. In the sandbox that bind SUCCEEDS (it binds a
-port in the container's network namespace); the only open question is how the outside
-world reaches it. Two ways, both decided host-side, neither touching the plugin code:
+- A hot-added channel can NEVER get a newly-published container port. `podman -p` is a
+  run-time flag; using it for a hot-added inbound channel would require a container
+  restart, which breaks the invariant the whole plugin system is built on.
+- Anything that must be reachable from outside has to be held by something that ALREADY
+  EXISTS before the channel is added: the host process (always up), or a port/mount
+  fixed at container start.
 
-- The host PUBLISHES the container port (podman `-p`), so an external POST lands on the
-  in-container listener directly and the plugin emits `channel.inbound` up the boundary.
-  (Reachability A in section 6b. The worked example already does exactly this.)
-- OR the host relay owns the public listener and the plugin binds nothing, so a pure
-  inbound webhook needs no plugin process at all and becomes a first-party relay
-  feature. (Reachability B; this is the variant that WOULD need a plugin without its
-  own bind.)
+The pattern that already dodges this is `/plugins`: it is mounted ONCE as a DIRECTORY,
+and hot-add works because installing a plugin adds a FILE INSIDE the already-mounted dir
+(fsnotify watches contents), never a new mount. Every dynamic boundary in this design
+MUST follow that pattern: pre-mount a directory at container start, create per-channel
+files inside it at hot-add time. A per-channel mount or per-channel published port is
+forbidden because it cannot be done without a restart.
 
-The "does a pure inbound webhook even deserve to be a plugin" question lives here and is
-resolved in section 6b: yes for the SDK demo, reachability-A; first-party relay for
-production is the open call (section 10).
+### 4a. Inbound-listener channels (the webhook shape): host owns the ingress
 
-### 4b. Outbound-dialer channels (the chat-gateway shape)
+The channel is a SERVER: something outside POSTs to it. The naive read is "the plugin
+binds `WEBHOOK_ADDR` inside the container, the host just publishes that port." Section
+4.0 kills that for the dynamic case: a hot-added inbound channel cannot get a published
+port without a container restart. So for a channel that is added at runtime, the
+externally-reachable listener CANNOT live in the container. It must live on the host.
+
+The answer (and it is how every real webhook gateway works: Stripe, GitHub, one host,
+many paths) is ONE always-on host ingress, multiplexed by PATH, not per-channel ports:
+
+- The host binds ONE public listener at startup, fixed forever (e.g. `:8080`).
+- A hot-added inbound channel gets a ROUTE, not a port: `POST /channels/<name>/inbound`.
+  Adding a channel adds an in-memory route to the host's mux (instant, no port, no
+  mount, no restart). Removing it drops the route.
+- The host relay authenticates the POST, namespaces identity (section 7), and pushes
+  the normalized inbound across the PRE-MOUNTED socket dir (section 5) to the
+  in-container plugin, which emits `channel.inbound`.
+
+The consequence, stated honestly: in this model the HOST relay holds the listener and
+does auth + identity, so the webhook plugin's own `Start()` listener and `authOK` are
+NOT used. The plugin shrinks to "normalize a decoded inbound," which is thin enough that
+a pure inbound webhook does not need a plugin process at all: it is a FIRST-PARTY HOST
+FEATURE configured with a token + an outbound target. This is resolved in section 6:
+inbound webhook = first-party host feature; goclawkit's `cmd/webhook` survives as the
+SDK's protocol demo (and its `-selftest`), not as a thing you `/plugin add`.
+
+This is also a SECURITY GAIN: untrusted code that hot-adds never owns the external front
+door. The front door is always first-party host code; untrusted code sits behind it.
+
+### 4b. Outbound-dialer channels (the chat-gateway shape): the real hot-added plugin
 
 The channel is a CLIENT: it dials an upstream and holds the connection (Discord
 gateway websocket, an IRC server, an XMPP server). This is the shape that genuinely
-needs a long-lived plugin process, and the shape vetting-vs-shim actually matters for,
-because here the plugin must speak a real third-party protocol we do not want to build
-into the host.
+needs a long-lived plugin process, and it HOT-ADDS CLEANLY precisely because it needs no
+inbound port: it dials OUT over the container's existing egress, so section 4.0's frozen
+-ports problem never bites. This is where untrusted third-party protocol code belongs,
+and it is the shape that actually justifies a channel PLUGIN.
 
 For this shape the question is WHERE the outbound dial happens:
 
@@ -164,25 +213,32 @@ For this shape the question is WHERE the outbound dial happens:
   third-party protocol parsing back onto the host, which is most of what we were
   trying to avoid. Reject unless egress policy forbids A.
 
-The recommendation (section 9) is: design the boundary and relay so BOTH sub-shapes
-work, but build 4a (inbound webhook) first because it is the worked example and needs
-no container egress, and treat 4b as the validating second case.
+The recommendation (section 9): build 4b (outbound dialer) FIRST as the real
+hot-addable channel plugin, because it needs no inbound port and so exercises the
+boundary + hot-reload with no ingress complications. Build 4a (inbound webhook) as a
+first-party host-ingress feature, validated by goclawkit's `cmd/webhook` as the SDK
+protocol demo. (This reverses an earlier draft that built 4a first; section 4.0's
+frozen-ports constraint is why.)
 
 ## 5. The boundary: Unix socket vs the SQLite pair
 
 The host relay and the in-container glue need a bidirectional, long-lived, framed byte
 pipe. Two candidates; this is the decision the doc was written to support.
 
-### 5a. Unix domain socket mounted into the container (RECOMMENDED)
+### 5a. Unix domain socket in a PRE-MOUNTED socket dir (RECOMMENDED)
 
-The host binds a Unix socket at a host path that is mounted into the container; the
-in-container runner dials it and pipes the framed protocol between the socket and the
-plugin's stdio.
+A single socket DIRECTORY is mounted into the container ONCE at `podman run` time
+(section 4.0: a per-channel mount is forbidden, it cannot be added to a running
+container). Per-channel SOCKET FILES are created INSIDE that already-mounted dir at
+hot-add time, exactly as plugins are files inside the already-mounted `/plugins`.
 
 ```
-host:      net.Listen("unix", <dataDir>/run/chan-<name>.sock)
-mount:     that file (or its dir) mounted into the container at /run/goclaw/chan-<name>.sock
-runner:    net.Dial("unix", "/run/goclaw/chan-<name>.sock") <-> plugin stdio
+mount (once, at container start):
+           <dataDir>/run/channels/   ->  /run/goclaw/channels/   (read-write)
+
+per channel (hot-add, no restart, just a new file in the mounted dir):
+host:      net.Listen("unix", <dataDir>/run/channels/<name>.sock)
+runner:    net.Dial("unix", "/run/goclaw/channels/<name>.sock") <-> plugin stdio
 ```
 
 - This is LITERALLY what `goclawkit/pkg/ipc`'s `Transport` abstraction was designed
@@ -191,13 +247,15 @@ runner:    net.Dial("unix", "/run/goclaw/chan-<name>.sock") <-> plugin stdio
   format" (ipc/proto.go:78-84). The frames are unchanged; only the Transport differs.
 - True duplex stream: a channel is long-lived and low-latency (a chat reply should not
   wait on a poll interval). A socket is the right shape.
-- Lifecycle: the relay owns the socket file (create on start, unlink on stop). Per
-  channel, one socket. Rootless podman can bind-mount a host path into the container;
-  we already do this for `/plugins`, `/vault`, `/sessions`.
-- COST: a new mount and socket lifecycle to manage. The socket is a host-writable path
-  the container can also write (it is a duplex pipe), which is a NEW kind of mount: all
-  current mounts are either RO (`/plugins`, CA cert) or a single-writer-per-file SQLite
-  pair. A read-write socket the container writes is outside the "two SQLite files, one
+- HOT-ADD SAFE: because the DIR is mounted once and the per-channel socket is just a
+  file inside it, adding/removing a channel never touches the container's frozen mount
+  set. The in-container runner watches the dir (it already watches `/plugins`) and dials
+  a new socket when it appears. Lifecycle: the relay creates the socket on channel add,
+  unlinks it on remove.
+- COST: ONE new mount (the dir), not one per channel. It is a host-writable path the
+  container can also write (a duplex pipe), which is a NEW kind of mount: all current
+  mounts are either RO (`/plugins`, CA cert) or the single-writer-per-file SQLite pair.
+  A read-write socket dir the container writes is outside the "two SQLite files, one
   writer each" invariant. That is not a violation (the invariant is about the
   inbound/outbound DBs specifically), but it IS a new trusted channel into the host
   relay, and the relay must treat everything arriving on it as untrusted input (frame
@@ -228,18 +286,20 @@ Carry `channel.inbound` as rows the plugin writes to outbound.db (host reads RO)
 ### Recommendation: 5a (Unix socket).
 
 It is what the SDK's Transport abstraction anticipated, it is stream-shaped for a
-stream problem, and it keeps the SQLite invariant clean by NOT touching it. The cost
-(one new mounted socket per channel, with its lifecycle) is real but contained, and
-the relay treating socket input as untrusted is the same posture we already hold for
-every other input.
+stream problem, it keeps the SQLite invariant clean by NOT touching it, and (crucially
+for hot-add) it adds ONE mount, the socket dir, with per-channel sockets as files
+inside it. The relay treating socket input as untrusted is the same posture we already
+hold for every other input.
 
 ## 6. What changes in the webhook plugin (and the goclawkit SDK)
 
 This is the crux of "does the worked example still work, and does the SDK need to
-change." Short answer: **the webhook plugin needs NO code change, the SDK needs NO
-wire change, and `-selftest` keeps working untouched.** The only open choice is a
-goclaw-side DEPLOYMENT one (how the outside world reaches the in-container listener),
-not an edit to `cmd/webhook`.
+change." Short answer: **the SDK needs NO wire change and `-selftest` keeps working
+untouched. The webhook PLUGIN, as a thing you `/plugin add`, does not fit the hot-add
+inbound case (section 4.0): its in-container listener cannot be reached from outside
+without a container restart. So the production inbound webhook becomes a FIRST-PARTY
+HOST FEATURE (host ingress, section 4a), and goclawkit's `cmd/webhook` survives as the
+SDK's protocol demo, not as an installable plugin.**
 
 ### 6a. The goclawkit SDK: no wire/protocol change needed
 
@@ -252,39 +312,33 @@ not an edit to `cmd/webhook`.
   plugin's stdio to the Unix socket; the plugin still just does stdio. So a channel
   plugin author writes the SAME `ServeChannel(ch)` they write today.
 
-### 6b. The webhook plugin: no code change, just a reachability choice
+### 6b. Why the webhook cannot be a hot-added plugin (and what it is instead)
 
-It is tempting to say "the plugin binds its own port, so it cannot run in the sandbox."
-That is WRONG, and worth being precise about. The webhook plugin binds `WEBHOOK_ADDR`
-inside `Start()` (`main.go:113-118`, `listen(c.addr)`). When the plugin runs in the
-agent container, that bind succeeds: it binds a port INSIDE the container's network
-namespace. The only question is whether the OUTSIDE WORLD can reach that port, which is
-a host deployment concern, NOT a property of the plugin code. The plugin's `Start()`
-listener is therefore NOT dead code: it is exactly what receives the inbound POST. The
-plugin compiles and runs as-is.
+The tempting story is "the plugin binds `WEBHOOK_ADDR` inside the container, that bind
+succeeds, the host just makes it reachable." The bind DOES succeed (a port in the
+container's network namespace), but "make it reachable" is the trap: section 4.0 says a
+hot-added channel can NEVER get a published container port without a restart. The
+outside world cannot reach an in-container listener that was added after the container
+started. So for a webhook installed AT RUNTIME, the in-container listener is unreachable
+from outside, full stop. The plugin's `Start()` HTTP listener cannot be the front door.
 
-So the webhook plugin needs no change. goclaw has two ways to make the in-container
-listener reachable; this is the deployment choice, decided host-side:
+That is why inbound webhook resolves to a FIRST-PARTY HOST FEATURE, not an installable
+plugin (section 4a): the host owns one always-on ingress and routes `/channels/<name>/
+inbound` to a host relay that authenticates, namespaces identity, and forwards the
+normalized inbound across the pre-mounted socket dir. In that model the host does the
+listening and the auth, so the webhook plugin's `Start()` listener and `authOK` are not
+used. A pure inbound webhook therefore does not need an in-container process at all.
 
-- REACHABILITY A (publish the container port): the host publishes the plugin's
-  container port to a host address (podman `-p`), so an external POST hits the host and
-  lands on the in-container listener directly. Inbound never crosses the framed
-  boundary at all in this shape: it arrives over HTTP straight to the plugin, and the
-  plugin emits `channel.inbound` up the boundary to the relay. Outbound (`channel.send`)
-  still crosses the boundary. Simplest, and the worked `cmd/webhook` already does
-  exactly this with no edits.
-- REACHABILITY B (host relay owns the listener): the host relay binds the public HTTP
-  listener and the plugin does not bind anything; an inbound POST is normalized by the
-  relay and emitted directly. This removes the untrusted process from the inbound path
-  entirely (a pure inbound webhook then needs no plugin process), but it means the
-  PRODUCTION inbound-webhook is a first-party relay feature, with `cmd/webhook` retained
-  as the SDK's protocol demo. It also requires the plugin to NOT bind a port, which the
-  current example does, so it is the resolution that WOULD need a plugin variant.
+Consequence for `cmd/webhook`: it stays in goclawkit as the worked SDK demo of the
+`channel.*` protocol (handshake, `channel.inbound` event, `channel.send` request, the
+wire test, `-selftest`). It is NOT the thing a goclaw operator `/plugin add`s for a
+production webhook; that path is the first-party host ingress. The two are not in
+conflict: the SDK demo proves the protocol; the host feature ships the capability.
 
-Recommendation: ship REACHABILITY A for the worked example, because it needs zero edits
-to `cmd/webhook` and proves the channel.* path end to end with the binary as-is. Keep B
-in mind as the "do we even want a process here" question for production inbound webhooks
-(section 10), but it is not required to run the example.
+If we later DID want a webhook as an installed plugin (e.g. an operator who pre-declares
+it before container start, accepting a restart to add it), reachability via a published
+port is possible but explicitly OUT of the hot-add story. Default: do not. Section 10
+holds this as the one open product call.
 
 ### 6c. `-selftest` is unaffected
 
@@ -340,61 +394,91 @@ gains ONLY a byte-moving relay it fully controls.
   throwaway container, only the verified binary + plugin.yml leave. `kind: channel`
   is just a manifest value; the build does not care. The host never builds or runs the
   plugin during install (section "Installing a plugin" in security.md holds verbatim).
-- THE NEW MOUNT IS THE ONLY NEW SURFACE. The Unix socket is a read-write path the
-  container can write, unlike every existing mount. It is per-channel, owned by the
-  relay, and carries only framed bytes the relay treats as untrusted. It does NOT touch
-  the inbound.db/outbound.db invariant (that pair is untouched). It must be created
-  with tight permissions (0600, owned by the host user) and unlinked on stop.
+- THE NEW MOUNT IS THE ONLY NEW SURFACE. One socket DIRECTORY is mounted read-write
+  (section 5a); the container can write it, unlike every existing mount. Per-channel
+  sockets are files inside it, owned by the relay, carrying only framed bytes the relay
+  treats as untrusted. It does NOT touch the inbound.db/outbound.db invariant (that pair
+  is untouched). Each socket is created with tight permissions (0600, host user) and
+  unlinked on channel removal; the dir itself is created once.
+- THE EXTERNAL FRONT DOOR IS ALWAYS FIRST-PARTY. For inbound channels (section 4a) the
+  host owns the always-on ingress and the auth; untrusted code never binds the
+  externally-reachable port. For outbound dialers (4b) there is no inbound port at all.
+  Either way the untrusted plugin is behind the boundary, never in front of it.
 
 ## 8. Lifecycle and hot-reload
 
-Channels reuse the tool-plugin discovery/hot-reload machinery, extended:
+The two shapes hot-add differently, because only the outbound dialer is an installed
+plugin PROCESS (section 6b).
+
+OUTBOUND-DIALER CHANNELS (4b), the real channel plugin:
 
 - A `kind: channel` dir appears in `data/plugins/<name>/` (installed via `/plugin add`
   exactly like a tool). The host (NOT just the runner) must learn about it, because the
-  relay is host-side. So host-side discovery walks the plugins dir for `kind: channel`
-  manifests and, for each, creates a relay + socket + registers a `ChannelAdapter`.
+  relay is host-side. Host-side discovery walks the plugins dir for `kind: channel`
+  manifests and, for each, creates a relay, a socket FILE in the pre-mounted socket dir
+  (section 5a, no new mount), and registers a `ChannelAdapter`.
 - The runner's existing fsnotify watch launches the in-container plugin process and
-  connects its stdio to the channel socket.
-- Hot-add: a new channel dir -> host creates relay/socket/adapter, runner launches the
-  process, they meet on the socket. Hot-remove: dir gone -> runner stops the process,
-  host unregisters the adapter (`channels.Registry.Unregister`) and unlinks the socket.
-  `Unregister` exists (it drops the registry entry and reports whether one was present;
-  it is idempotent and the freed name can be re-registered on reinstall). It only
-  removes the entry: stopping the adapter's `Start` goroutine and unlinking its socket
-  is the relay's job, since the registry does not own those.
-- ORDER/RACE: the relay should tolerate the plugin not being connected yet (socket
-  bound, nothing dialed) and the plugin should tolerate the socket not being ready
-  (retry the dial). Same "launch is lazy / first message is slower" posture the
-  container already has.
+  connects its stdio to the channel socket. The plugin dials its upstream; inbound and
+  outbound flow across the socket.
+- Hot-add: a new channel dir -> host creates relay + socket file + adapter, runner
+  launches the process, they meet on the socket. Hot-remove: dir gone -> runner stops
+  the process, host unregisters the adapter (`channels.Registry.Unregister`) and unlinks
+  the socket file. `Unregister` exists (drops the registry entry, reports whether one
+  was present, idempotent, freed name re-registerable on reinstall). It only removes the
+  entry: stopping the adapter's `Start` goroutine and unlinking its socket is the
+  relay's job, since the registry does not own those.
+- ORDER/RACE: the relay tolerates the plugin not being connected yet (socket bound,
+  nothing dialed) and the plugin tolerates the socket not being ready (retry the dial).
+  Same "launch is lazy / first message is slower" posture the container already has.
+
+INBOUND CHANNELS (4a), the first-party host feature:
+
+- These are NOT an in-container plugin process. Hot-add is even simpler and never
+  touches the container: the host adds a ROUTE (`/channels/<name>/inbound`) to its
+  always-on ingress mux and registers a `ChannelAdapter`. Hot-remove drops the route and
+  unregisters. No socket file, no plugin process, no `/plugins` dir involvement.
+- Config (the channel name, its inbound token, its outbound target) is host-side state,
+  not a downloaded artifact. Adding/removing one is a host config change, applied live.
 
 ## 9. Recommended build order
 
-1. Boundary first: a Unix-socket `Transport` on the host side (relay) and the
-   in-container glue that pipes socket <-> plugin stdio. Prove it with the EXISTING
-   stub/roll machinery before any channel semantics.
-2. Host channel relay implementing `channels.ChannelAdapter` over the boundary, reading
-   `channel.inbound`, writing `channel.send`. Register it; make the router treat it
-   like Telegram. Enforce identity namespacing in the relay (section 7).
-3. Sub-shape 4a (inbound webhook) end to end via reachability A (publish the container
-   port; the plugin keeps its own listener, no edits; section 6b). This validates the
-   inbound and outbound paths with the worked example as-is, no container egress needed.
-4. Host-side `kind: channel` discovery and hot-reload (section 8).
+Build the boundary, then the OUTBOUND DIALER first (it is the real hot-add plugin and
+needs no ingress), then the inbound host feature.
+
+1. Pre-mounted socket dir: mount `<dataDir>/run/channels/` -> `/run/goclaw/channels/`
+   read-write at container start (section 5a). One mount, fixed at run time.
+2. Boundary: a Unix-socket `Transport` on the host relay and the in-container glue that
+   pipes a socket file <-> plugin stdio. Prove it with the EXISTING stub/roll machinery
+   before any channel semantics.
+3. Host channel relay implementing `channels.ChannelAdapter` over the boundary, reading
+   `channel.inbound`, writing `channel.send`. Register it; make the router treat it like
+   Telegram. Enforce identity namespacing in the relay (section 7).
+4. Sub-shape 4b (outbound dialer) as the FIRST end-to-end channel plugin and a worked
+   goclawkit example: it hot-adds with no inbound port, so it exercises discovery, the
+   socket boundary, and hot-reload with no ingress complications. Validates that
+   untrusted upstream-protocol parsing stays in the box.
+5. Host-side `kind: channel` discovery and hot-reload for 4b (section 8).
    `channels.Registry.Unregister` is already in place for the hot-remove path.
-5. Sub-shape 4b (outbound dialer) as the second worked example in goclawkit, validating
-   that untrusted upstream-protocol parsing stays in the box.
-6. Manifest: flip `internal/plugin/manifest.go`'s `case "channel"` from
+6. Inbound host ingress (section 4a): one always-on listener, `/channels/<name>/inbound`
+   routes, host-side auth + identity, forwarding over the boundary. This is the
+   production inbound webhook, a FIRST-PARTY feature; goclawkit's `cmd/webhook` is the
+   SDK protocol demo for it, not an installed plugin.
+7. Manifest: flip `internal/plugin/manifest.go`'s `case "channel"` from
    "not supported yet" to validated (a channel manifest has no `command`, lists its
-   env var NAMES, declares `kind: channel`).
+   env var NAMES, declares `kind: channel`). Note this is for the 4b dialer shape; the
+   inbound feature is host config, not a plugin manifest.
 
 ## 10. Open questions to resolve during build
 
 - Container egress for 4b dialers: does the egress policy permit a chat-gateway dial
   from the container, or must specific upstreams be allowlisted (like the credential
   proxy's per-host injection)? Determines whether 4b option A (plugin dials) is viable.
-- Does a pure inbound webhook deserve to be a plugin at all, or is it a first-party
-  relay feature with the goclawkit `cmd/webhook` retained purely as the SDK's protocol
-  demo? (Section 6b leans: first-party relay for production, plugin example for the
-  SDK.)
-- Socket mount path convention and podman flags for a read-write Unix-socket bind on
-  rootless podman (SELinux `:Z` relabel interplay with a socket, not a dir).
+- RESOLVED (section 4.0 / 6b): a pure inbound webhook is a FIRST-PARTY host-ingress
+  feature, not a hot-added plugin, because a hot-added channel cannot get an externally
+  -reachable container port without a restart. goclawkit's `cmd/webhook` is the SDK
+  protocol demo. The only remaining sub-question: do we EVER support a webhook as a
+  pre-declared (restart-required, not hot-added) installed plugin? Default no.
+- Pre-mounted socket dir on rootless podman: SELinux `:Z` relabel interplay with a
+  read-write DIR holding live Unix sockets the container both reads and writes, and
+  confirming the runner's fsnotify sees socket files appear/disappear inside it the way
+  it sees plugin dirs under `/plugins`.
