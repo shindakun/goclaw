@@ -306,8 +306,8 @@ Done: the real Go runner on [`shindakun/agent-sdk-go`](https://github.com/shinda
 (multi-turn, `/reset`, `/compact`, auto-compact); the knowledge vault mount with
 scheduled maintenance; the GitHub dev environment (clone + open PRs); container
 teardown / idle-runner GC (`internal/sweep`); and the
-[Credential proxy](#credential-proxy) that keeps the raw Anthropic key out of the
-agent container (verified live).
+[Credential proxy](#credential-proxy) that keeps the raw Anthropic and GitHub
+tokens out of the agent container (verified live).
 
 Next:
 
