@@ -121,24 +121,28 @@ identical whether it ran on the host or in the box.
 
 ## 4. Who owns the front door? Two channel sub-shapes
 
-"A channel binds a port" hides a fork, and it changes how much the webhook plugin
-must change (section 6). There are two sub-shapes:
+"A channel binds a port" hides a fork. It decides WHERE the network endpoint lives,
+which in turn decides the goclaw-side deployment wiring (section 6 shows the webhook
+plugin itself needs no code change either way). There are two sub-shapes:
 
 ### 4a. Inbound-listener channels (the webhook shape)
 
-The channel is a SERVER: something outside POSTs to it. Today `cmd/webhook` binds
-`WEBHOOK_ADDR` ITSELF inside `Start()`. In the shim model that port must be bound by
-the HOST relay (the sandbox cannot bind a host-reachable port), not the plugin. So
-for this shape:
+The channel is a SERVER: something outside POSTs to it. `cmd/webhook` binds
+`WEBHOOK_ADDR` itself inside `Start()`. In the sandbox that bind SUCCEEDS (it binds a
+port in the container's network namespace); the only open question is how the outside
+world reaches it. Two ways, both decided host-side, neither touching the plugin code:
 
-- The HOST relay owns the listener. An inbound POST arriving at the host becomes a
-  `channel.send`-style... NO: it becomes an INBOUND. The relay decodes the POST into
-  an `InboundMsg` and emits it on `Start()`'s channel. The plugin's role shrinks to
-  "decode/normalize," which is logic, not a socket.
-- This means a pure inbound-webhook channel barely needs the plugin process at all:
-  the interesting code (auth check, identity namespacing, JSON shape) could live in
-  the relay. See section 6 for the tension this creates with the existing webhook
-  plugin, and the recommendation.
+- The host PUBLISHES the container port (podman `-p`), so an external POST lands on the
+  in-container listener directly and the plugin emits `channel.inbound` up the boundary.
+  (Reachability A in section 6b. The worked example already does exactly this.)
+- OR the host relay owns the public listener and the plugin binds nothing, so a pure
+  inbound webhook needs no plugin process at all and becomes a first-party relay
+  feature. (Reachability B; this is the variant that WOULD need a plugin without its
+  own bind.)
+
+The "does a pure inbound webhook even deserve to be a plugin" question lives here and is
+resolved in section 6b: yes for the SDK demo, reachability-A; first-party relay for
+production is the open call (section 10).
 
 ### 4b. Outbound-dialer channels (the chat-gateway shape)
 
@@ -232,8 +236,10 @@ every other input.
 ## 6. What changes in the webhook plugin (and the goclawkit SDK)
 
 This is the crux of "does the worked example still work, and does the SDK need to
-change." Short answer: **the SDK needs NO wire change; the channel sub-shape (4a vs
-4b) decides whether the webhook plugin changes a lot or a little.**
+change." Short answer: **the webhook plugin needs NO code change, the SDK needs NO
+wire change, and `-selftest` keeps working untouched.** The only open choice is a
+goclaw-side DEPLOYMENT one (how the outside world reaches the in-container listener),
+not an edit to `cmd/webhook`.
 
 ### 6a. The goclawkit SDK: no wire/protocol change needed
 
@@ -246,41 +252,51 @@ change." Short answer: **the SDK needs NO wire change; the channel sub-shape (4a
   plugin's stdio to the Unix socket; the plugin still just does stdio. So a channel
   plugin author writes the SAME `ServeChannel(ch)` they write today.
 
-The one thing worth ADDING to the SDK is documentation/guidance, not code: a channel
-plugin SHOULD NOT bind its own host-reachable port in `Start()` if it wants to run in
-the goclaw sandbox, because in the sandbox there is no host-reachable port to bind.
-That guidance distinguishes the two sub-shapes for plugin authors.
+### 6b. The webhook plugin: no code change, just a reachability choice
 
-### 6b. The webhook plugin specifically (sub-shape 4a, inbound listener)
+It is tempting to say "the plugin binds its own port, so it cannot run in the sandbox."
+That is WRONG, and worth being precise about. The webhook plugin binds `WEBHOOK_ADDR`
+inside `Start()` (`main.go:113-118`, `listen(c.addr)`). When the plugin runs in the
+agent container, that bind succeeds: it binds a port INSIDE the container's network
+namespace. The only question is whether the OUTSIDE WORLD can reach that port, which is
+a host deployment concern, NOT a property of the plugin code. The plugin's `Start()`
+listener is therefore NOT dead code: it is exactly what receives the inbound POST. The
+plugin compiles and runs as-is.
 
-The webhook plugin as written binds `WEBHOOK_ADDR` itself inside `Start()`
-(`main.go:113-118`, `listen(c.addr)`). In the sandbox that bind either fails (no
-permission / not host-reachable) or binds a container-internal port nothing outside can
-reach. So the webhook plugin DOES need to change for the shim model, and there are two
-ways to resolve it:
+So the webhook plugin needs no change. goclaw has two ways to make the in-container
+listener reachable; this is the deployment choice, decided host-side:
 
-- RESOLUTION 1 (relay owns the listener): the HOST relay binds the inbound HTTP
-  listener; an inbound POST is decoded by the relay (or forwarded to the plugin as a
-  `channel.inbound`-shaped... no, inbound flows plugin->host, so the relay would just
-  emit the InboundMsg directly). Under this resolution the webhook plugin's `Start()`
-  listener is DEAD CODE in the sandbox: the plugin reduces to a normalizer, and a pure
-  inbound webhook arguably does not need a plugin process at all (it could be a relay
-  config). This is the cleanest security story (no untrusted process in the inbound
-  path) but it means "webhook" is really a first-party relay feature, not a plugin.
-- RESOLUTION 2 (plugin keeps the listener, host forwards to it): the host relay binds
-  the PUBLIC port, and forwards each inbound POST across the boundary to the plugin's
-  IN-CONTAINER listener, then reads the resulting `channel.inbound`. This keeps the
-  plugin's decode/auth/normalize logic untrusted-in-the-box, but it is a double hop
-  (host port -> boundary -> plugin listener -> boundary -> host) for an inbound that
-  the relay already holds the bytes of. Mostly pointless for the webhook shape.
+- REACHABILITY A (publish the container port): the host publishes the plugin's
+  container port to a host address (podman `-p`), so an external POST hits the host and
+  lands on the in-container listener directly. Inbound never crosses the framed
+  boundary at all in this shape: it arrives over HTTP straight to the plugin, and the
+  plugin emits `channel.inbound` up the boundary to the relay. Outbound (`channel.send`)
+  still crosses the boundary. Simplest, and the worked `cmd/webhook` already does
+  exactly this with no edits.
+- REACHABILITY B (host relay owns the listener): the host relay binds the public HTTP
+  listener and the plugin does not bind anything; an inbound POST is normalized by the
+  relay and emitted directly. This removes the untrusted process from the inbound path
+  entirely (a pure inbound webhook then needs no plugin process), but it means the
+  PRODUCTION inbound-webhook is a first-party relay feature, with `cmd/webhook` retained
+  as the SDK's protocol demo. It also requires the plugin to NOT bind a port, which the
+  current example does, so it is the resolution that WOULD need a plugin variant.
 
-For the INBOUND-LISTENER shape (4a), resolution 1 is right: the host relay owns the
-listener and the "plugin" is thin enough to question whether it should be a plugin.
-This means the webhook EXAMPLE is best understood as the SDK demonstrating the
-`channel.*` protocol end to end, while the PRODUCTION inbound-webhook in goclaw is a
-first-party relay feature. The third-party-plugin value lives in sub-shape 4b.
+Recommendation: ship REACHABILITY A for the worked example, because it needs zero edits
+to `cmd/webhook` and proves the channel.* path end to end with the binary as-is. Keep B
+in mind as the "do we even want a process here" question for production inbound webhooks
+(section 10), but it is not required to run the example.
 
-### 6c. The shape that justifies a channel PLUGIN: 4b (outbound dialer)
+### 6c. `-selftest` is unaffected
+
+`-selftest` (`selftest.go`) never calls `Start()` and never binds the real port: it
+constructs the channel, calls `decodeInbound` directly, then `Send` to an in-process
+`httptest` sink, and prints the round trip. It has NO dependency on where the plugin
+runs or how the boundary is carried, so the shim changes nothing about it. It keeps
+working verbatim (verified: `go run ./cmd/webhook -selftest` prints the inbound and the
+delivered outbound and exits 0). Whatever we do host-side, `-selftest` stays the
+no-host local smoke test it is today.
+
+### 6d. The shape that justifies a channel PLUGIN: 4b (outbound dialer)
 
 A Discord/Matrix/IRC bridge dials an upstream and parses a real third-party protocol.
 THAT is untrusted code we genuinely want in the box and genuinely cannot reasonably
@@ -360,9 +376,9 @@ Channels reuse the tool-plugin discovery/hot-reload machinery, extended:
 2. Host channel relay implementing `channels.ChannelAdapter` over the boundary, reading
    `channel.inbound`, writing `channel.send`. Register it; make the router treat it
    like Telegram. Enforce identity namespacing in the relay (section 7).
-3. Sub-shape 4a (inbound webhook) end to end, with the host relay owning the listener
-   (resolution 1, section 6b). This validates the inbound and outbound paths with the
-   worked example, no container egress needed.
+3. Sub-shape 4a (inbound webhook) end to end via reachability A (publish the container
+   port; the plugin keeps its own listener, no edits; section 6b). This validates the
+   inbound and outbound paths with the worked example as-is, no container egress needed.
 4. Host-side `kind: channel` discovery and hot-reload (section 8).
    `channels.Registry.Unregister` is already in place for the hot-remove path.
 5. Sub-shape 4b (outbound dialer) as the second worked example in goclawkit, validating
