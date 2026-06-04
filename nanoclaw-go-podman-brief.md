@@ -287,6 +287,16 @@ In the Go host you replicate this at container-spawn time - it's all env + mount
 
 You can keep running OneCLI itself unchanged - it's an external process, not part of the host you're rewriting.
 
+### 8.1 What goclaw actually shipped: a built-in proxy (not OneCLI)
+
+OneCLI's self-hosted gateway turned out to be the right idea but a heavy dependency (a separate Postgres + Next.js + Rust stack, and at the time a self-hosted-auth bug that blocked the dashboard). So goclaw ships its **own small credential proxy** instead, covering the high-value case without an external service:
+
+- **Encrypted store** (`internal/credstore`): credentials live in the central `goclaw.db`, encrypted at rest with AES-256-GCM. The key comes from `GOCLAW_SECRET_ENCRYPTION_KEY` (env only, never the data dir), so a stolen data dir / DB dump doesn't include it. Managed by `goclaw auth add|list|delete` (UUID-keyed).
+- **Host proxy** (`internal/credproxy`): a goroutine in the host that injects the real token per request (`api.anthropic.com` -> `x-api-key`, else `Authorization: Bearer`) and forwards to the real API, streaming SSE through.
+- **Wiring**: when an `api.anthropic.com` credential is stored, the runner is launched with `ANTHROPIC_BASE_URL=http://host.docker.internal:<port>` and a **placeholder** `ANTHROPIC_API_KEY`; the real key never enters the container. Verified: the `claude` CLI honors `ANTHROPIC_BASE_URL` and sends `x-api-key`; a runner container reaches `host.docker.internal` with no extra flags.
+
+This is **base-URL-redirect**, not TLS interception, so it deliberately does NOT cover `git`/`gh` (fixed HTTPS host, no redirect) - scope a fine-grained GitHub token for those. The `internal/vault` stub remains as the alternative path for wiring an external OneCLI-style gateway if that's ever preferred (TLS MITM, covers everything over HTTPS). Fail-open behavior is preserved: no stored credential -> fall back to passing the raw key.
+
 ---
 
 ## 9. Security-model preservation checklist

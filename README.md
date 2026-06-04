@@ -9,10 +9,10 @@ The full message loop runs end to end: a real per-agent-group Podman container
 drives Claude (multi-turn, with `/reset` and `/compact`), reads and writes a
 knowledge vault, can clone repos and open pull requests, and runs scheduled
 vault maintenance. The host pieces (router, delivery, sweep, permissions, mount
-validation) are real and tested. The one part still stubbed is the credential
-**vault proxy** (`internal/vault`); until it is wired, the runner container
-holds the raw credential (see the security note under
-[Real Claude runner](#real-claude-runner)).
+validation) are real and tested. An optional built-in **credential proxy** keeps
+the raw Anthropic key out of the agent container (see
+[Credential proxy](#credential-proxy)); without it, the container holds the key
+directly as a pragmatic shortcut.
 
 ## Layout
 
@@ -30,7 +30,9 @@ internal/sweep/       runner recovery + idle-runner GC (REAL)
 internal/runtime/     Podman lifecycle (CLI shell-out) + mount builder + env
 internal/mounts/      allowlist load + path validation (REAL, unit-tested)
 internal/permissions/ roles, sender policy, access gate (REAL)
-internal/vault/       OneCLI credential-proxy wiring at spawn time (stub)
+internal/credstore/   encrypted credential store (AES-256-GCM) for the proxy (REAL)
+internal/credproxy/   host-side credential-injecting proxy (REAL)
+internal/vault/       OneCLI credential-proxy wiring at spawn time (stub, alt path)
 internal/vaultlock/   flock single-writer guard for the shared vault
 container/            Containerfiles: runner (echo stub) + claude (real runner)
 internal/vaultinit/   `goclaw vault init` installer + embedded vault template (brief §11)
@@ -55,6 +57,8 @@ Config via environment:
 | `GOCLAW_MOUNT_ALLOWLIST` | `~/.config/goclaw/mount-allowlist.json` | external mount allowlist (fail-closed if absent) |
 | `TELEGRAM_BOT_TOKEN` | _(unset)_ | enables the Telegram channel |
 | `GOCLAW_PODMAN_BIN` | `podman` | podman binary |
+| `GOCLAW_SECRET_ENCRYPTION_KEY` | _(unset)_ | base64 32-byte key encrypting the credential store (see [Credential proxy](#credential-proxy)) |
+| `GOCLAW_CREDPROXY_PORT` | `18080` | host port the credential proxy listens on |
 
 ## Running the loop end to end
 
@@ -135,11 +139,51 @@ auto-compacts when the context window fills:
 - `/reset` - forget this conversation, start fresh.
 - `/compact` - summarize history to shrink context, keep the thread.
 
-> ⚠️ **Security note:** passing a credential into the container is the pragmatic
-> shortcut. NanoClaw's design (brief §8) routes container traffic through a
-> credential _vault_ proxy so the raw key never enters the container - that's the
-> `internal/vault` stub, not yet wired. Until then, the runner container holds a
-> usable credential.
+> ⚠️ **Security note:** by default the runner container holds the raw API key
+> (passed as `ANTHROPIC_API_KEY`), which means the agent process can read it. To
+> keep the key out of the container, use the [Credential proxy](#credential-proxy)
+> below.
+
+### Credential proxy
+
+A built-in credential proxy keeps the raw Anthropic key out of the agent
+container (brief §8). The host holds the key encrypted; the runner is pointed at
+the proxy via `ANTHROPIC_BASE_URL` and only ever sees a placeholder. The proxy
+injects the real key at the host boundary, so a prompt-injected agent that runs
+`echo $ANTHROPIC_API_KEY` gets nothing useful.
+
+Set up:
+
+```sh
+# 1. A 32-byte base64 key that encrypts the credential store (keep it out of the
+#    data dir; .env is fine, or source it from elsewhere).
+export GOCLAW_SECRET_ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)"
+
+# 2. Store the real Anthropic key. It is encrypted at rest (AES-256-GCM) in
+#    goclaw.db and never written in plaintext.
+goclaw auth add anthropic https://api.anthropic.com sk-ant-api03-...
+
+goclaw auth list                 # id, name, target, masked token
+goclaw auth delete <id>          # remove by the id from `list`
+```
+
+When an `api.anthropic.com` credential is stored (and the encryption key is set),
+the host starts the proxy and launches runners with `ANTHROPIC_BASE_URL`
+pointing at it plus a placeholder `ANTHROPIC_API_KEY` - so you do **not** set
+`GOCLAW_ANTHROPIC_API_KEY`. With no stored credential, goclaw falls back to
+passing the raw key as before.
+
+What it covers and does not:
+
+- Covers services reachable by a base-URL override (the `claude` CLI honors
+  `ANTHROPIC_BASE_URL`); the store can hold multiple, matched by target host and
+  injected (`api.anthropic.com` -> `x-api-key`, otherwise `Authorization: Bearer`).
+- Does **not** cover `git`/`gh` (they hit `github.com` over TLS with no redirect);
+  scope a fine-grained GitHub token instead.
+- At-rest caveat: the encryption key lives in the environment, not the data dir,
+  so a stolen data dir or DB dump does not include it - but a full host compromise
+  still exposes both. This matches the standard "encrypt at rest with a local key"
+  model.
 
 You can also run the Claude runner directly (uses your host's logged-in Claude
 session or `ANTHROPIC_API_KEY`):

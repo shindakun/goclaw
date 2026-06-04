@@ -21,6 +21,8 @@ import (
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/channels/telegram"
 	"github.com/shindakun/goclaw/internal/config"
+	"github.com/shindakun/goclaw/internal/credproxy"
+	"github.com/shindakun/goclaw/internal/credstore"
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/delivery"
 	"github.com/shindakun/goclaw/internal/maintenance"
@@ -31,6 +33,11 @@ import (
 	"github.com/shindakun/goclaw/internal/typing"
 )
 
+// anthropicHost is the credential-store host key for the Anthropic API; its
+// presence (with an encryption key) switches the runner onto the credential
+// proxy instead of a raw key (brief §8).
+const anthropicHost = "api.anthropic.com"
+
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -38,6 +45,13 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "vault" {
 		if err := runVault(os.Args[2:]); err != nil {
 			log.Error("vault", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "auth" {
+		if err := runAuth(os.Args[2:]); err != nil {
+			log.Error("auth", "err", err)
 			os.Exit(1)
 		}
 		return
@@ -122,6 +136,10 @@ func run(log *slog.Logger) error {
 	var (
 		ensurer router.RunnerEnsurer // narrow: ensure only (router)
 		runners sweep.RunnerManager  // richer: ensure + list + stop (sweep GC)
+		// proxyStore is non-nil when the bundled credential proxy should run (an
+		// Anthropic credential is stored + an encryption key is set). The proxy
+		// goroutine below uses it; nil means no proxy (raw key path).
+		proxyStore *credstore.Store
 	)
 	if cfg.LaunchRunner {
 		// Load the external mount allowlist (fail-closed if absent) to validate
@@ -130,10 +148,29 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		// Pass exactly one credential to avoid ambiguity in the CLI: prefer the
-		// long-lived API key; fall back to the OAuth token. (WithEnv drops empties.)
+		// Credential handling. If the bundled credential proxy has an Anthropic
+		// credential stored (goclaw auth add), route the runner through it: the
+		// container gets ANTHROPIC_BASE_URL pointing at the host proxy and only a
+		// PLACEHOLDER key, so the real key never enters the container (brief §8).
+		// Otherwise fall back to passing a raw key (prefer the long-lived API key,
+		// else the OAuth token). WithEnv drops empties.
+		credStore := credstore.New(central.DB, cfg.SecretEncryptionKey)
+		useProxy := false
+		if credStore.HasKey() {
+			if hosts, herr := credStore.Hosts(); herr == nil && hosts[anthropicHost] {
+				useProxy = true
+				proxyStore = credStore // signal the proxy goroutine to start
+			}
+		}
 		claudeEnv := map[string]string{}
-		if cfg.AnthropicAPIKey != "" {
+		if useProxy {
+			claudeEnv["ANTHROPIC_BASE_URL"] = "http://host.docker.internal:" + cfg.CredProxyPort
+			// The CLI requires a key to be present even with a base URL; it is sent
+			// as x-api-key and the proxy swaps in the real one. So this is a decoy.
+			claudeEnv["ANTHROPIC_API_KEY"] = "placeholder"
+			log.Info("credential proxy active - real Anthropic key stays on the host",
+				"base_url", claudeEnv["ANTHROPIC_BASE_URL"])
+		} else if cfg.AnthropicAPIKey != "" {
 			claudeEnv["ANTHROPIC_API_KEY"] = cfg.AnthropicAPIKey
 		} else if cfg.ClaudeCodeOAuthToken != "" {
 			claudeEnv["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.ClaudeCodeOAuthToken
@@ -191,6 +228,16 @@ func run(log *slog.Logger) error {
 	g.Go(func() error { return rtr.Run(gctx, inbound) })
 	g.Go(func() error { return del.Run(gctx) })
 	g.Go(func() error { return swp.Run(gctx) })
+
+	// Credential proxy (brief §8): runs only when an Anthropic credential is
+	// stored and an encryption key is set. Listens on the host so runner
+	// containers reach it at host.docker.internal:<port>; injects the real key
+	// per request so the container only ever holds a placeholder.
+	if proxyStore != nil {
+		px := credproxy.New(proxyStore, anthropicHost, log)
+		addr := "0.0.0.0:" + cfg.CredProxyPort
+		g.Go(func() error { return px.Serve(gctx, addr) })
+	}
 
 	// Scheduled vault maintenance (brief §11.5): only when a vault is configured
 	// and we know the owner (so jobs have a session to run in and a chat for the

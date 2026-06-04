@@ -64,6 +64,15 @@ type Config struct {
 	// owner auto-wiring.
 	DefaultAgentGroupName   string
 	DefaultAgentGroupFolder string
+	// SecretEncryptionKey is the base64-encoded 32-byte key used to encrypt the
+	// credential store at rest (AES-256-GCM, brief §8). Required only when
+	// credentials are stored; kept OUT of the data dir (env/.env only) so a
+	// stolen data dir or DB dump does not include the key.
+	SecretEncryptionKey string
+	// CredProxyPort is the host port the bundled credential proxy listens on. The
+	// runner reaches it at host.docker.internal:<port>; the real API key never
+	// enters the container (brief §8).
+	CredProxyPort string
 }
 
 // Load reads configuration from environment variables, applying defaults.
@@ -98,6 +107,8 @@ func Load() (*Config, error) {
 		GitUserName:             getenv("GOCLAW_GIT_USER_NAME", "goclaw agent"),
 		GitUserEmail:            getenv("GOCLAW_GIT_USER_EMAIL", "agent@goclaw.local"),
 		GitHubToken:             os.Getenv("GOCLAW_GITHUB_TOKEN"),
+		SecretEncryptionKey:     os.Getenv("GOCLAW_SECRET_ENCRYPTION_KEY"),
+		CredProxyPort:           getenv("GOCLAW_CREDPROXY_PORT", "18080"),
 	}
 	return cfg, nil
 }
