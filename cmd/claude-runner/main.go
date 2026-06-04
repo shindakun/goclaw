@@ -81,6 +81,12 @@ func main() {
 		rotate:           loadRotateConfig(),
 		log:              log,
 	}
+	// Discover and launch plugins INSIDE the container (untrusted code stays in the
+	// sandbox, never on the host). Their tools are exposed to the agent as local MCP
+	// tools. nil when there are no plugins.
+	r.plugins = loadPlugins(context.Background(), pluginsDir, log)
+	defer r.plugins.Close()
+
 	if err := r.run(*dir, *once, *interval); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
@@ -92,6 +98,7 @@ type runner struct {
 	systemPromptFile string
 	vaultMounted     bool
 	rotate           rotateConfig
+	plugins          *pluginHost // in-container plugin tools (nil when none)
 	log              *slog.Logger
 }
 
@@ -215,6 +222,14 @@ func (r *runner) handle(ctx context.Context, sess *db.SessionDBs, tag, text stri
 			return "⚠️ compact failed: " + err.Error()
 		}
 		return "🗜️ Conversation compacted; context preserved."
+	}
+
+	// A slash command matching a loaded plugin tool is dispatched DIRECTLY to that
+	// plugin (no LLM turn), so /roll 2d6 is a fast, deterministic call. Plugins run
+	// in this container, so this is a local invoke. Unrecognized slashes fall
+	// through to the agent (which may treat them as instructions).
+	if reply, ok := r.plugins.command(ctx, text); ok {
+		return reply
 	}
 
 	reply, err := r.ask(ctx, sess, tag, text)
@@ -349,6 +364,12 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 	// agent can only reach its mounts (/sessions, /vault, ~/.claude, /work) and
 	// the network, never anything on the host (brief §9).
 	opts = append(opts, claude.WithPermissionMode(claude.PermissionBypass))
+
+	// Expose plugin tools to the agent as local MCP tools (the plugins run in THIS
+	// container; nothing crosses back to the host). Only when plugins are present.
+	if r.plugins != nil && r.plugins.server != nil {
+		opts = append(opts, claude.WithSDKMCPServer(r.plugins.server.Name, r.plugins.server))
+	}
 
 	// Work in /work, NOT /vault: scratch like cloned repos and temp files must
 	// not pollute the vault. The vault stays a known location at /vault that the

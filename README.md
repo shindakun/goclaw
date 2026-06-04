@@ -239,6 +239,27 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID> -once
 #   -system-prompt-file e.g. a group's CLAUDE.md
 ```
 
+### Plugins (run sandboxed in the agent container)
+
+goclaw can be extended with **plugins**: small compiled binaries that add tools
+(and, later, channels) without rebuilding or restarting the host. A plugin lives in
+`plugins/<name>/` as a binary plus a `plugin.yml`, and the host launches plugins by
+mounting that directory into the agent container.
+
+The security property is the point. A plugin is untrusted, downloaded-and-compiled
+code, so it must NOT run on the host. goclaw mounts `plugins/` read-only into the
+agent container and the in-container runner launches each plugin there. Untrusted
+plugin code therefore runs inside the same sandbox as the agent: rootless, non-root
+(`1000:1000`), no view of the host filesystem beyond explicit mounts, and it dies
+with the container. A malicious plugin can reach only what the container can, never
+your host or its credentials. The host never executes a plugin binary.
+
+The agent calls a plugin's tools as local in-container tools, and a user can invoke
+a plugin's slash command directly (e.g. `/roll 2d6`, which dispatches to the plugin
+with no model turn). See [`docs/plugins-design.md`](docs/plugins-design.md) for the
+full design, the wire protocol, and the threat model; the reference plugin is a
+dice roller built with the [goclawkit](https://github.com/shindakun/goclawkit) SDK.
+
 ### Development environment + GitHub
 
 The Claude runner image is a real dev environment: git, the GitHub CLI (`gh`),

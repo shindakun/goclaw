@@ -52,6 +52,7 @@ type Manager struct {
 	env        map[string]string // env vars set on every launched container
 	vaultDir   string            // host knowledge-vault dir, mounted at /vault (may be empty)
 	caCertPath string            // host path to the credential-proxy CA cert, mounted RO (may be empty)
+	pluginsDir string            // host plugins dir, mounted RO at /plugins (may be empty)
 
 	// ensureMu serializes EnsureGroupRunner per agent group. The router (on a new
 	// message) and the sweep (recovery) both call EnsureRunner concurrently; the
@@ -124,6 +125,16 @@ func (m *Manager) WithCredCA(hostCAPath string) *Manager {
 	return m
 }
 
+// WithPlugins sets the host directory of installed plugins, mounted READ-ONLY at
+// /plugins in every runner container. Plugins are untrusted downloaded-and-compiled
+// code; mounting them read-only into the agent's sandbox (rather than running them
+// on the host) is the security boundary. The in-container runner discovers and
+// launches them. Empty disables plugins. Returns m for chaining.
+func (m *Manager) WithPlugins(dir string) *Manager {
+	m.pluginsDir = dir
+	return m
+}
+
 // EnsureRunner implements the RunnerEnsurer interface used by the router and
 // sweep: it ensures a runner container is up for the given agent group,
 // launching one (mounting groupDir at /sessions, plus any extra mounts that
@@ -140,6 +151,7 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir
 		ClaudeHome:   claudeHomeFor(groupDir),
 		VaultDir:     m.vaultDir,
 		CACertPath:   m.caCertPath,
+		PluginsDir:   m.pluginsDir,
 		ExtraMounts:  validated,
 	})
 }

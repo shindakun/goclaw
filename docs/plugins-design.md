@@ -125,7 +125,7 @@ the host speaks the wire protocol TO it, so the host carries its own small copy 
 the protocol constants and payload structs (a frozen wire contract, not shared Go
 code). Coupling the host to the SDK module would mean the host rebuilds when the
 SDK changes, which defeats the no-rebuild goal. The full SDK spec lives in
-`goclawkit/IMPLEMENTATION.md` and is the source of truth for the wire format both
+`goclawkit/docs/sdk-spec.md` and is the source of truth for the wire format both
 sides implement; this section summarizes only what the host side needs.
 
 ### Plugin-author surface (tools first)
@@ -338,17 +338,20 @@ binary, not a source change, and plugins run as crash-isolated subprocesses. Tha
 is the whole point of the subprocess model and the reason "add a plugin without
 rebuilding or restarting the host" holds.
 
-## Where plugins run: host now, container next (the security move)
+## Where plugins run: in the container (IMPLEMENTED)
 
-### The problem with host-side plugins
+Plugins now run INSIDE the agent container, not on the host. This section records
+the motivation and the shape; it is built, not proposed.
 
-A plugin is untrusted code: it is downloaded from a git URL, compiled, and run.
-Today the host launches it (`internal/plugin` does `exec.CommandContext` on the
-host), which means that untrusted code runs as the HOST USER, with the host's
-filesystem, the host's network, and the host's environment (which holds real
-credentials). For stranger-authored code that is the worst possible place to run
-it. The crash isolation a subprocess gives is real, but it is not a security
-boundary: a malicious plugin host-side can read your files and exfiltrate secrets.
+### Why not host-side
+
+A plugin is untrusted code: it is downloaded from a git URL, compiled, and run. If
+the host launched it (an early version did, via `exec.CommandContext` on the host),
+that untrusted code would run as the HOST USER, with the host's filesystem, network,
+and environment (which holds real credentials). For stranger-authored code that is
+the worst possible place to run it. The crash isolation a subprocess gives is real,
+but it is not a security boundary: a malicious plugin host-side can read your files
+and exfiltrate secrets. So plugins do not run on the host.
 
 ### The move: run plugins INSIDE the agent container
 

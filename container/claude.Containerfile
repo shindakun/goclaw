@@ -103,6 +103,12 @@ RUN mkdir -p /work && chown -R 1000:1000 /work
 # file mount has a parent.
 RUN mkdir -p /etc/goclaw
 
+# /plugins is the mount point for the host's installed-plugins dir (read-only). The
+# in-container runner discovers and launches plugins from here, so untrusted plugin
+# code runs in this sandbox, never on the host. Pre-create the dir so the bind mount
+# has a parent (and an absent mount is harmless).
+RUN mkdir -p /plugins
+
 # Run as a non-root uid that matches the host's --user 1000:1000 (brief §9). The
 # node:22-slim base names uid 1000 "node" with home /home/node, but that name is
 # incidental - it's the base image's user, nothing Node-related, and the runner is

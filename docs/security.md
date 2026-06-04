@@ -5,7 +5,7 @@ reference for "what is goclaw trying to protect against, and how."
 
 ## Threat model
 
-Two things are treated as untrusted:
+Three things are treated as untrusted:
 
 1. **Inbound chat input.** Anyone can message a channel the bot is on. Sender
    identity, message content, and chat ids are attacker-controlled.
@@ -13,6 +13,10 @@ Two things are treated as untrusted:
    of third-party repos) and can be steered by prompt injection from a message or
    a cloned repo. So the agent is assumed potentially hostile, and the container
    is the security boundary.
+3. **Plugins.** A plugin is third-party code downloaded from a git URL and
+   compiled. It is assumed potentially hostile, so it runs inside the same
+   container sandbox as the agent, never on the host (see "Plugins run in the
+   sandbox").
 
 The host process (the Go orchestrator) is trusted. If the host or its filesystem
 is fully compromised, all bets are off; that is outside this model.
@@ -34,6 +38,48 @@ The container launch argv is assembled with `exec.Command` (never a shell), and
 every value that ends up on the podman command line is either host-controlled or
 validated, so no chat input or agent output can inject podman flags or shell
 metacharacters.
+
+## Plugins run in the sandbox, never on the host
+
+Plugins are an extension mechanism: small compiled binaries that add tools (and,
+later, channels). Because a plugin is third-party code the operator downloaded and
+compiled, it is untrusted, and where it RUNS is the security decision.
+
+goclaw never executes a plugin on the host. The host stages plugin binaries into a
+`plugins/` directory and mounts that directory READ-ONLY into the agent container
+(`/plugins`). The in-container runner (`cmd/claude-runner`) discovers and launches
+each plugin there, so untrusted plugin code inherits exactly the agent's sandbox:
+
+- non-root (`1000:1000`), rootless, no host filesystem beyond the container's
+  mounts, no host network namespace, and it dies with the container;
+- read-only `/plugins`, so a plugin cannot rewrite its own install or another
+  plugin's binary;
+- no access to host credentials. The host's secrets never enter the container
+  (the credential proxy injects tokens on the wire; see below), so a malicious
+  plugin cannot read them.
+
+The blast radius of a hostile plugin is therefore the container's own mounts
+(`/sessions`, `/vault`), the same surface the agent already has, not the host. The
+host process and its filesystem, which the threat model trusts, are never exposed
+to plugin code.
+
+This is a deliberate departure from how the related "claw" systems extend
+themselves, and it is the main security advantage of goclaw's plugin model:
+
+- OpenClaw runs everything in ONE process: no container, no isolation. An extension
+  runs with the full process's privileges.
+- NanoClaw splits host and an in-container agent runner, and its tools do run in
+  that runner. But extensions are TypeScript merged into the source tree and the
+  app is recompiled, so the "plugin" is source you build into the host/runner, with
+  whatever trust that implies, and updates are git merges into your fork.
+- goclaw plugins are isolated, separately-compiled BINARIES the runner launches as
+  child processes inside the sandbox. They are never merged into goclaw's source,
+  never run on the host, and adding or removing one neither rebuilds nor restarts
+  the host. Untrusted code stays code-you-run-in-a-box, not code-you-compile-into-
+  yourself.
+
+(Note: this is "rootless container with explicit mounts", a strong, real boundary,
+not a microVM. A container escape is out of scope here, as is host compromise.)
 
 ## Credential proxy: no raw tokens in the container
 

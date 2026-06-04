@@ -27,6 +27,7 @@ type GroupRunner struct {
 	ClaudeHome   string         // OPTIONAL host dir persisted as the container's ~/.claude
 	VaultDir     string         // OPTIONAL host knowledge-vault dir, mounted rw at /vault
 	CACertPath   string         // OPTIONAL host path to the credential-proxy CA, mounted RO
+	PluginsDir   string         // OPTIONAL host plugins dir, mounted RO at /plugins
 	ExtraMounts  []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
 
@@ -38,6 +39,15 @@ const claudeHomePath = "/home/agent/.claude"
 // vaultMountPath is where the knowledge vault is mounted in the container; the
 // runner reads vaultMountPath/CLAUDE.md as its system prompt (brief §11).
 const vaultMountPath = "/vault"
+
+// pluginsMountPath is where the host's installed-plugins dir is mounted READ-ONLY.
+// The in-container runner discovers and launches plugins from here; mounting it
+// read-only keeps untrusted plugin code from modifying its own install.
+const pluginsMountPath = "/plugins"
+
+// PluginsContainerPath is the in-container path of the plugins mount, exported so
+// the runner knows where to discover plugins.
+func PluginsContainerPath() string { return pluginsMountPath }
 
 // caCertMountPath is where the credential-proxy CA cert is mounted (read-only)
 // in the container. The runner's trust env vars (NODE_EXTRA_CA_CERTS,
@@ -168,6 +178,25 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 			ContainerPath: caCertMountPath,
 			ReadWrite:     false,
 		})
+	}
+
+	// Mount the installed-plugins dir READ-ONLY at /plugins. Plugins are untrusted
+	// downloaded code; the in-container runner launches them inside this sandbox so
+	// they never run on the host. Read-only so a plugin cannot rewrite its own
+	// install or another plugin's.
+	if gr.PluginsDir != "" {
+		plugins, err := filepath.Abs(gr.PluginsDir)
+		if err != nil {
+			return fmt.Errorf("runtime: resolve plugins dir %q: %w", gr.PluginsDir, err)
+		}
+		// Only mount if it exists; an absent plugins dir is fine (no plugins).
+		if _, statErr := os.Stat(plugins); statErr == nil {
+			groupMounts = append(groupMounts, mounts.Mount{
+				HostPath:      plugins,
+				ContainerPath: pluginsMountPath,
+				ReadWrite:     false,
+			})
+		}
 	}
 
 	spec := Spec{
