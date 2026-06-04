@@ -6,6 +6,28 @@ host. The deciding constraint and the whole reason this doc exists: a channel ne
 network front door, the sandbox cannot bind a hot-added one, and we refuse to run
 untrusted code on the host.
 
+## What a channel actually is (the contract, not the transport)
+
+Before the split: a channel is defined by a small ADAPTER CONTRACT, not by how its
+bytes arrive. goclaw's `channels.ChannelAdapter` is already exactly this contract:
+`Name()`, `Start(ctx) -> <-chan InboundMsg` (the adapter PUSHES normalized inbound up
+this channel), `Send(ctx, OutboundMsg)` (deliver one reply), plus the optional
+`SendAction` (typing, ...). That is the whole definition. Notice what is NOT in it:
+there is no `listen()`, no `poll()`, no `receive()`, no mention of a port, a socket, or
+a direction. HOW a channel sources inbound, dial an upstream and read it, long-poll an
+API, accept a webhook POST, read a local socket, is the adapter's private business; it
+just calls `Start`'s stream when a message arrives and implements `Send` to reply. Any
+transport that can do those two things is a channel.
+
+So the inbound/outbound/local taxonomy below is NOT a property of channels. It is
+GOCLAW'S OWN refinement, forced by a constraint a host-only system does not have: a
+channel plugin here is UNTRUSTED DOWNLOADED CODE, and the container's mounts and ports
+are frozen at launch (section 4.0). Because the contract is transport-agnostic but the
+TRANSPORT is where the security and hot-add decisions live, goclaw has to classify
+channels by where their transport runs, even though "what a channel is" stays the single
+adapter contract above. The three shapes are three ways to satisfy one contract under
+goclaw's sandbox rules.
+
 The conclusion splits THREE ways by how the channel reaches the outside world
 (sections 4, 6). The ordering is not arbitrary: surveying how real chat transports are
 built, every platform that CAN be driven by dialing out IS driven that way (a long-poll
