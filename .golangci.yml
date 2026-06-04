@@ -1,0 +1,21 @@
+# golangci-lint v2 configuration for goclaw.
+# Run locally with: golangci-lint run ./...
+version: "2"
+
+linters:
+  # The curated default set (errcheck, govet, ineffassign, staticcheck, unused)
+  # plus bodyclose. These catch real defects: unchecked errors, unclosed response
+  # bodies, suspicious constructs. Stylistic linters (revive, misspell) are left
+  # off on purpose to avoid churn on deliberate naming/spelling. The codebase is
+  # expected to pass cleanly; CI fails on any finding.
+  default: standard
+  enable:
+    - bodyclose      # HTTP/response bodies must be closed (we make real requests in the proxy)
+  exclusions:
+    # Keep the embedded vault template and generated dirs out of scope.
+    paths:
+      - internal/vaultinit/template
+
+formatters:
+  enable:
+    - gofmt
