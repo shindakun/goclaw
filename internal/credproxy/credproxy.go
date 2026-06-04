@@ -8,25 +8,42 @@
 package credproxy
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strings"
 )
 
 // injectAuth removes any inbound auth headers and sets the correct one for the
-// upstream host: api.anthropic.com uses x-api-key (raw value); everything else
-// uses Authorization: Bearer (the inferred-from-host rule). The host argument is
-// the LOGICAL host the credential is for, not a rewritten upstream address.
+// upstream host (the LOGICAL host the credential is for, not a rewritten upstream
+// address). The scheme is host-specific because the services differ:
+//   - Anthropic (api.anthropic.com): x-api-key: <token>
+//   - GitHub git smart-HTTP (github.com, codeload.github.com): HTTP Basic with
+//     x-access-token:<token> - the git endpoints REJECT Bearer (verified) and
+//     answer with WWW-Authenticate: Basic.
+//   - everything else, incl. the GitHub API (api.github.com): Authorization:
+//     Bearer <token>.
 func injectAuth(req *http.Request, host, token string) {
 	req.Header.Del("Authorization")
 	req.Header.Del("x-api-key")
 	req.Header.Del("X-Api-Key")
-	if isAnthropic(host) {
+	switch {
+	case isAnthropic(host):
 		req.Header.Set("x-api-key", token)
-	} else {
+	case isGitHubGit(host):
+		basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+		req.Header.Set("Authorization", "Basic "+basic)
+	default:
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 }
 
 func isAnthropic(host string) bool {
 	return host == "api.anthropic.com" || strings.HasSuffix(host, ".anthropic.com")
+}
+
+// isGitHubGit reports whether host is a GitHub git smart-HTTP endpoint, which
+// authenticates with HTTP Basic (x-access-token:<token>) rather than Bearer. The
+// API host api.github.com is deliberately excluded (it uses Bearer).
+func isGitHubGit(host string) bool {
+	return host == "github.com" || host == "codeload.github.com"
 }

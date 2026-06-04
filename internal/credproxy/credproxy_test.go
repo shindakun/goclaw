@@ -1,6 +1,7 @@
 package credproxy
 
 import (
+	"encoding/base64"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,17 +11,19 @@ import (
 // quiet is the shared silent logger for credproxy tests.
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func TestInjectAuth_AnthropicVsBearer(t *testing.T) {
+func TestInjectAuth_PerHostScheme(t *testing.T) {
+	basicTok := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:tok"))
 	cases := []struct {
-		host       string
-		wantXAPI   string
-		wantBearer string
+		host     string
+		wantXAPI string
+		wantAuth string
 	}{
-		{"api.anthropic.com", "tok", ""},
-		{"foo.anthropic.com", "tok", ""},
-		{"api.github.com", "", "Bearer tok"},
-		{"github.com", "", "Bearer tok"},
-		{"api.openai.com", "", "Bearer tok"},
+		{"api.anthropic.com", "tok", ""},      // x-api-key
+		{"foo.anthropic.com", "tok", ""},      // x-api-key
+		{"api.github.com", "", "Bearer tok"},  // GitHub API: Bearer
+		{"github.com", "", basicTok},          // git smart-HTTP: Basic
+		{"codeload.github.com", "", basicTok}, // git archive/pack: Basic
+		{"api.openai.com", "", "Bearer tok"},  // default: Bearer
 	}
 	for _, c := range cases {
 		req, _ := http.NewRequest("GET", "https://"+c.host+"/x", nil)
@@ -31,8 +34,8 @@ func TestInjectAuth_AnthropicVsBearer(t *testing.T) {
 		if got := req.Header.Get("x-api-key"); got != c.wantXAPI {
 			t.Errorf("%s: x-api-key = %q, want %q", c.host, got, c.wantXAPI)
 		}
-		if got := req.Header.Get("Authorization"); got != c.wantBearer {
-			t.Errorf("%s: Authorization = %q, want %q", c.host, got, c.wantBearer)
+		if got := req.Header.Get("Authorization"); got != c.wantAuth {
+			t.Errorf("%s: Authorization = %q, want %q", c.host, got, c.wantAuth)
 		}
 	}
 }
