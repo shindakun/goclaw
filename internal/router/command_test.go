@@ -54,6 +54,46 @@ func TestCommand_OwnerSeesCommandsListing(t *testing.T) {
 	}
 }
 
+// Regression: a host-executed command (/commands) routed through the FULL route()
+// path is answered by the host and must NOT be enqueued to the agent's session
+// inbound. (The bug: a stale host let /commands reach the container, which listed
+// its own skills.)
+func TestCommand_NotEnqueuedToAgent(t *testing.T) {
+	r, d, fs := cmdSetup(t)
+	// Wire the owner's conversation so an enqueue path exists to rule out.
+	mgID, err := d.UpsertMessagingGroup("telegram", "1000", "")
+	if err != nil {
+		t.Fatalf("mg: %v", err)
+	}
+	_, agID, err := d.Apply(db.Bootstrap{DefaultAgentGroupName: "default", DefaultAgentGroupFolder: "default"})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := d.EnsureWiring(mgID, agID, string(permissions.ScopeAll), string(permissions.PolicyStrict)); err != nil {
+		t.Fatalf("wiring: %v", err)
+	}
+
+	if err := r.route(context.Background(), channels.InboundMsg{
+		Channel: "telegram", ChatID: "1000", SenderID: "1000", Sender: "owner", Text: "/commands",
+	}); err != nil {
+		t.Fatalf("route: %v", err)
+	}
+
+	// The host replied with the listing.
+	if len(fs.sent) != 1 || !strings.Contains(fs.sent[0].Text, "/commands") {
+		t.Fatalf("expected a host listing reply, got %+v", fs.sent)
+	}
+	// And nothing was enqueued for the agent.
+	sess, err := db.OpenSession(r.dataDir, agID, "telegram:1000")
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+	if in, _ := sess.PendingInbound(); len(in) != 0 {
+		t.Fatalf("/commands must not be enqueued to the agent, got %+v", in)
+	}
+}
+
 // A pass-through command (/reset) is NOT handled by the host: it falls through to
 // normal routing so the agent runner receives it.
 func TestCommand_PassThroughFallsThrough(t *testing.T) {
