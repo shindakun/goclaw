@@ -262,8 +262,8 @@ func run(log *slog.Logger) error {
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir).
-			WithCredCA(proxyCAHostPath). // empty when the proxy is off
-			WithPlugins("plugins")       // mounted RO at /plugins; the runner launches them
+			WithCredCA(proxyCAHostPath).     // empty when the proxy is off
+			WithPlugins(pluginsHostDir(cfg)) // <data>/plugins, mounted RO at /plugins
 		ensurer = mgr
 		runners = mgr
 		log.Info("runner launch enabled", "image", cfg.RunnerImage,
@@ -293,16 +293,16 @@ func run(log *slog.Logger) error {
 	swp := sweep.New(central, cfg.DataDir, runners, log)
 
 	// Plugins run INSIDE the agent container, not on the host. The host mounts the
-	// ./plugins dir read-only at /plugins (WithPlugins above); the in-container
+	// <data>/plugins dir read-only at /plugins (WithPlugins above); the in-container
 	// runner (cmd/claude-runner) discovers and launches them, exposing their tools
 	// to the agent. The host deliberately does NOT execute plugin binaries: they are
 	// untrusted downloaded code and must stay in the sandbox. (Slash-command routing
 	// to plugins goes inward through the session DBs; see docs/plugins-design.md.)
 	//
-	// The host still reads plugin.yml from ./plugins to LIST each plugin's slash
-	// command in /commands (as a pass-through it does not execute), so plugin
+	// The host still reads each plugin.yml under <data>/plugins to LIST each plugin's
+	// slash command in /commands (as a pass-through it does not execute), so plugin
 	// commands stay discoverable even though the runner is what runs them.
-	rtr.RegisterPluginCommands("plugins")
+	rtr.RegisterPluginCommands(pluginsHostDir(cfg))
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rtr.Run(gctx, inbound) })
@@ -424,6 +424,14 @@ func maintenanceTarget(cfg *config.Config, agentGroupID int64, dc *discord.Adapt
 // not supplied via env: {data_dir}/proxy. The dir is created by the CA loader.
 func proxyCADir(cfg *config.Config) string {
 	return filepath.Join(cfg.DataDir, "proxy")
+}
+
+// pluginsHostDir is where installed plugins live on the host: {data_dir}/plugins.
+// Each plugin is a subdir with its binary + plugin.yml. The host mounts this dir
+// read-only into the agent container at /plugins; the in-container runner launches
+// the plugins. It lives under the data dir (runtime state), not the repo root.
+func pluginsHostDir(cfg *config.Config) string {
+	return filepath.Join(cfg.DataDir, "plugins")
 }
 
 // credHostList returns the stored credential hosts for a startup log line, so the

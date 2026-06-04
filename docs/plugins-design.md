@@ -198,9 +198,11 @@ A new `internal/plugin` package in goclaw. Two key shapes:
 
 ### Discovery: the directory is the registry
 
-There is NO central hand-edited manifest. The host walks a `plugins/` directory;
-each subdirectory is one plugin and ships its own declarative `plugin.yml` (the
-author's self-description):
+There is NO central hand-edited manifest. The host walks the plugins directory
+(`<data_dir>/plugins/`, i.e. `data/plugins/` by default; it is installed runtime
+state, so it lives under the data dir, not the repo root). Each subdirectory is one
+plugin and ships its own declarative `plugin.yml` (the author's self-description).
+Below, `plugins/<name>/` is shorthand for `<data_dir>/plugins/<name>/`:
 
 ```yaml
 # plugins/roll/plugin.yml  (shipped by the plugin author, read-only to the host)

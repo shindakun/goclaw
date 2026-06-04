@@ -243,12 +243,13 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID> -once
 
 goclaw can be extended with **plugins**: small compiled binaries that add tools
 (and, later, channels) without rebuilding or restarting the host. A plugin lives in
-`plugins/<name>/` as a binary plus a `plugin.yml`, and the host launches plugins by
-mounting that directory into the agent container.
+`data/plugins/<name>/` (under the data dir, as installed runtime state) as a binary
+plus a `plugin.yml`, and the host launches plugins by mounting that directory into
+the agent container.
 
 The security property is the point. A plugin is untrusted, downloaded-and-compiled
-code, so it must NOT run on the host. goclaw mounts `plugins/` read-only into the
-agent container and the in-container runner launches each plugin there. Untrusted
+code, so it must NOT run on the host. goclaw mounts the plugins dir read-only into
+the agent container and the in-container runner launches each plugin there. Untrusted
 plugin code therefore runs inside the same sandbox as the agent: rootless, non-root
 (`1000:1000`), no view of the host filesystem beyond explicit mounts, and it dies
 with the container. A malicious plugin can reach only what the container can, never

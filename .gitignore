@@ -3,12 +3,9 @@
 /bin/
 *.exe
 
-# Local data & state
+# Local data & state (includes installed plugins under data/plugins/<name>/:
+# per-host compiled binaries + plugin.yml, not committed).
 /data/
-
-# Installed plugins are local runtime state for now: compiled binaries plus their
-# plugin.yml, built/dropped into ./plugins/<name>/ per host. Not committed.
-/plugins/
 *.db
 *.db-wal
 *.db-shm
