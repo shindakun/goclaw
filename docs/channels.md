@@ -63,10 +63,16 @@ GOCLAW_OWNER_DISCORD_ID=...     # your Discord USER id (see below)
 ```
 
 **Finding your Discord user id:** Settings (gear, bottom-left) → **Advanced** →
-toggle **Developer Mode** on. Then right-click your own name/avatar anywhere →
-**Copy User ID**. This is YOUR id, not the bot's client/application id. The two
-numbers in a channel URL `discord.com/channels/<server>/<channel>` are the server
-id and channel id, neither of which is your user id.
+toggle **Developer Mode** on, then close settings. Now copy your id:
+
+- **Web / desktop app:** click your avatar/name at the bottom-left to open your
+  profile popout, click the **three dots (⋯)**, then **Copy User ID**. (Right-
+  clicking your name also works in the desktop app, but the three-dots popout is
+  the reliable path in the browser.)
+
+This is YOUR id, not the bot's client/application id. The two numbers in a channel
+URL `discord.com/channels/<server>/<channel>` are the server id and channel id,
+neither of which is your user id.
 
 ## Owner identity and the access gate
 
