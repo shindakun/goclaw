@@ -261,22 +261,82 @@ desired-vs-running:
 In-flight invokes finish against the process they started on. This needs no host
 rebuild (plugins are independent binaries) and no host restart.
 
-### Distribution: all roads end at "a binary in a plugin dir"
+## Distribution
 
-The launch path only ever needs a built binary plus a `plugin.yml` in a `plugins/`
-subdir. The three ways to get there are all front-ends over that same end state, so
-the core is built first and the front-ends are additive:
+The launch path only ever needs a built binary plus a `plugin.yml` in a
+`plugins/<name>/` subdir. Everything below is a front-end that produces exactly
+that end state, so the launch core is built first and distribution is additive.
+
+### All roads end at "a binary + plugin.yml in a plugin dir"
 
 - baseline: the operator builds (or unpacks) the plugin into `plugins/<name>/`.
-- `/plugin add github.com/owner/name`: a convenience that `go build`s the module
-  into `plugins/<name>/` and writes nothing the author did not ship (the module
-  carries its own `plugin.yml`). Requires the Go toolchain on the host.
+- `/plugin add <git-url>`: build-on-install. Clone the repo to a temp dir, `go
+  build` its plugin command, and stage the resulting binary plus the repo's
+  `plugin.yml` into `plugins/<name>/`. Requires the Go toolchain on the host.
 - release pull: download a prebuilt binary + `plugin.yml` from a release into
   `plugins/<name>/`. No toolchain on the host.
 
-The `/plugin` command set: `add <module|url>`, `enable <name>`, `disable <name>`,
-`list`, `remove <name>`. `enable`/`disable` only flip the host sidecar (instant,
-no build); `add`/`remove` change what is on disk.
+### Build-on-install (the `/plugin add` mechanics)
+
+`/plugin add github.com/owner/roll` does, host-side and idempotently:
+
+1. Resolve a temp workspace and `git clone --depth 1 <url>` into it (the `git:` URL
+   in a plugin's own `plugin.yml` is the canonical source; `/plugin add` may also
+   take a bare URL).
+2. Locate the plugin's `plugin.yml` and its command package, then `go build` the
+   binary into `plugins/<name>/`, copying the `plugin.yml` alongside it. `<name>`
+   comes from the manifest's `name`, not the URL, so it matches the handshake.
+3. Validate: load the manifest, launch the plugin, confirm the handshake `name`
+   matches and the protocol version is compatible. On any failure, discard the
+   staged dir and report why (never leave a half-installed plugin).
+4. Leave the new plugin DISABLED by default (a fresh download should not auto-run
+   untrusted code); the operator runs `/plugin enable <name>` to start it. The
+   fsnotify watcher then launches it live, no host restart.
+
+Building the PLUGIN (a small binary) is cheap and isolated: only the plugin is
+compiled, never the host. The Go toolchain requirement is the price; the
+release-pull path exists for hosts without it.
+
+### The `/plugin` command set
+
+A built-in `/plugin` command (owner-only) with subcommands, all host-side:
+
+- `add <git-url>`: build-on-install as above. Lands disabled.
+- `enable <name>` / `disable <name>`: flip the host-owned enable sidecar. Instant,
+  no build; the watcher launches or gracefully stops the plugin.
+- `list`: show installed plugins with `name`, `version`, `author`, enabled state,
+  and the command each registers (reads `plugin.yml` + the sidecar).
+- `remove <name>`: stop the plugin, deregister its commands, and delete its
+  `plugins/<name>/` dir.
+- `update <name>` (later): re-clone its `git:` URL, rebuild, and relaunch.
+
+`enable`/`disable` only change sidecar state. `add`/`remove`/`update` change what is
+on disk; the watcher reconciles the running set either way.
+
+### Optional later: a marketplace as data, not an engine
+
+When there are more plugins than a handful, a simple registry maps a short name to
+a source URL so `/plugin add <name>` need not paste a full URL:
+
+```yaml
+# marketplace.yml (a plain list; NOT a custom plugin engine)
+plugins:
+  roll:    { git: https://github.com/shindakun/roll,    description: Dice roller. }
+  weather: { git: https://github.com/someone/gw-weather, description: Weather lookup. }
+```
+
+`/plugin add weather` resolves `weather` to its `git:` URL and runs the same
+build-on-install path. This is deliberately just a lookup table; it adds discovery,
+not a new install mechanism, and never couples the host to anyone else's plugin
+framework. Defer it until a second plugin exists.
+
+### Why build-on-install of the plugin, not the host
+
+The thing built on install is the PLUGIN: a small, isolated binary staged into its
+own `plugins/<name>/` dir. The host is never rebuilt. The install is a dropped-in
+binary, not a source change, and plugins run as crash-isolated subprocesses. That
+is the whole point of the subprocess model and the reason "add a plugin without
+rebuilding or restarting the host" holds.
 
 ## Extensibility: channels (and more) later
 
@@ -292,24 +352,25 @@ wire-format change.
 ## Milestones
 
 goclawkit (the SDK + the `roll` demo) is DONE: `pkg/ipc` (frames/Session),
-`pkg/plugin` (Tool/Serve/ServeTool, channel stub), and `cmd/roll`. The host side is
-what remains, built spike-first so the container-boundary question is answered with
-working code rather than up front.
+`pkg/plugin` (Tool/Serve/ServeTool, channel stub), and `cmd/roll`.
 
-1. Host-side spike (`internal/plugin`): `Client` (launch `roll`, handshake, the
-   invoke + ID-correlation machinery) and a minimal `Manager`. Prove host-to-plugin
-   invoke works against the real `roll` binary over OS pipes.
-2. Slash-command path: discover `plugins/` dirs + their `plugin.yml`, register
-   declared commands, route `/roll 2d6` from the message router to
-   `Client.Invoke`, return the result to the user. This is fully host-side (no
-   container boundary), so it is the first user-visible plugin feature.
+1. DONE. Host `Client` (`internal/plugin`): launch, handshake, invoke with ID
+   correlation. Verified live against the real `roll` binary over OS pipes.
+2. DONE. Slash-command path: `internal/command` registry + `/commands` listing;
+   the manager discovers `plugins/<name>/`, reads each `plugin.yml`, launches the
+   enabled plugins, and registers declared commands; `/roll 2d6` routes from the
+   message router to `Client.Invoke`. Discord @mention stripping so commands work
+   in channels.
 3. The `/plugin` command set + host-owned enable/disable sidecar + `fsnotify`
-   reconciliation (hot add/enable/disable/reload).
+   reconciliation (hot add/enable/disable/reload), and build-on-install
+   (`/plugin add <git-url>`). See "Distribution".
 4. Agent tool bridge: expose plugin tools to the in-container agent (resolved by
    the spike, see open questions), so the LLM can call `roll` too.
 5. The `channel` kind: the SDK `ServeChannel` runtime, the `channel.*` topics, the
    host-side `ChannelAdapter` shim, and a reference channel plugin.
-6. Layer 2 (only when a plugin needs cross-plugin or plugin-to-host coordination):
+6. Optional: a marketplace lookup table (name -> git URL) so `/plugin add <name>`
+   need not paste a URL. Data, not an engine; defer until a second plugin exists.
+7. Layer 2 (only when a plugin needs cross-plugin or plugin-to-host coordination):
    a socket-backed `Transport` plus a host-side hub/registry routing
    topic-addressed frames between plugins, reusing the existing frame format. No
    change to Layer 1 or the wire format.
