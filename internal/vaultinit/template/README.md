@@ -1,7 +1,7 @@
 # Vault - starter template
 
 A ready-to-use skeleton for the optional knowledge vault described in
-[`../nanoclaw-go-podman-brief.md`](../nanoclaw-go-podman-brief.md) §11. A shared,
+[goclaw's design brief](https://github.com/shindakun/goclaw/blob/main/docs/nanoclaw-go-podman-brief.md) §11. A shared,
 Obsidian-style Markdown vault that both you and the agent read and write: you browse
 and edit it in Obsidian, the agent maintains it. The vault compounds - each source is
 read once, distilled, and merged into existing notes, so synthesis and cross-links are
