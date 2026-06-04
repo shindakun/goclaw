@@ -47,7 +47,7 @@ func approvalSetup(t *testing.T) (*Router, *db.DB, *fakeSender, int64) {
 		t.Fatalf("wiring: %v", err)
 	}
 	fs := &fakeSender{}
-	r := New(d, t.TempDir(), 0, nil, fs, nil, quietLogger())
+	r := New(d, t.TempDir(), 0, nil, fs, nil, nil, quietLogger())
 	return r, d, fs, agID
 }
 
@@ -153,8 +153,8 @@ func TestApproval_OwnerDeniesClearsRow(t *testing.T) {
 // A non-owner issuing /approve is ignored (falls through to normal routing).
 func TestApproval_NonOwnerCommandIgnored(t *testing.T) {
 	r, d, _, _ := approvalSetup(t)
-	// Stranger tries to approve themselves.
-	handled, err := r.handleApprovalCommand(context.Background(),
+	// Stranger (unknown user) tries to approve themselves.
+	handled, err := r.handleCommand(context.Background(),
 		channels.InboundMsg{Channel: "telegram", ChatID: "555", SenderID: "777", Text: "/approve 1"},
 		nil /* unknown user */)
 	if err != nil {

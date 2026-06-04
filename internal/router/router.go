@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/shindakun/goclaw/internal/channels"
+	"github.com/shindakun/goclaw/internal/command"
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/mounts"
 	"github.com/shindakun/goclaw/internal/permissions"
@@ -48,12 +49,13 @@ type Typer interface {
 
 // Router routes inbound messages to session inbound DBs.
 type Router struct {
-	central *db.DB
-	dataDir string
-	ensurer RunnerEnsurer
-	sender  Sender
-	typer   Typer
-	log     *slog.Logger
+	central  *db.DB
+	dataDir  string
+	ensurer  RunnerEnsurer
+	sender   Sender
+	typer    Typer
+	commands *command.Registry
+	log      *slog.Logger
 
 	// autoWireAgentGroupID, when non-zero, lets the owner bootstrap a wiring by
 	// simply messaging the host: an owner message in an unwired conversation
@@ -67,16 +69,22 @@ type Router struct {
 // disable owner auto-wiring; ensurer may be nil to disable container launch;
 // sender may be nil to disable host-sent messages (the approval-card flow);
 // typer may be nil to disable the typing indicator.
-func New(central *db.DB, dataDir string, autoWireAgentGroupID int64, ensurer RunnerEnsurer, sender Sender, typer Typer, log *slog.Logger) *Router {
-	return &Router{
+func New(central *db.DB, dataDir string, autoWireAgentGroupID int64, ensurer RunnerEnsurer, sender Sender, typer Typer, commands *command.Registry, log *slog.Logger) *Router {
+	if commands == nil {
+		commands = command.NewRegistry()
+	}
+	r := &Router{
 		central:              central,
 		dataDir:              dataDir,
 		ensurer:              ensurer,
 		sender:               sender,
 		typer:                typer,
+		commands:             commands,
 		log:                  log,
 		autoWireAgentGroupID: autoWireAgentGroupID,
 	}
+	r.registerBuiltinCommands()
+	return r
 }
 
 // Run drains inbound messages until ctx is cancelled, routing each one.
@@ -104,8 +112,10 @@ func (r *Router) route(ctx context.Context, msg channels.InboundMsg) error {
 		return err
 	}
 
-	// Owner/admin approval commands are handled before normal routing.
-	if handled, err := r.handleApprovalCommand(ctx, msg, user); err != nil {
+	// Slash commands the HOST executes are handled before normal routing. A
+	// pass-through command (e.g. /reset, /compact) or an unknown slash falls
+	// through to normal routing, so the agent runner still receives it.
+	if handled, err := r.handleCommand(ctx, msg, user); err != nil {
 		return err
 	} else if handled {
 		return nil
@@ -202,55 +212,116 @@ func (r *Router) requestApproval(ctx context.Context, msg channels.InboundMsg, a
 	})
 }
 
-// handleApprovalCommand intercepts "/approve <id>" and "/deny <id>" from an
-// owner or admin. Returns (handled, err): when handled, the message is consumed
-// and normal routing is skipped.
-func (r *Router) handleApprovalCommand(ctx context.Context, msg channels.InboundMsg, user *db.User) (bool, error) {
-	cmd, idStr, ok := parseApprovalCommand(msg.Text)
+// registerBuiltinCommands adds the host's built-in commands to the registry: the
+// /commands and /help listing, the /reset and /compact pass-through entries, and
+// the owner/admin approval commands. Plugin commands register separately (the
+// plugin manager calls r.Commands().Register).
+func (r *Router) registerBuiltinCommands() {
+	command.RegisterListing(r.commands) // /commands, /help, /reset, /compact
+	r.commands.Register(command.Command{
+		Name:        "approve",
+		Description: "Approve a pending access request: /approve <id>",
+		MinRole:     permissions.RoleAdmin,
+		Source:      "builtin",
+		Handler:     r.cmdApprove,
+	})
+	r.commands.Register(command.Command{
+		Name:        "deny",
+		Description: "Deny a pending access request: /deny <id>",
+		MinRole:     permissions.RoleAdmin,
+		Source:      "builtin",
+		Handler:     r.cmdDeny,
+	})
+}
+
+// Commands exposes the registry so the host (e.g. the plugin manager) can register
+// or remove plugin-provided commands at runtime.
+func (r *Router) Commands() *command.Registry { return r.commands }
+
+// handleCommand dispatches a host-executed slash command. It returns (handled,
+// err): handled is true only when the host consumed the message. A pass-through
+// command, an unknown command, or a command the sender's role may not run all
+// return (false, nil) so the message falls through to normal routing (and, for
+// pass-through, reaches the agent runner).
+func (r *Router) handleCommand(ctx context.Context, msg channels.InboundMsg, user *db.User) (bool, error) {
+	name, args, ok := command.IsCommand(msg.Text)
 	if !ok {
 		return false, nil
 	}
-	// Only owners/admins may approve.
-	if user == nil || (user.Role != string(permissions.RoleOwner) && user.Role != string(permissions.RoleAdmin)) {
-		return false, nil // not authorized - fall through to normal routing
-	}
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		r.reply(ctx, msg, "Usage: /approve <id> or /deny <id>")
-		return true, nil
+	cmd, found := r.commands.Get(name)
+	if !found || cmd.PassThrough || cmd.Handler == nil {
+		return false, nil // unknown or pass-through: let normal routing have it
 	}
 
-	switch cmd {
-	case "deny":
-		if err := r.central.DeletePendingApproval(id); err != nil {
-			return true, err
-		}
-		r.reply(ctx, msg, fmt.Sprintf("Denied request %d.", id))
-		return true, nil
-	case "approve":
-		p, err := r.central.ApprovePendingApproval(id)
-		if err != nil {
-			return true, err
-		}
-		if p == nil {
-			r.reply(ctx, msg, fmt.Sprintf("No pending request %d.", id))
-			return true, nil
-		}
-		r.reply(ctx, msg, fmt.Sprintf("Approved %s. Replaying their message.", p.SenderID))
-		// Replay the original message now that the sender is a known member.
-		replay := channels.InboundMsg{
-			Channel:  p.Channel,
-			ChatID:   p.ChatID,
-			SenderID: p.SenderID,
-			Sender:   p.SenderName,
-			Text:     p.Text,
-		}
-		if err := r.route(ctx, replay); err != nil {
-			r.log.Error("replay approved message", "approval_id", id, "err", err)
-		}
-		return true, nil
+	role := permissions.RoleMember
+	known := user != nil
+	if user != nil {
+		role = permissions.Role(user.Role)
 	}
-	return false, nil
+	// Role gate: a sender below the command's MinRole is treated as if the command
+	// does not exist (it falls through to normal routing rather than leaking that
+	// the command exists). Visibility in /commands already hides it from them.
+	if !known || !roleAtLeast(role, cmd.MinRole) {
+		return false, nil
+	}
+
+	req := command.Request{
+		Channel:  msg.Channel,
+		ChatID:   msg.ChatID,
+		SenderID: msg.SenderID,
+		Sender:   msg.Sender,
+		Role:     role,
+		IsKnown:  known,
+		Args:     args,
+	}
+	reply, err := cmd.Handler(ctx, req)
+	if err != nil {
+		return true, err
+	}
+	if reply != "" {
+		r.reply(ctx, msg, reply)
+	}
+	return true, nil
+}
+
+// cmdDeny handles "/deny <id>".
+func (r *Router) cmdDeny(_ context.Context, req command.Request) (string, error) {
+	id, err := strconv.ParseInt(strings.TrimSpace(req.Args), 10, 64)
+	if err != nil {
+		return "Usage: /deny <id>", nil
+	}
+	if err := r.central.DeletePendingApproval(id); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Denied request %d.", id), nil
+}
+
+// cmdApprove handles "/approve <id>": it makes the held sender a known member and
+// replays their original message through routing.
+func (r *Router) cmdApprove(ctx context.Context, req command.Request) (string, error) {
+	id, err := strconv.ParseInt(strings.TrimSpace(req.Args), 10, 64)
+	if err != nil {
+		return "Usage: /approve <id>", nil
+	}
+	p, err := r.central.ApprovePendingApproval(id)
+	if err != nil {
+		return "", err
+	}
+	if p == nil {
+		return fmt.Sprintf("No pending request %d.", id), nil
+	}
+	// Replay the original message now that the sender is a known member.
+	replay := channels.InboundMsg{
+		Channel:  p.Channel,
+		ChatID:   p.ChatID,
+		SenderID: p.SenderID,
+		Sender:   p.SenderName,
+		Text:     p.Text,
+	}
+	if err := r.route(ctx, replay); err != nil {
+		r.log.Error("replay approved message", "approval_id", id, "err", err)
+	}
+	return fmt.Sprintf("Approved %s. Replaying their message.", p.SenderID), nil
 }
 
 // reply sends a short host message back to the conversation a command came from.
@@ -265,20 +336,21 @@ func (r *Router) reply(ctx context.Context, msg channels.InboundMsg, text string
 	}
 }
 
-// parseApprovalCommand recognizes "/approve <id>" and "/deny <id>" (leading/
-// trailing space tolerated). Returns (cmd, idArg, ok).
-func parseApprovalCommand(text string) (cmd, idArg string, ok bool) {
-	fields := strings.Fields(strings.TrimSpace(text))
-	if len(fields) != 2 {
-		return "", "", false
+// roleAtLeast reports whether have meets or exceeds need (owner > admin > member).
+func roleAtLeast(have, need permissions.Role) bool {
+	rank := func(role permissions.Role) int {
+		switch role {
+		case permissions.RoleOwner:
+			return 3
+		case permissions.RoleAdmin:
+			return 2
+		case permissions.RoleMember:
+			return 1
+		default:
+			return 0
+		}
 	}
-	switch fields[0] {
-	case "/approve":
-		return "approve", fields[1], true
-	case "/deny":
-		return "deny", fields[1], true
-	}
-	return "", "", false
+	return rank(have) >= rank(need)
 }
 
 // displayName prefers the sender's display name, falling back to the id.

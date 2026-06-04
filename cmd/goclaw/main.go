@@ -284,7 +284,10 @@ func run(log *slog.Logger) error {
 	// a non-nil error, the group cancels and the rest unwind. The typing manager
 	// is shared: the router starts the indicator, the delivery loop stops it.
 	typer := typing.New(registry, log)
-	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, log)
+	// The router owns the slash-command registry (built-in /commands, /approve,
+	// the /reset & /compact pass-throughs). Passing nil lets it create one; the
+	// plugin manager will register plugin commands into rtr.Commands() later.
+	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, nil, log)
 	del := delivery.New(central, registry, cfg.DataDir, typer, log)
 	swp := sweep.New(central, cfg.DataDir, runners, log)
 
