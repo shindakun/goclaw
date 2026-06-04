@@ -46,9 +46,10 @@ gobbsgo/godoorkit already establish the parts we keep:
 - Crash isolation is free: a door cannot take down the BBS.
 
 The gap: gobbsgo loads `doors.yaml` ONCE at boot and registers statically. There
-is no file watch and no SIGHUP. goclaw adds exactly that: a watched manifest plus
-a manager that diffs desired-vs-running so plugins can be added, removed, or
-reconfigured live.
+is no file watch and no SIGHUP. goclaw adds exactly that: a watched `plugins/`
+directory plus a manager that diffs desired-vs-running so plugins can be added,
+enabled, disabled, or reloaded live (see "Host side" for the directory-as-registry
+model goclaw uses instead of a single manifest file).
 
 ## Two layers (Layer 1 now, Layer 2 eventually)
 
@@ -168,45 +169,107 @@ The full definition is in the SDK spec; the design decisions that matter host-si
   a newer peer talk to an older one. The wire format is meant to freeze early.
 
 Credentials: like every other goclaw secret, a plugin's tokens stay on the host.
-The host passes them in the plugin's environment (or, later, via the credential
-proxy so the plugin process only holds placeholders). Tokens are NEVER written
-into the manifest.
+A plugin's `plugin.yml` declares the env var NAMES it needs (`env: [...]`); the
+host supplies the VALUES from its own config at launch (or, later, via the
+credential proxy so the plugin process only holds placeholders). Token values are
+NEVER written into `plugin.yml` or any on-disk plugin file.
 
 ## Host side: the plugin manager
 
-A new `internal/plugin` package in goclaw:
+A new `internal/plugin` package in goclaw. Two key shapes:
 
-- Reads `plugins.yaml` (the manifest): a list of `{name, exec, enabled, env_keys,
-  ...}` entries, parallel to gobbsgo's `doors.yaml`.
-- For each enabled entry, launches the binary with `exec.CommandContext`, performs
-  the handshake (reading the plugin's `Info`, including its `Kind`), and wraps the
-  live process in a host-side adapter that translates method calls to/from the
-  frame protocol. Dispatch is by `Kind`: a `tool` plugin's advertised tools are
-  registered so the agent can call them (each call becomes a `tool.invoke`
-  request); a `channel` plugin (later) is wrapped to satisfy the existing
-  `channels.ChannelAdapter` interface and registered in the channel registry, so
-  routing/delivery treat it like any built-in channel.
-- Supervises: if a plugin process exits unexpectedly, the manager logs it and (per
-  policy) relaunches with backoff. A crashing plugin cannot take down the host.
+- A `Client` is the host-side counterpart to the SDK's `Serve`: it launches a
+  plugin binary with `exec.CommandContext`, wires the child's stdin/stdout to an
+  `ipc.Session` (and its stderr to the host logger), runs the `hello`/`hello.ok`
+  handshake, and reads the plugin's `Info`. It exposes `Invoke(tool, args) ->
+  (text, isError)` by sending a `FrameRequest` `tool.invoke` and awaiting the
+  correlated `FrameResult`. Because the SDK dispatches invokes concurrently and may
+  answer out of order, the Client owns an ID generator plus a pending-request map
+  (id -> waiting channel); `Recv` runs in one read loop and routes each result to
+  its waiter by ID.
+- A `Manager` discovers plugins, holds the live `Client`s, supervises them
+  (relaunch on unexpected exit, with backoff), and exposes them to the rest of the
+  host (the slash-command router and, later, the agent tool bridge).
 
-### Hot add and hot reload (the two requirements)
+### Discovery: the directory is the registry
 
-- Config hot-reload: an `fsnotify` watch on `plugins.yaml`. On change, the manager
-  re-reads the manifest and diffs desired-vs-running:
-  - entry newly `enabled` -> launch + register (HOT ADD, no host restart),
-  - entry removed or `enabled: false` -> graceful `shutdown` then deregister,
-  - entry's exec/env changed -> kill and relaunch (this is how a subprocess model
-    does "reload code": replace the process).
-  The manifest pointer is swapped atomically; in-flight sends finish against the
-  process they started on.
-- This needs no host rebuild (plugins are independent binaries) and no host
-  restart (the manager reconciles live).
+There is NO central hand-edited manifest. The host walks a `plugins/` directory;
+each subdirectory is one plugin and ships its own declarative `plugin.yml` (the
+author's self-description):
+
+```yaml
+# plugins/roll/plugin.yml  (shipped by the plugin author, read-only to the host)
+name: roll
+kind: tool
+version: "1.0.0"
+exec: roll                 # binary, relative to this plugin dir
+description: Roll dice in NdM notation.
+command: roll              # registers the /roll slash command (omit for none)
+env: [ ]                   # env var names the plugin needs (host supplies values)
+```
+
+Enable/disable is HOST-owned state, kept OUT of the author's `plugin.yml` so the
+host never mutates a shipped artifact: a small host-owned sidecar (e.g.
+`plugins/.state.yml` mapping plugin name -> enabled, or a `.disabled` marker file
+per dir). The `/plugin` chat command edits that sidecar, never `plugin.yml`. The
+directory plus the sidecar together ARE the registry; `plugins.yaml` as a single
+hand-maintained manifest is dropped.
+
+### Triggers: a plugin tool can fire two ways
+
+The same plugin `tool.invoke` frame is reached by two paths:
+
+- **User slash command** (host-routed, no agent). A plugin that declares
+  `command: roll` registers `/roll`. When a user sends `/roll 2d6`, the host's
+  message router matches the command, maps the argument string to the tool's args
+  (a tool whose schema is a single string field takes the raw remainder; richer
+  schemas can define their own parse), invokes the plugin's tool directly, and
+  sends the result back to the user. The agent is not involved.
+- **Agent tool** (LLM-invoked). The plugin's advertised tools (from the handshake
+  `Info.Tools`) are exposed to the in-container agent so the model can call them.
+  This path crosses the container boundary (see "Open: agent tool bridge"); it is
+  deferred behind the host-side spike below.
+
+Both call the same `Client.Invoke`; only the trigger and where the result goes
+differ.
+
+### Hot add and hot reload
+
+An `fsnotify` watch on `plugins/`. On a change the Manager reconciles
+desired-vs-running:
+
+- a new plugin dir appears (added by `/plugin add` or dropped in) and is enabled ->
+  launch + register its command/tools (HOT ADD, no host restart),
+- a plugin disabled via `/plugin disable` (sidecar flips) -> graceful `shutdown`
+  control frame, then deregister,
+- a plugin's binary or `plugin.yml` changes -> kill and relaunch (a subprocess
+  model "reloads code" by replacing the process).
+
+In-flight invokes finish against the process they started on. This needs no host
+rebuild (plugins are independent binaries) and no host restart.
+
+### Distribution: all roads end at "a binary in a plugin dir"
+
+The launch path only ever needs a built binary plus a `plugin.yml` in a `plugins/`
+subdir. The three ways to get there are all front-ends over that same end state, so
+the core is built first and the front-ends are additive:
+
+- baseline: the operator builds (or unpacks) the plugin into `plugins/<name>/`.
+- `/plugin add github.com/owner/name`: a convenience that `go build`s the module
+  into `plugins/<name>/` and writes nothing the author did not ship (the module
+  carries its own `plugin.yml`). Requires the Go toolchain on the host.
+- release pull: download a prebuilt binary + `plugin.yml` from a release into
+  `plugins/<name>/`. No toolchain on the host.
+
+The `/plugin` command set: `add <module|url>`, `enable <name>`, `disable <name>`,
+`list`, `remove <name>`. `enable`/`disable` only flip the host sidecar (instant,
+no build); `add`/`remove` change what is on disk.
 
 ## Extensibility: channels (and more) later
 
 `Info.Kind` plus the topic-namespaced protocol are the seam. Tools are
 `kind: "tool"` using `tool.*` topics. A later `kind: "channel"` reuses the SAME
-process model, manifest, manager, supervision, and hot-reload, adding only the
+process model, discovery, manager, supervision, and hot-reload, adding only the
 `channel.*` topics (`channel.inbound` as a one-way event, `channel.send` and
 `channel.action` as requests) and a host-side shim onto `channels.ChannelAdapter`.
 Because features are topics over four fixed frame patterns, adding channels (or a
@@ -215,28 +278,39 @@ wire-format change.
 
 ## Milestones
 
-Layer 1 throughout. Layer 2 is the final, conditional milestone.
+goclawkit (the SDK + the `roll` demo) is DONE: `pkg/ipc` (frames/Session),
+`pkg/plugin` (Tool/Serve/ServeTool, channel stub), and `cmd/roll`. The host side is
+what remains, built spike-first so the container-boundary question is answered with
+working code rather than up front.
 
-1. goclawkit: the framed protocol (proto.go) + `Serve` + handshake + the `Tool`
-   contract, plus the worked `roll` demo. (Spec: `goclawkit/IMPLEMENTATION.md`.)
-2. goclaw `internal/plugin`: manager, manifest load, launch, handshake, and the
-   tool-registration path so the agent can call a plugin tool. Static (no watch
-   yet).
-3. The fsnotify watch + desired-vs-running reconciliation (hot add / reload).
-4. The `channel` kind: the SDK `ServeChannel` runtime, the `channel.*` topics, the
+1. Host-side spike (`internal/plugin`): `Client` (launch `roll`, handshake, the
+   invoke + ID-correlation machinery) and a minimal `Manager`. Prove host-to-plugin
+   invoke works against the real `roll` binary over OS pipes.
+2. Slash-command path: discover `plugins/` dirs + their `plugin.yml`, register
+   declared commands, route `/roll 2d6` from the message router to
+   `Client.Invoke`, return the result to the user. This is fully host-side (no
+   container boundary), so it is the first user-visible plugin feature.
+3. The `/plugin` command set + host-owned enable/disable sidecar + `fsnotify`
+   reconciliation (hot add/enable/disable/reload).
+4. Agent tool bridge: expose plugin tools to the in-container agent (resolved by
+   the spike, see open questions), so the LLM can call `roll` too.
+5. The `channel` kind: the SDK `ServeChannel` runtime, the `channel.*` topics, the
    host-side `ChannelAdapter` shim, and a reference channel plugin.
-5. Layer 2 (only when a plugin needs cross-plugin or plugin-to-host coordination):
+6. Layer 2 (only when a plugin needs cross-plugin or plugin-to-host coordination):
    a socket-backed `Transport` plus a host-side hub/registry routing
    topic-addressed frames between plugins, reusing the existing frame format. No
    change to Layer 1 or the wire format.
 
 ## Open questions
 
-- Supervision policy: relaunch forever with backoff, or give up after N crashes
-  and mark the plugin failed in the manifest/status?
-- Manifest vs directory scan: explicit `plugins.yaml` entries (gobbsgo's model,
-  predictable) vs scanning a `plugins/` dir for binaries (more "marketplace", less
-  explicit). Proposed: manifest now, optional scan later.
+- Agent tool bridge (the spike resolves this): the agent runs INSIDE the Podman
+  container; plugins run on the host. How does a host-launched plugin's tool become
+  callable by the in-container agent? Candidates: the host exposes plugin tools as
+  an MCP endpoint the container reaches, or proxies tool calls over the existing
+  host-mediated channel. The slash-command path needs none of this (it is
+  host-only), which is why it ships first.
+- Supervision policy: relaunch forever with backoff, or give up after N crashes and
+  mark the plugin failed in the sidecar/status?
 - Do plugins get the credential proxy from day one, or env tokens first and proxy
   later? Proposed: env first, proxy as a fast follow, since the proxy is already
   built.
