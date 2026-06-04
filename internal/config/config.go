@@ -73,6 +73,11 @@ type Config struct {
 	// runner reaches it at host.docker.internal:<port>; the real API key never
 	// enters the container (brief §8).
 	CredProxyPort string
+	// ProxyCAKey / ProxyCACert optionally provide the TLS-intercepting proxy's CA
+	// (PEM) via the environment, keeping it out of the data dir. When unset, the
+	// proxy auto-generates a CA and persists it under the data dir (0600 key).
+	ProxyCAKey  string
+	ProxyCACert string
 }
 
 // Load reads configuration from environment variables, applying defaults.
@@ -109,6 +114,8 @@ func Load() (*Config, error) {
 		GitHubToken:             os.Getenv("GOCLAW_GITHUB_TOKEN"),
 		SecretEncryptionKey:     os.Getenv("GOCLAW_SECRET_ENCRYPTION_KEY"),
 		CredProxyPort:           getenv("GOCLAW_CREDPROXY_PORT", "18080"),
+		ProxyCAKey:              os.Getenv("GOCLAW_PROXY_CA_KEY"),
+		ProxyCACert:             os.Getenv("GOCLAW_PROXY_CA_CERT"),
 	}
 	return cfg, nil
 }

@@ -87,14 +87,14 @@ is plain-HTTP-local carrying only a placeholder).
 
 ## Gaps and open questions (found during scoping)
 
-1. **CRITICAL, unverified: does the `claude` CLI route through `HTTPS_PROXY`?**
-   We verified the CLI honors `ANTHROPIC_BASE_URL` (the current mechanism). We
-   have NOT verified it obeys `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1` to send
-   `api.anthropic.com` through a CONNECT proxy. If it does not, "replace" breaks
-   Anthropic and we must keep the base-URL path for Anthropic (i.e. fall back to
-   "alongside"). **Verify this FIRST, before building anything**, with a probe:
-   run the CLI with `HTTPS_PROXY` pointed at a logging CONNECT listener and a
-   trusted CA, confirm it issues `CONNECT api.anthropic.com:443`.
+1. **RESOLVED (2026-06-03): the `claude` CLI DOES route through `HTTPS_PROXY`.**
+   Verified against the real CLI in the runner image: with
+   `HTTPS_PROXY=http://host.docker.internal:<port>` + `NODE_USE_ENV_PROXY=1`, the
+   CLI issued `CONNECT api.anthropic.com:443` to the proxy and the request reached
+   the real API (a decoy key returned "Invalid API key" from Anthropic). So
+   "replace" is viable: Anthropic can move onto the MITM path. Note: the CLI also
+   CONNECTs to `http-intake.logs.us5.datadoghq.com:443` (Anthropic telemetry);
+   we have no credential for it, so it gets blind-tunneled (correct).
 2. **GitHub uses two hosts.** `gh` API calls hit `api.github.com`; `git clone`
    hits `github.com` (and Git LFS / `codeload.github.com`). A single credential
    for one host will not cover both. Decide: store the token under multiple hosts,
