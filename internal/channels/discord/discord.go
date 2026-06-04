@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/bwmarrin/discordgo"
 	"golang.org/x/time/rate"
@@ -23,8 +24,20 @@ const channelName = "discord"
 // Adapter is the Discord ChannelAdapter.
 type Adapter struct {
 	session *discordgo.Session
-	selfID  string        // the bot's own user id, to ignore its own messages
+	// selfID is the bot's own user id (to ignore its own messages and strip its
+	// own @mention). It is set once after the gateway opens and read from the
+	// message-handler goroutine, so access goes through atomic to avoid a race in
+	// the brief startup window.
+	selfID  atomic.Pointer[string]
 	limiter *rate.Limiter // light outbound rate limit (discordgo also handles 429s)
+}
+
+// self returns the bot's own id, or "" before the gateway has reported it.
+func (a *Adapter) self() string {
+	if p := a.selfID.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // New constructs a Discord adapter from a bot token (load from env/vault - never
@@ -56,14 +69,20 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 
 	a.session.AddHandler(func(_ *discordgo.Session, m *discordgo.MessageCreate) {
 		// Ignore the bot's own messages (else it would reply to itself).
-		if a.selfID != "" && m.Author != nil && m.Author.ID == a.selfID {
+		self := a.self()
+		if self != "" && m.Author != nil && m.Author.ID == self {
 			return
 		}
 		if m.Author != nil && m.Author.Bot {
 			return // ignore other bots too
 		}
 		raw, _ := json.Marshal(m)
-		text, atts := mapAttachments(m.Content, m.Attachments)
+		// In a server channel a user addresses the bot by @mention, so the raw
+		// content is like "<@BOTID> /commands". Strip the bot's own mention so the
+		// text the host sees is just "/commands" (slash commands must start at the
+		// front) and the agent does not see mention noise.
+		content := stripSelfMention(m.Content, self)
+		text, atts := mapAttachments(content, m.Attachments)
 		in := channels.InboundMsg{
 			Channel:     channelName,
 			ChatID:      m.ChannelID,
@@ -85,7 +104,8 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 		return nil, fmt.Errorf("discord: open gateway: %w", err)
 	}
 	if a.session.State != nil && a.session.State.User != nil {
-		a.selfID = a.session.State.User.ID
+		id := a.session.State.User.ID
+		a.selfID.Store(&id)
 	}
 
 	// Close the gateway when ctx is cancelled.
@@ -199,6 +219,19 @@ func attachmentPlaceholder(att *discordgo.MessageAttachment) string {
 		}
 		return "[File: " + name + "]"
 	}
+}
+
+// stripSelfMention removes the bot's own mention tokens (<@id> and the nickname
+// form <@!id>) from content and trims surrounding whitespace, so an addressed
+// message like "<@123> /roll 2d6" becomes "/roll 2d6". selfID may be empty before
+// the gateway reports the bot's id, in which case content is returned unchanged.
+func stripSelfMention(content, selfID string) string {
+	if selfID == "" {
+		return content
+	}
+	content = strings.ReplaceAll(content, "<@"+selfID+">", "")
+	content = strings.ReplaceAll(content, "<@!"+selfID+">", "")
+	return strings.TrimSpace(content)
 }
 
 func senderID(m *discordgo.MessageCreate) string {

@@ -6,6 +6,32 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+func TestStripSelfMention(t *testing.T) {
+	const id = "123"
+	cases := []struct {
+		name    string
+		content string
+		selfID  string
+		want    string
+	}{
+		{"leading mention before slash command", "<@123> /commands", id, "/commands"},
+		{"nickname mention form", "<@!123> /roll 2d6", id, "/roll 2d6"},
+		{"mention with extra spaces", "<@123>   /roll 2d6", id, "/roll 2d6"},
+		{"mention mid text", "hey <@123> roll please", id, "hey  roll please"},
+		{"no mention is unchanged", "/commands", id, "/commands"},
+		{"other user's mention is kept", "<@999> hi", id, "<@999> hi"},
+		{"empty selfID leaves content", "<@123> /commands", "", "<@123> /commands"},
+		{"only a mention becomes empty", "<@123>", id, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stripSelfMention(c.content, c.selfID); got != c.want {
+				t.Fatalf("stripSelfMention(%q, %q) = %q, want %q", c.content, c.selfID, got, c.want)
+			}
+		})
+	}
+}
+
 func TestMapAttachments(t *testing.T) {
 	t.Run("no attachments leaves text and yields nil", func(t *testing.T) {
 		text, atts := mapAttachments("hi", nil)
