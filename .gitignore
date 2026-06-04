@@ -5,6 +5,10 @@
 
 # Local data & state
 /data/
+
+# Installed plugins are local runtime state for now: compiled binaries plus their
+# plugin.yml, built/dropped into ./plugins/<name>/ per host. Not committed.
+/plugins/
 *.db
 *.db-wal
 *.db-shm
