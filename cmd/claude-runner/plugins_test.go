@@ -47,15 +47,12 @@ func TestLoadPlugins_ToolAndCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	ph := loadPlugins(ctx, root, quietLog())
-	if ph == nil {
-		t.Fatal("expected a plugin host with the roll plugin loaded")
-	}
+	ph := startPlugins(ctx, root, quietLog())
 	defer ph.Close()
 
-	// The MCP server exposes the roll tool to the agent.
-	if ph.server == nil {
-		t.Fatal("expected an MCP server")
+	// The roll plugin loaded and its tool is exposed to the agent.
+	if !ph.hasServerTools() {
+		t.Fatal("expected the roll tool to be registered")
 	}
 
 	// The slash command dispatches directly to the plugin (no agent turn).
@@ -73,10 +70,7 @@ func TestPluginHost_UnknownCommandFallsThrough(t *testing.T) {
 	root := installRoll(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	ph := loadPlugins(ctx, root, quietLog())
-	if ph == nil {
-		t.Fatal("plugin host nil")
-	}
+	ph := startPlugins(ctx, root, quietLog())
 	defer ph.Close()
 
 	if _, ok := ph.command(ctx, "/nope"); ok {
@@ -110,4 +104,63 @@ func TestArgsForTool_SingleString(t *testing.T) {
 	if string(got) != `{"notation":"2d6"}` {
 		t.Fatalf("got %s", got)
 	}
+}
+
+// Hot reload: start with no plugins, then install roll into the watched dir and
+// confirm the watcher loads it live (no restart). Then remove it and confirm it
+// unloads.
+func TestPluginHost_HotReload(t *testing.T) {
+	// Build roll once (skips if goclawkit absent).
+	staged := installRoll(t) // staged/roll/{roll,plugin.yml}
+	src := filepath.Join(staged, "roll")
+
+	root := t.TempDir() // empty plugins dir to start
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	ph := startPlugins(ctx, root, quietLog())
+	defer ph.Close()
+	if ph.hasServerTools() {
+		t.Fatal("no plugins should be loaded initially")
+	}
+
+	// Install: copy roll into the watched dir (atomic-ish: build then rename).
+	dst := filepath.Join(root, "roll")
+	tmp := dst + ".installing"
+	if err := os.CopyFS(tmp, os.DirFS(src)); err != nil {
+		t.Fatalf("copy plugin: %v", err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	// The watcher should load it within a few seconds.
+	if !waitFor(5*time.Second, func() bool {
+		_, ok := ph.command(ctx, "/roll 2d6")
+		return ok
+	}) {
+		t.Fatal("roll was not hot-loaded after install")
+	}
+
+	// Remove it and confirm it unloads.
+	if err := os.RemoveAll(dst); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(5*time.Second, func() bool {
+		_, ok := ph.command(ctx, "/roll 2d6")
+		return !ok
+	}) {
+		t.Fatal("roll was not unloaded after removal")
+	}
+}
+
+func waitFor(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return cond()
 }

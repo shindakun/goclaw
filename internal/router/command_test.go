@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/shindakun/goclaw/internal/command"
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/permissions"
+	"github.com/shindakun/goclaw/internal/plugin"
 )
 
 // cmdSetup seeds an owner and returns a router with a fake sender so command
@@ -207,5 +209,86 @@ func TestRegisterPluginCommands_ListsAsPassThrough(t *testing.T) {
 	}
 	if handled {
 		t.Fatal("/roll is pass-through; the host must NOT handle it")
+	}
+}
+
+// /plugin list and remove are filesystem ops (no container), so they test end to
+// end against a temp plugins dir. /plugin add needs a build container, covered
+// separately.
+func TestCmdPlugin_ListAndRemove(t *testing.T) {
+	r, _, fs := cmdSetup(t)
+	owner, _ := r.central.UserByIdentity("telegram", "1000")
+
+	// Stage a fake installed plugin.
+	pdir := t.TempDir()
+	rolldir := filepath.Join(pdir, "roll")
+	if err := os.MkdirAll(rolldir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rolldir, "roll"), []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yml := "name: roll\nkind: tool\nversion: \"1.0.0\"\nexec: roll\n" +
+		"author: shindakun\ndescription: Roll dice.\ncommand: roll\n"
+	if err := os.WriteFile(filepath.Join(rolldir, "plugin.yml"), []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.SetInstaller(plugin.NewInstaller(pdir, "img", "podman"), pdir)
+
+	// /plugin list shows roll.
+	send := func(text string) string {
+		fs.sent = nil
+		if _, err := r.handleCommand(context.Background(),
+			channels.InboundMsg{Channel: "telegram", ChatID: "1000", SenderID: "1000", Text: text},
+			owner); err != nil {
+			t.Fatalf("%s: %v", text, err)
+		}
+		if len(fs.sent) == 0 {
+			t.Fatalf("%s: no reply", text)
+		}
+		return fs.sent[len(fs.sent)-1].Text
+	}
+
+	if out := send("/plugin list"); !strings.Contains(out, "roll") || !strings.Contains(out, "/roll") {
+		t.Fatalf("list missing roll: %q", out)
+	}
+
+	// /plugin remove roll deletes it.
+	if out := send("/plugin remove roll"); !strings.Contains(out, "Removed") {
+		t.Fatalf("remove reply: %q", out)
+	}
+	if _, err := os.Stat(rolldir); !os.IsNotExist(err) {
+		t.Fatal("roll dir should be deleted after remove")
+	}
+	if out := send("/plugin list"); !strings.Contains(out, "No plugins") {
+		t.Fatalf("list after remove: %q", out)
+	}
+
+	// Usage messages.
+	if out := send("/plugin add"); !strings.Contains(out, "Usage") {
+		t.Fatalf("add usage: %q", out)
+	}
+	if out := send("/plugin bogus"); !strings.Contains(out, "Unknown subcommand") {
+		t.Fatalf("bogus: %q", out)
+	}
+}
+
+// A non-owner cannot use /plugin (owner-only MinRole): it falls through.
+func TestCmdPlugin_OwnerOnly(t *testing.T) {
+	r, d, _ := cmdSetup(t)
+	r.SetInstaller(plugin.NewInstaller(t.TempDir(), "img", "podman"), t.TempDir())
+	if _, err := d.UpsertUserWithIdentity("mem", string(permissions.RoleMember), "telegram", "222"); err != nil {
+		t.Fatal(err)
+	}
+	member, _ := d.UserByIdentity("telegram", "222")
+	handled, err := r.handleCommand(context.Background(),
+		channels.InboundMsg{Channel: "telegram", ChatID: "555", SenderID: "222", Text: "/plugin list"},
+		member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled {
+		t.Fatal("member /plugin should not be handled (owner-only)")
 	}
 }

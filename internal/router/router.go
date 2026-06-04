@@ -52,13 +52,15 @@ type Typer interface {
 
 // Router routes inbound messages to session inbound DBs.
 type Router struct {
-	central  *db.DB
-	dataDir  string
-	ensurer  RunnerEnsurer
-	sender   Sender
-	typer    Typer
-	commands *command.Registry
-	log      *slog.Logger
+	central   *db.DB
+	dataDir   string
+	ensurer   RunnerEnsurer
+	sender    Sender
+	typer     Typer
+	commands  *command.Registry
+	installer *plugin.Installer // drives /plugin add|remove|list; nil disables /plugin
+	pluginDir string            // host plugins dir (for re-listing commands after add/remove)
+	log       *slog.Logger
 
 	// autoWireAgentGroupID, when non-zero, lets the owner bootstrap a wiring by
 	// simply messaging the host: an owner message in an unwired conversation
@@ -241,6 +243,111 @@ func (r *Router) registerBuiltinCommands() {
 // or remove plugin-provided commands at runtime.
 func (r *Router) Commands() *command.Registry { return r.commands }
 
+// SetInstaller wires the plugin installer and registers the owner-only `/plugin`
+// command (add/list/remove). pluginDir is the host plugins directory, used to
+// refresh the /commands listing after an install or removal. Call once at startup.
+func (r *Router) SetInstaller(in *plugin.Installer, pluginDir string) {
+	r.installer = in
+	r.pluginDir = pluginDir
+	r.commands.Register(command.Command{
+		Name:        "plugin",
+		Description: "Manage plugins: /plugin add <git-url> | list | remove <name>",
+		MinRole:     permissions.RoleOwner,
+		Source:      "builtin",
+		Handler:     r.cmdPlugin,
+	})
+}
+
+// cmdPlugin handles "/plugin <add|list|remove> ...". Owner-only (enforced by the
+// command's MinRole). Installs build the plugin inside a sandbox container; the
+// in-container runner's watch loads/unloads the result, so there is no restart.
+func (r *Router) cmdPlugin(ctx context.Context, req command.Request) (string, error) {
+	if r.installer == nil {
+		return "Plugin management is unavailable (no runner configured).", nil
+	}
+	sub, arg, _ := strings.Cut(strings.TrimSpace(req.Args), " ")
+	arg = strings.TrimSpace(arg)
+	switch strings.ToLower(sub) {
+	case "list", "":
+		return r.pluginList()
+	case "add":
+		if arg == "" {
+			return "Usage: /plugin add <git-url>", nil
+		}
+		return r.pluginAdd(ctx, arg)
+	case "remove", "rm":
+		if arg == "" {
+			return "Usage: /plugin remove <name>", nil
+		}
+		return r.pluginRemove(arg)
+	default:
+		return "Unknown subcommand. Use: /plugin add <git-url> | list | remove <name>", nil
+	}
+}
+
+func (r *Router) pluginList() (string, error) {
+	mans, err := r.installer.List()
+	if err != nil {
+		return "", err
+	}
+	if len(mans) == 0 {
+		return "No plugins installed. Add one with /plugin add <git-url>.", nil
+	}
+	var b strings.Builder
+	b.WriteString("Installed plugins:\n")
+	for _, m := range mans {
+		fmt.Fprintf(&b, "  %s v%s", m.Name, m.Version)
+		if m.Command != "" {
+			fmt.Fprintf(&b, " (/%s)", m.Command)
+		}
+		if m.Author != "" {
+			fmt.Fprintf(&b, " by %s", m.Author)
+		}
+		if m.Description != "" {
+			fmt.Fprintf(&b, " - %s", m.Description)
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+func (r *Router) pluginAdd(ctx context.Context, gitURL string) (string, error) {
+	res, err := r.installer.Add(ctx, gitURL)
+	if err != nil {
+		return "Install failed: " + err.Error(), nil
+	}
+	// Refresh the host's /commands listing so the new plugin's command shows up.
+	r.RegisterPluginCommands(r.pluginDir)
+	msg := fmt.Sprintf("Installed %s v%s", res.Name, res.Version)
+	if res.Command != "" {
+		msg += fmt.Sprintf(" (/%s)", res.Command)
+	}
+	if res.Commit != "" {
+		msg += " at " + shortCommit(res.Commit)
+	}
+	msg += ". It will be live within a few seconds."
+	return msg, nil
+}
+
+func (r *Router) pluginRemove(name string) (string, error) {
+	removed, err := r.installer.Remove(name)
+	if err != nil {
+		return "Remove failed: " + err.Error(), nil
+	}
+	if !removed {
+		return fmt.Sprintf("No plugin named %q is installed.", name), nil
+	}
+	r.commands.UnregisterSource(name) // drop its /commands listing
+	return fmt.Sprintf("Removed plugin %q.", name), nil
+}
+
+func shortCommit(c string) string {
+	if len(c) > 8 {
+		return c[:8]
+	}
+	return c
+}
+
 // RegisterPluginCommands reads each plugin.yml under pluginsDir and registers any
 // declared slash command as a PASS-THROUGH listing, so /commands shows it. The host
 // does NOT execute plugin commands: plugins run in the agent container, and the
@@ -253,8 +360,8 @@ func (r *Router) RegisterPluginCommands(pluginsDir string) {
 		return // no plugins dir is fine
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue // skip non-dirs and hidden dirs (e.g. an in-progress .build-*)
 		}
 		man, err := plugin.LoadManifest(filepath.Join(pluginsDir, e.Name()))
 		if err != nil || man.Command == "" {

@@ -29,6 +29,7 @@ import (
 	"github.com/shindakun/goclaw/internal/delivery"
 	"github.com/shindakun/goclaw/internal/maintenance"
 	"github.com/shindakun/goclaw/internal/mounts"
+	"github.com/shindakun/goclaw/internal/plugin"
 	"github.com/shindakun/goclaw/internal/router"
 	"github.com/shindakun/goclaw/internal/runtime"
 	"github.com/shindakun/goclaw/internal/sweep"
@@ -303,6 +304,16 @@ func run(log *slog.Logger) error {
 	// slash command in /commands (as a pass-through it does not execute), so plugin
 	// commands stay discoverable even though the runner is what runs them.
 	rtr.RegisterPluginCommands(pluginsHostDir(cfg))
+
+	// The owner-only /plugin command (add/list/remove). It builds a plugin inside a
+	// throwaway container (untrusted source never compiles on the host) and stages
+	// the artifact into <data>/plugins, where the in-container runner's watch loads
+	// it live. Only available when the runner is enabled (it needs the runner image
+	// for the sandboxed build).
+	if cfg.LaunchRunner {
+		installer := plugin.NewInstaller(pluginsHostDir(cfg), cfg.RunnerImage, cfg.PodmanBin)
+		rtr.SetInstaller(installer, pluginsHostDir(cfg))
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rtr.Run(gctx, inbound) })
