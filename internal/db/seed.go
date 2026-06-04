@@ -54,6 +54,21 @@ func (d *DB) UpsertUserWithIdentity(name, role, channel, senderID string) (int64
 	return userID, nil
 }
 
+// AddIdentity links an existing user to (channel, senderID), so one user can be
+// reachable on multiple channels (e.g. the owner on Telegram and Discord).
+// Idempotent: if the identity already exists it is re-pointed at userID. Returns
+// nil on success.
+func (d *DB) AddIdentity(userID int64, channel, senderID string) error {
+	if _, err := d.Exec(`
+		INSERT INTO user_identities (user_id, channel, sender_id) VALUES (?, ?, ?)
+		ON CONFLICT (channel, sender_id) DO UPDATE SET user_id = excluded.user_id`,
+		userID, channel, senderID,
+	); err != nil {
+		return fmt.Errorf("add identity: %w", err)
+	}
+	return nil
+}
+
 // UpsertMessagingGroup records (or refreshes the title of) a conversation,
 // returning its id. Called on first contact so unknown chats become routable.
 func (d *DB) UpsertMessagingGroup(channel, chatID, title string) (int64, error) {

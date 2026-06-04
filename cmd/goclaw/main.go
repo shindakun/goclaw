@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/shindakun/goclaw/internal/channels"
+	"github.com/shindakun/goclaw/internal/channels/discord"
 	"github.com/shindakun/goclaw/internal/channels/telegram"
 	"github.com/shindakun/goclaw/internal/config"
 	"github.com/shindakun/goclaw/internal/credproxy"
@@ -85,6 +86,7 @@ func run(log *slog.Logger) error {
 	// hand-editing the DB (brief §3.4). Idempotent.
 	_, agentGroupID, err := central.Apply(db.Bootstrap{
 		OwnerTelegramID:         cfg.OwnerTelegramID,
+		OwnerDiscordID:          cfg.OwnerDiscordID,
 		DefaultAgentGroupName:   cfg.DefaultAgentGroupName,
 		DefaultAgentGroupFolder: cfg.DefaultAgentGroupFolder,
 	})
@@ -94,6 +96,9 @@ func run(log *slog.Logger) error {
 	if cfg.OwnerTelegramID != "" {
 		log.Info("seeded owner", "telegram_id", cfg.OwnerTelegramID)
 	}
+	if cfg.OwnerDiscordID != "" {
+		log.Info("seeded owner", "discord_id", cfg.OwnerDiscordID)
+	}
 
 	// Owner auto-wiring is opt-in and only meaningful with a default agent group.
 	var autoWireID int64
@@ -102,8 +107,8 @@ func run(log *slog.Logger) error {
 		log.Info("owner auto-wire enabled", "agent_group", autoWireID)
 	}
 
-	// Channel registry. Telegram is the v0 channel (brief §7.4); register it
-	// only when a token is configured.
+	// Channel registry. Each channel registers only when its token is configured
+	// (brief §7.4); they all implement the same ChannelAdapter interface.
 	registry := channels.NewRegistry()
 	if cfg.TelegramToken != "" {
 		tg, err := telegram.New(cfg.TelegramToken)
@@ -114,8 +119,21 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		log.Info("registered channel", "channel", tg.Name())
-	} else {
-		log.Warn("TELEGRAM_BOT_TOKEN unset - no channels registered")
+	}
+	var discordAdapter *discord.Adapter
+	if cfg.DiscordToken != "" {
+		dc, err := discord.New(cfg.DiscordToken)
+		if err != nil {
+			return err
+		}
+		if err := registry.Register(dc); err != nil {
+			return err
+		}
+		discordAdapter = dc
+		log.Info("registered channel", "channel", dc.Name())
+	}
+	if len(registry.All()) == 0 {
+		log.Warn("no channel tokens set (TELEGRAM_BOT_TOKEN / GOCLAW_DISCORD_TOKEN) - no channels registered")
 	}
 
 	// Start adapters and fan inbound messages in.
@@ -287,18 +305,16 @@ func run(log *slog.Logger) error {
 	}
 
 	// Scheduled vault maintenance (brief §11.5): only when a vault is configured
-	// and we know the owner (so jobs have a session to run in and a chat for the
-	// summary). Targets the owner's DM with the default agent group.
-	if cfg.VaultDir != "" && cfg.OwnerTelegramID != "" && ensurer != nil {
-		target := maintenance.Target{
-			AgentGroupID: agentGroupID,
-			SessionKey:   "telegram:" + cfg.OwnerTelegramID,
-			Channel:      "telegram",
-			ChatID:       cfg.OwnerTelegramID,
+	// and we know an owner channel to post summaries to. Prefer Telegram (the
+	// owner id is also the DM chat id); else Discord (resolve the owner's DM
+	// channel, since Discord posts to channels, not user ids).
+	if cfg.VaultDir != "" && ensurer != nil {
+		target, ok := maintenanceTarget(cfg, agentGroupID, discordAdapter, log)
+		if ok {
+			sched := maintenance.New(central, cfg.DataDir, ensurer, target, log)
+			g.Go(func() error { return sched.Run(gctx) })
+			log.Info("vault maintenance enabled", "channel", target.Channel, "chat", target.ChatID)
 		}
-		sched := maintenance.New(central, cfg.DataDir, ensurer, target, log)
-		g.Go(func() error { return sched.Run(gctx) })
-		log.Info("vault maintenance enabled", "owner", cfg.OwnerTelegramID)
 	}
 
 	log.Info("goclaw host started")
@@ -355,6 +371,37 @@ func stopRunners(runners sweep.RunnerManager, log *slog.Logger) {
 		}
 		log.Info("shutdown: stopped runner", "agent_group", id)
 	}
+}
+
+// maintenanceTarget builds the scheduled-maintenance target from whichever owner
+// channel is configured. Telegram is preferred (the owner id is also the DM chat
+// id). For Discord it resolves the owner's DM channel, since Discord posts to a
+// channel id, not a user id. Returns ok=false if no owner channel is configured.
+func maintenanceTarget(cfg *config.Config, agentGroupID int64, dc *discord.Adapter, log *slog.Logger) (maintenance.Target, bool) {
+	if cfg.OwnerTelegramID != "" {
+		return maintenance.Target{
+			AgentGroupID: agentGroupID,
+			SessionKey:   "telegram:" + cfg.OwnerTelegramID,
+			Channel:      "telegram",
+			ChatID:       cfg.OwnerTelegramID,
+		}, true
+	}
+	if cfg.OwnerDiscordID != "" && dc != nil {
+		dmID, err := dc.DMChannelID(cfg.OwnerDiscordID)
+		if err != nil {
+			log.Warn("vault maintenance: could not open owner DM on Discord - maintenance disabled", "err", err)
+			return maintenance.Target{}, false
+		}
+		// Session keys on the owner's user id (stable identity); the reply is
+		// delivered to the resolved DM channel id.
+		return maintenance.Target{
+			AgentGroupID: agentGroupID,
+			SessionKey:   "discord:" + cfg.OwnerDiscordID,
+			Channel:      "discord",
+			ChatID:       dmID,
+		}, true
+	}
+	return maintenance.Target{}, false
 }
 
 // proxyCADir is where the credential proxy persists its auto-generated CA when

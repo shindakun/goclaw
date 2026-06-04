@@ -30,6 +30,7 @@ internal/config/      env + .env configuration
 internal/db/          central DB + migrations, session DB pair, queue helpers
 internal/channels/    ChannelAdapter interface + registry
 internal/channels/telegram/  Telegram adapter (the v0 channel)
+internal/channels/discord/   Discord adapter (gateway websocket)
 internal/router/      resolution + access gate + approval flow → inbound.db (REAL)
 internal/delivery/    outbound.db poll, delivery auth, adapter dispatch (REAL)
 internal/sweep/       runner recovery + idle-runner GC (REAL)
@@ -62,6 +63,8 @@ Config via environment:
 | `GOCLAW_DATA_DIR` | `data` | root for central + session DBs |
 | `GOCLAW_MOUNT_ALLOWLIST` | `~/.config/goclaw/mount-allowlist.json` | external mount allowlist (fail-closed if absent) |
 | `TELEGRAM_BOT_TOKEN` | _(unset)_ | enables the Telegram channel |
+| `GOCLAW_DISCORD_TOKEN` | _(unset)_ | enables the Discord channel (needs the Message Content intent) |
+| `GOCLAW_OWNER_DISCORD_ID` | _(unset)_ | your Discord user id, seeded as an owner identity |
 | `GOCLAW_PODMAN_BIN` | `podman` | podman binary |
 | `GOCLAW_SECRET_ENCRYPTION_KEY` | _(unset)_ | base64 32-byte key encrypting the credential store (see [Credential proxy](#credential-proxy)) |
 | `GOCLAW_CREDPROXY_PORT` | `18080` | host port the credential proxy listens on |
@@ -263,6 +266,30 @@ clones in `/work`, branches, commits (using your git identity), and runs
 `gh pr create`. For a repo you don't own, `gh repo fork` pushes the branch to
 your fork and opens the PR against upstream. Without any token, the agent can
 still clone public repos but cannot push or open PRs.
+
+### Discord channel
+
+Discord is a second channel on the same `ChannelAdapter` interface (text in/out
+plus a typing indicator, like Telegram). To enable it:
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications):
+   create an application, add a **Bot**, and copy its token. Under the bot's
+   settings, enable the **Message Content Intent** (privileged) so the bot can
+   read message text.
+2. Invite the bot to your server with permission to read and send in the channel
+   you want it in.
+3. Get your own Discord user id (enable Developer Mode, right-click your name ->
+   Copy User ID) so your messages pass the access gate.
+
+```sh
+# .env
+GOCLAW_DISCORD_TOKEN=...        # the bot token (no "Bot " prefix)
+GOCLAW_OWNER_DISCORD_ID=...     # your numeric Discord user id
+```
+
+The same owner user can hold both a Telegram and a Discord identity, so you can
+reach the agent from either. Scheduled vault maintenance posts its summary to the
+Telegram owner if one is set, otherwise to the Discord owner's DM.
 
 ### Knowledge vault
 

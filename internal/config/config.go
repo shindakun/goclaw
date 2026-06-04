@@ -19,6 +19,9 @@ type Config struct {
 	MountAllowlistPath string
 	// TelegramToken is the Telegram bot token (empty disables the channel).
 	TelegramToken string
+	// DiscordToken is the Discord bot token (empty disables the channel). The bot
+	// needs the Message Content privileged intent enabled in the Developer Portal.
+	DiscordToken string
 	// PodmanBin is the podman binary name/path.
 	PodmanBin string
 	// LaunchRunner enables host-managed runner containers: on enqueue the host
@@ -57,6 +60,9 @@ type Config struct {
 	// identity so the first real user can get past the access gate without
 	// hand-editing the DB (brief §3.4). Empty disables the bootstrap.
 	OwnerTelegramID string
+	// OwnerDiscordID, if set, seeds the owner user's Discord identity (the same
+	// owner user can hold identities on multiple channels). Empty disables it.
+	OwnerDiscordID string
 	// AutoWireOwner, when true, auto-wires an unwired conversation the owner
 	// messages to the default agent group. Convenience for first-run only.
 	AutoWireOwner bool
@@ -99,8 +105,10 @@ func Load() (*Config, error) {
 		CentralDBPath:           filepath.Join(dataDir, "goclaw.db"),
 		MountAllowlistPath:      getenv("GOCLAW_MOUNT_ALLOWLIST", filepath.Join(home, ".config", "goclaw", "mount-allowlist.json")),
 		TelegramToken:           os.Getenv("TELEGRAM_BOT_TOKEN"),
+		DiscordToken:            os.Getenv("GOCLAW_DISCORD_TOKEN"),
 		PodmanBin:               getenv("GOCLAW_PODMAN_BIN", "podman"),
 		OwnerTelegramID:         os.Getenv("GOCLAW_OWNER_TELEGRAM_ID"),
+		OwnerDiscordID:          os.Getenv("GOCLAW_OWNER_DISCORD_ID"),
 		AutoWireOwner:           os.Getenv("GOCLAW_AUTO_WIRE_OWNER") == "1",
 		DefaultAgentGroupName:   getenv("GOCLAW_DEFAULT_AGENT_GROUP", "default"),
 		DefaultAgentGroupFolder: getenv("GOCLAW_DEFAULT_AGENT_GROUP_FOLDER", "default"),

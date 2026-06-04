@@ -9,6 +9,9 @@ type Bootstrap struct {
 	// OwnerTelegramID, if non-empty, seeds an "owner" user with this Telegram
 	// identity.
 	OwnerTelegramID string
+	// OwnerDiscordID, if non-empty, attaches a Discord identity to the owner user
+	// (the same owner can be reachable on multiple channels).
+	OwnerDiscordID string
 	// DefaultAgentGroup, if non-empty, ensures an agent group with this name and
 	// folder exists, to wire conversations to.
 	DefaultAgentGroupName   string
@@ -22,6 +25,18 @@ func (d *DB) Apply(b Bootstrap) (ownerID, agentGroupID int64, err error) {
 		ownerID, err = d.UpsertUserWithIdentity("owner", "owner", "telegram", b.OwnerTelegramID)
 		if err != nil {
 			return 0, 0, fmt.Errorf("bootstrap owner: %w", err)
+		}
+	}
+	if b.OwnerDiscordID != "" {
+		// Attach the Discord identity to the SAME owner user. If Telegram seeded
+		// the owner above, reuse it; otherwise create the owner from Discord.
+		if ownerID == 0 {
+			ownerID, err = d.UpsertUserWithIdentity("owner", "owner", "discord", b.OwnerDiscordID)
+			if err != nil {
+				return 0, 0, fmt.Errorf("bootstrap owner discord: %w", err)
+			}
+		} else if err = d.AddIdentity(ownerID, "discord", b.OwnerDiscordID); err != nil {
+			return 0, 0, fmt.Errorf("bootstrap owner discord identity: %w", err)
 		}
 	}
 	if b.DefaultAgentGroupName != "" {
