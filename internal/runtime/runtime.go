@@ -45,12 +45,13 @@ type Spec struct {
 
 // Manager drives Podman.
 type Manager struct {
-	podmanBin string            // path/name of the podman binary
-	image     string            // runner image to launch
-	runtime   Runtime           // OCI runtime for launched containers
-	allowlist *mounts.Allowlist // validates extra group mounts (may be nil)
-	env       map[string]string // env vars set on every launched container
-	vaultDir  string            // host knowledge-vault dir, mounted at /vault (may be empty)
+	podmanBin  string            // path/name of the podman binary
+	image      string            // runner image to launch
+	runtime    Runtime           // OCI runtime for launched containers
+	allowlist  *mounts.Allowlist // validates extra group mounts (may be nil)
+	env        map[string]string // env vars set on every launched container
+	vaultDir   string            // host knowledge-vault dir, mounted at /vault (may be empty)
+	caCertPath string            // host path to the credential-proxy CA cert, mounted RO (may be empty)
 
 	// ensureMu serializes EnsureGroupRunner per agent group. The router (on a new
 	// message) and the sweep (recovery) both call EnsureRunner concurrently; the
@@ -115,6 +116,14 @@ func (m *Manager) WithVault(dir string) *Manager {
 	return m
 }
 
+// WithCredCA sets the host path to the credential-proxy CA certificate, mounted
+// read-only into the container so the agent's tools trust the proxy's
+// intercepted TLS (brief §8). Empty disables it. Returns m for chaining.
+func (m *Manager) WithCredCA(hostCAPath string) *Manager {
+	m.caCertPath = hostCAPath
+	return m
+}
+
 // EnsureRunner implements the RunnerEnsurer interface used by the router and
 // sweep: it ensures a runner container is up for the given agent group,
 // launching one (mounting groupDir at /sessions, plus any extra mounts that
@@ -130,6 +139,7 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir
 		GroupDir:     groupDir,
 		ClaudeHome:   claudeHomeFor(groupDir),
 		VaultDir:     m.vaultDir,
+		CACertPath:   m.caCertPath,
 		ExtraMounts:  validated,
 	})
 }

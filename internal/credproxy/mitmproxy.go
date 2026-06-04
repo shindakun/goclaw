@@ -14,6 +14,7 @@ package credproxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -58,6 +59,27 @@ func NewMITM(resolver HostResolver, ca leafProvider, log *slog.Logger) *MITMProx
 
 // CACertPEM exposes the CA cert to mount into the container trust store.
 func (m *MITMProxy) CACertPEM() []byte { return m.ca.CertPEM() }
+
+// Serve runs the proxy on addr until ctx is cancelled, then shuts down cleanly.
+func (m *MITMProxy) Serve(ctx context.Context, addr string) error {
+	srv := &http.Server{Addr: addr, Handler: m}
+	errc := make(chan error, 1)
+	go func() {
+		m.log.Info("credential proxy listening (TLS-intercepting)", "addr", addr)
+		errc <- srv.ListenAndServe()
+	}()
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	case err := <-errc:
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return fmt.Errorf("credproxy: %w", err)
+	}
+}
 
 // ServeHTTP handles CONNECT (the only method a forward HTTPS proxy receives for
 // TLS). Non-CONNECT requests are plain-HTTP forward-proxy requests; we reject

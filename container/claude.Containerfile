@@ -97,6 +97,12 @@ COPY container/skills /app/skills
 # Ephemeral with the container; owned by the runtime uid so the agent can write.
 RUN mkdir -p /work && chown -R 1000:1000 /work
 
+# /etc/goclaw is the mount point for the credential-proxy CA cert (brief §8). The
+# host bind-mounts proxy-ca.pem here read-only; the agent's tools trust it via
+# NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / GIT_SSL_CAINFO. Pre-create the dir so the
+# file mount has a parent.
+RUN mkdir -p /etc/goclaw
+
 # Run as a non-root uid that matches the host's --user 1000:1000 (brief §9). The
 # node:22-slim base names uid 1000 "node" with home /home/node, but that name is
 # incidental - it's the base image's user, nothing Node-related, and the runner is

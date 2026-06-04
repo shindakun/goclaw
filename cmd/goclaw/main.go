@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -32,11 +33,6 @@ import (
 	"github.com/shindakun/goclaw/internal/sweep"
 	"github.com/shindakun/goclaw/internal/typing"
 )
-
-// anthropicHost is the credential-store host key for the Anthropic API; its
-// presence (with an encryption key) switches the runner onto the credential
-// proxy instead of a raw key (brief §8).
-const anthropicHost = "api.anthropic.com"
 
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -136,10 +132,16 @@ func run(log *slog.Logger) error {
 	var (
 		ensurer router.RunnerEnsurer // narrow: ensure only (router)
 		runners sweep.RunnerManager  // richer: ensure + list + stop (sweep GC)
-		// proxyStore is non-nil when the bundled credential proxy should run (an
-		// Anthropic credential is stored + an encryption key is set). The proxy
-		// goroutine below uses it; nil means no proxy (raw key path).
+		// proxyStore is non-nil when the bundled credential proxy should run (a
+		// credential is stored + an encryption key is set). The proxy goroutine
+		// below uses it; nil means no proxy (raw key path).
 		proxyStore *credstore.Store
+		// proxyCAHostPath is the host path to the proxy CA cert, mounted into the
+		// container so its tools trust the intercepted TLS. Set when useProxy.
+		proxyCAHostPath string
+		// proxyCA is the built CA, shared between the spawn wiring and the proxy
+		// goroutine so they use the same root. nil when the proxy is off.
+		proxyCA *credproxy.CA
 	)
 	if cfg.LaunchRunner {
 		// Load the external mount allowlist (fail-closed if absent) to validate
@@ -148,28 +150,52 @@ func run(log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		// Credential handling. If the bundled credential proxy has an Anthropic
-		// credential stored (goclaw auth add), route the runner through it: the
-		// container gets ANTHROPIC_BASE_URL pointing at the host proxy and only a
-		// PLACEHOLDER key, so the real key never enters the container (brief §8).
-		// Otherwise fall back to passing a raw key (prefer the long-lived API key,
-		// else the OAuth token). WithEnv drops empties.
+		// Credential handling (brief §8). When an encryption key is set and at
+		// least one credential is stored (goclaw auth add), route the runner's
+		// HTTPS through the bundled TLS-intercepting proxy: the container trusts
+		// the proxy's CA and the proxy injects the real token per request, so no
+		// raw token (Anthropic or GitHub) enters the container. Otherwise fall back
+		// to passing raw keys (prefer the long-lived API key, else the OAuth token,
+		// plus GH_TOKEN). WithEnv drops empties.
 		credStore := credstore.New(central.DB, cfg.SecretEncryptionKey)
 		useProxy := false
 		if credStore.HasKey() {
-			if hosts, herr := credStore.Hosts(); herr == nil && hosts[anthropicHost] {
+			if hosts, herr := credStore.Hosts(); herr == nil && len(hosts) > 0 {
 				useProxy = true
 				proxyStore = credStore // signal the proxy goroutine to start
 			}
 		}
 		claudeEnv := map[string]string{}
 		if useProxy {
-			claudeEnv["ANTHROPIC_BASE_URL"] = "http://host.docker.internal:" + cfg.CredProxyPort
-			// The CLI requires a key to be present even with a base URL; it is sent
-			// as x-api-key and the proxy swaps in the real one. So this is a decoy.
+			// Build the proxy CA once and persist its cert so it can be mounted
+			// into the container trust store. The goroutine below reuses it.
+			ca, err := credproxy.LoadOrGenerateCA(proxyCADir(cfg), cfg.ProxyCAKey, cfg.ProxyCACert)
+			if err != nil {
+				return fmt.Errorf("credential proxy CA: %w", err)
+			}
+			caPath := filepath.Join(proxyCADir(cfg), "ca.pem")
+			if werr := os.WriteFile(caPath, ca.CertPEM(), 0o644); werr != nil {
+				return fmt.Errorf("write proxy CA cert: %w", werr)
+			}
+			proxyCA = ca
+			proxyURL := "http://host.docker.internal:" + cfg.CredProxyPort
+			caCont := runtime.CACertContainerPath()
+			// Route HTTPS through the proxy; Node needs NODE_USE_ENV_PROXY. Reach
+			// the proxy itself directly (NO_PROXY) so the CONNECT is not proxied.
+			claudeEnv["HTTPS_PROXY"] = proxyURL
+			claudeEnv["HTTP_PROXY"] = proxyURL
+			claudeEnv["NODE_USE_ENV_PROXY"] = "1"
+			claudeEnv["NO_PROXY"] = "host.docker.internal,localhost,127.0.0.1"
+			// Trust the proxy CA across the agent's tools.
+			claudeEnv["NODE_EXTRA_CA_CERTS"] = caCont // claude CLI (Node)
+			claudeEnv["SSL_CERT_FILE"] = caCont       // curl, python, Go
+			claudeEnv["GIT_SSL_CAINFO"] = caCont      // git (gh uses git's stack)
+			// The CLI still wants a key present even though the proxy supplies the
+			// real one; a decoy is fine (the proxy swaps it for the stored key).
 			claudeEnv["ANTHROPIC_API_KEY"] = "placeholder"
-			log.Info("credential proxy active - real Anthropic key stays on the host",
-				"base_url", claudeEnv["ANTHROPIC_BASE_URL"])
+			proxyCAHostPath = caPath
+			log.Info("credential proxy active - raw tokens stay on the host",
+				"proxy", proxyURL, "credentials", credHostList(credStore))
 		} else if cfg.AnthropicAPIKey != "" {
 			claudeEnv["ANTHROPIC_API_KEY"] = cfg.AnthropicAPIKey
 		} else if cfg.ClaudeCodeOAuthToken != "" {
@@ -181,8 +207,12 @@ func run(log *slog.Logger) error {
 		claudeEnv["GIT_AUTHOR_EMAIL"] = cfg.GitUserEmail
 		claudeEnv["GIT_COMMITTER_NAME"] = cfg.GitUserName
 		claudeEnv["GIT_COMMITTER_EMAIL"] = cfg.GitUserEmail
-		// GitHub auth for gh (clone private, push, fork, open PRs). Empty -> dropped.
-		claudeEnv["GH_TOKEN"] = cfg.GitHubToken
+		// GitHub auth: pass the raw GH_TOKEN ONLY when the proxy is NOT injecting
+		// it (no credential stored). With the proxy active the token stays on the
+		// host and is injected per request, so we must not also leak it here.
+		if !useProxy {
+			claudeEnv["GH_TOKEN"] = cfg.GitHubToken
+		}
 		// Timezone: the container base image is UTC, so without this the agent's
 		// clock (and any `date`) is hours off the user's wall time - it wrote
 		// vault stamps on the wrong day and invalid hours like "24:30". Pass the
@@ -198,7 +228,8 @@ func run(log *slog.Logger) error {
 		claudeEnv["GOCLAW_TRANSCRIPT_ROTATE_AGE_DAYS"] = os.Getenv("GOCLAW_TRANSCRIPT_ROTATE_AGE_DAYS")
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
-			WithVault(cfg.VaultDir)
+			WithVault(cfg.VaultDir).
+			WithCredCA(proxyCAHostPath) // empty when the proxy is off
 		ensurer = mgr
 		runners = mgr
 		log.Info("runner launch enabled", "image", cfg.RunnerImage,
@@ -229,12 +260,13 @@ func run(log *slog.Logger) error {
 	g.Go(func() error { return del.Run(gctx) })
 	g.Go(func() error { return swp.Run(gctx) })
 
-	// Credential proxy (brief §8): runs only when an Anthropic credential is
-	// stored and an encryption key is set. Listens on the host so runner
-	// containers reach it at host.docker.internal:<port>; injects the real key
-	// per request so the container only ever holds a placeholder.
-	if proxyStore != nil {
-		px := credproxy.New(proxyStore, anthropicHost, log)
+	// Credential proxy (brief §8): runs only when a credential is stored and an
+	// encryption key is set. The TLS-intercepting proxy listens on the host so
+	// runner containers reach it at host.docker.internal:<port>; it injects the
+	// real token per request so the container only ever holds a placeholder and
+	// trusts the proxy CA.
+	if proxyStore != nil && proxyCA != nil {
+		px := credproxy.NewMITM(proxyStore, proxyCA, log)
 		addr := "0.0.0.0:" + cfg.CredProxyPort
 		g.Go(func() error { return px.Serve(gctx, addr) })
 	}
@@ -308,6 +340,26 @@ func stopRunners(runners sweep.RunnerManager, log *slog.Logger) {
 		}
 		log.Info("shutdown: stopped runner", "agent_group", id)
 	}
+}
+
+// proxyCADir is where the credential proxy persists its auto-generated CA when
+// not supplied via env: {data_dir}/proxy. The dir is created by the CA loader.
+func proxyCADir(cfg *config.Config) string {
+	return filepath.Join(cfg.DataDir, "proxy")
+}
+
+// credHostList returns the stored credential hosts for a startup log line, so the
+// operator can see what the proxy will inject for (no tokens, just hosts).
+func credHostList(s *credstore.Store) string {
+	hosts, err := s.Hosts()
+	if err != nil || len(hosts) == 0 {
+		return "(none)"
+	}
+	out := make([]string, 0, len(hosts))
+	for h := range hosts {
+		out = append(out, h)
+	}
+	return strings.Join(out, ",")
 }
 
 // hostTimezone returns the host's IANA timezone name (e.g. "America/Los_Angeles")

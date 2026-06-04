@@ -26,6 +26,7 @@ type GroupRunner struct {
 	GroupDir     string         // host path to the dir holding this group's session subdirs
 	ClaudeHome   string         // OPTIONAL host dir persisted as the container's ~/.claude
 	VaultDir     string         // OPTIONAL host knowledge-vault dir, mounted rw at /vault
+	CACertPath   string         // OPTIONAL host path to the credential-proxy CA, mounted RO
 	ExtraMounts  []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
 
@@ -37,6 +38,16 @@ const claudeHomePath = "/home/agent/.claude"
 // vaultMountPath is where the knowledge vault is mounted in the container; the
 // runner reads vaultMountPath/CLAUDE.md as its system prompt (brief §11).
 const vaultMountPath = "/vault"
+
+// caCertMountPath is where the credential-proxy CA cert is mounted (read-only)
+// in the container. The runner's trust env vars (NODE_EXTRA_CA_CERTS,
+// GIT_SSL_CAINFO, SSL_CERT_FILE) point here so the agent's tools trust the
+// proxy's intercepted TLS (brief §8).
+const caCertMountPath = "/etc/goclaw/proxy-ca.pem"
+
+// CACertContainerPath is where the credential-proxy CA cert lands in the
+// container; the host points the agent's TLS-trust env vars at it.
+func CACertContainerPath() string { return caCertMountPath }
 
 // containerNamePrefix is the common prefix of every runner container's name.
 const containerNamePrefix = "goclaw-"
@@ -142,6 +153,20 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 			HostPath:      vault,
 			ContainerPath: vaultMountPath,
 			ReadWrite:     true,
+		})
+	}
+
+	// Mount the credential-proxy CA cert read-only so the agent's tools trust the
+	// proxy's intercepted TLS (brief §8). The trust env vars point at this path.
+	if gr.CACertPath != "" {
+		ca, err := filepath.Abs(gr.CACertPath)
+		if err != nil {
+			return fmt.Errorf("runtime: resolve CA cert %q: %w", gr.CACertPath, err)
+		}
+		groupMounts = append(groupMounts, mounts.Mount{
+			HostPath:      ca,
+			ContainerPath: caCertMountPath,
+			ReadWrite:     false,
 		})
 	}
 
