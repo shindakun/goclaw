@@ -8,7 +8,8 @@ A self-hosted personal-AI-agent host in Go + Podman: it routes chat messages
 into per-agent-group containers where a Claude agent runs with OS-level
 isolation, then delivers replies back. Inspired by NanoClaw; see
 [`docs/nanoclaw-go-podman-brief.md`](docs/nanoclaw-go-podman-brief.md) for the
-full design and [`docs/security.md`](docs/security.md) for the threat model.
+full design, [`docs/security.md`](docs/security.md) for the threat model, and
+[`docs/channels.md`](docs/channels.md) for channel setup.
 
 The full message loop runs end to end: a real per-agent-group Podman container
 drives Claude (multi-turn, with `/reset` and `/compact`), reads and writes a
@@ -270,16 +271,8 @@ still clone public repos but cannot push or open PRs.
 ### Discord channel
 
 Discord is a second channel on the same `ChannelAdapter` interface (text in/out
-plus a typing indicator, like Telegram). To enable it:
-
-1. In the [Discord Developer Portal](https://discord.com/developers/applications):
-   create an application, add a **Bot**, and copy its token. Under the bot's
-   settings, enable the **Message Content Intent** (privileged) so the bot can
-   read message text.
-2. Invite the bot to your server with permission to read and send in the channel
-   you want it in.
-3. Get your own Discord user id (enable Developer Mode, right-click your name ->
-   Copy User ID) so your messages pass the access gate.
+plus a typing indicator, like Telegram). Enable it with a bot token and your
+Discord user id:
 
 ```sh
 # .env
@@ -287,9 +280,12 @@ GOCLAW_DISCORD_TOKEN=...        # the bot token (no "Bot " prefix)
 GOCLAW_OWNER_DISCORD_ID=...     # your numeric Discord user id
 ```
 
-The same owner user can hold both a Telegram and a Discord identity, so you can
-reach the agent from either. Scheduled vault maintenance posts its summary to the
-Telegram owner if one is set, otherwise to the Discord owner's DM.
+The bot needs the **Message Content Intent** enabled and must be invited to your
+server. See [`docs/channels.md`](docs/channels.md) for the full step-by-step
+(including the "installation type not supported" invite fix and how to find your
+user id). The same owner user can hold both a Telegram and a Discord identity, so
+you can reach the agent from either; scheduled vault maintenance posts its summary
+to the Telegram owner if set, otherwise the Discord owner's DM.
 
 ### Knowledge vault
 
