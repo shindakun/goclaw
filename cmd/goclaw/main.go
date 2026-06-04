@@ -29,6 +29,7 @@ import (
 	"github.com/shindakun/goclaw/internal/delivery"
 	"github.com/shindakun/goclaw/internal/maintenance"
 	"github.com/shindakun/goclaw/internal/mounts"
+	"github.com/shindakun/goclaw/internal/plugin"
 	"github.com/shindakun/goclaw/internal/router"
 	"github.com/shindakun/goclaw/internal/runtime"
 	"github.com/shindakun/goclaw/internal/sweep"
@@ -290,6 +291,19 @@ func run(log *slog.Logger) error {
 	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, nil, log)
 	del := delivery.New(central, registry, cfg.DataDir, typer, log)
 	swp := sweep.New(central, cfg.DataDir, runners, log)
+
+	// Plugins: discover compiled plugins under ./plugins, launch the enabled ones,
+	// and register their slash commands into the router's registry. A plugin runs
+	// on the HOST as a subprocess; the host speaks the frame protocol to it. The
+	// host env is passed through so a plugin's manifest-declared credential names
+	// resolve to the values the host holds. Static load for now (no watch yet); all
+	// discovered plugins are treated as enabled until the enable/disable sidecar
+	// lands.
+	plugins := plugin.NewManager("plugins", rtr.Commands(), os.Environ(), log)
+	if err := plugins.LoadAll(ctx, nil); err != nil {
+		log.Warn("plugin load", "err", err)
+	}
+	defer plugins.Close()
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rtr.Run(gctx, inbound) })
