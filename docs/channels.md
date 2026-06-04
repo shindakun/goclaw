@@ -60,6 +60,7 @@ its role) → allow View Channel + Send Messages.
 # .env
 GOCLAW_DISCORD_TOKEN=...        # the bot token
 GOCLAW_OWNER_DISCORD_ID=...     # your Discord USER id (see below)
+GOCLAW_AUTO_WIRE_OWNER=1        # wire your first message automatically (see Wiring)
 ```
 
 **Finding your Discord user id:** Settings (gear, bottom-left) → **Advanced** →
@@ -82,6 +83,28 @@ Telegram and a Discord identity, so you can reach the agent from either channel.
 
 If you skip the owner id, an unknown sender's first message is held and you (an
 existing owner) must approve it.
+
+## Wiring a conversation to an agent group
+
+Passing the access gate is not enough on its own: a conversation also has to be
+**wired** to an agent group before messages route. A brand-new conversation (a new
+Discord channel, a fresh DM) starts unwired, so the first message is dropped with:
+
+```text
+message dropped: no wiring for conversation  channel=discord chat=<id>
+```
+
+Two ways to wire it:
+
+- **Auto-wire (first-run convenience):** set `GOCLAW_AUTO_WIRE_OWNER=1` in `.env`
+  and restart. When you (the owner) message an unwired conversation, the host wires
+  it to the default agent group on the spot and logs `owner auto-wired
+  conversation`. From then on that conversation stays wired.
+- **Explicit wiring:** for real deployments, map conversations to agent groups
+  deliberately rather than relying on auto-wire.
+
+This applies to every channel: a Telegram chat that already worked is one that was
+wired earlier; a new Discord channel needs the same step.
 
 ## Scheduled vault maintenance target
 
