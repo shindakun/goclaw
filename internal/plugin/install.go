@@ -61,6 +61,13 @@ func (in *Installer) Add(ctx context.Context, gitURL string) (*InstallResult, er
 		return nil, fmt.Errorf("install: staging dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(out) }()
+	// The -v source MUST be absolute: podman treats a relative source as a named
+	// VOLUME (and a path with '/' is an invalid volume name), which is the
+	// "creating named volume" error. pluginsDir may be relative (e.g. data/plugins).
+	outAbs, err := filepath.Abs(out)
+	if err != nil {
+		return nil, fmt.Errorf("install: resolve staging dir: %w", err)
+	}
 
 	// Run the build entirely in the sandbox: clone -> scan -> build -> stage to
 	// /out. The container is rootless, non-root, and removed on exit; only /out is
@@ -68,7 +75,7 @@ func (in *Installer) Add(ctx context.Context, gitURL string) (*InstallResult, er
 	args := []string{
 		"run", "--rm",
 		"--user", "1000:1000",
-		"-v", out + ":/out:Z",
+		"-v", outAbs + ":/out:Z",
 		"-e", "PLUGIN_GIT_URL=" + gitURL,
 		"--entrypoint", "sh",
 		in.image, "-c", installScript,
