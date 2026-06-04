@@ -17,20 +17,39 @@ func TestMapAttachments(t *testing.T) {
 	t.Run("typed placeholders appended to text", func(t *testing.T) {
 		in := []*discordgo.MessageAttachment{
 			{Filename: "cat.png", ContentType: "image/png", URL: "https://x/cat.png"},
-			{Filename: "clip.mp4", ContentType: "video/mp4"},
-			{Filename: "song.mp3", ContentType: "audio/mpeg"},
-			{Filename: "notes.pdf", ContentType: "application/pdf"},
+			{Filename: "clip.mp4", ContentType: "video/mp4", URL: "https://x/clip.mp4"},
+			{Filename: "song.mp3", ContentType: "audio/mpeg", URL: "https://x/song.mp3"},
+			{Filename: "notes.pdf", ContentType: "application/pdf", URL: "https://x/notes.pdf"},
+			{Filename: "data.bin", ContentType: "", URL: "https://x/data.bin"}, // unknown type -> File
 		}
 		text, atts := mapAttachments("look", in)
-		want := "look\n[Image: cat.png]\n[Video: clip.mp4]\n[Audio: song.mp3]\n[File: notes.pdf]"
+		want := "look\n[Image: cat.png]\n[Video: clip.mp4]\n[Audio: song.mp3]\n[File: notes.pdf]\n[File: data.bin]"
 		if text != want {
 			t.Fatalf("text=\n%q\nwant\n%q", text, want)
 		}
-		if len(atts) != 4 {
-			t.Fatalf("atts = %d, want 4", len(atts))
+		if len(atts) != 5 {
+			t.Fatalf("atts = %d, want 5", len(atts))
 		}
-		if atts[0].Filename != "cat.png" || atts[0].MIMEType != "image/png" || atts[0].URL != "https://x/cat.png" {
-			t.Fatalf("attachment 0 not mapped: %+v", atts[0])
+		// Every attachment's filename, MIME, and URL must round-trip in order.
+		wantAtts := []struct{ name, mime, url string }{
+			{"cat.png", "image/png", "https://x/cat.png"},
+			{"clip.mp4", "video/mp4", "https://x/clip.mp4"},
+			{"song.mp3", "audio/mpeg", "https://x/song.mp3"},
+			{"notes.pdf", "application/pdf", "https://x/notes.pdf"},
+			{"data.bin", "", "https://x/data.bin"},
+		}
+		for i, w := range wantAtts {
+			if atts[i].Filename != w.name || atts[i].MIMEType != w.mime || atts[i].URL != w.url {
+				t.Fatalf("attachment %d = %+v, want %v", i, atts[i], w)
+			}
+		}
+	})
+
+	t.Run("non-media MIME type renders as File", func(t *testing.T) {
+		in := []*discordgo.MessageAttachment{{Filename: "x.zip", ContentType: "application/zip"}}
+		text, _ := mapAttachments("", in)
+		if text != "[File: x.zip]" {
+			t.Fatalf("text=%q, want [File: x.zip]", text)
 		}
 	})
 

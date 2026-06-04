@@ -59,6 +59,54 @@ func TestMapAttachments(t *testing.T) {
 		}
 	})
 
+	t.Run("video placeholder carries fileid and mime", func(t *testing.T) {
+		m := &tgbotapi.Message{Video: &tgbotapi.Video{FileID: "vid", FileName: "clip.mp4", MimeType: "video/mp4"}}
+		text, atts := mapAttachments("", m)
+		if text != "[Video]" {
+			t.Fatalf("text=%q", text)
+		}
+		if atts[0].URL != "vid" || atts[0].Filename != "clip.mp4" || atts[0].MIMEType != "video/mp4" {
+			t.Fatalf("video not mapped: %+v", atts[0])
+		}
+	})
+
+	t.Run("audio with name", func(t *testing.T) {
+		m := &tgbotapi.Message{Audio: &tgbotapi.Audio{FileID: "au", FileName: "song.mp3", MimeType: "audio/mpeg"}}
+		text, atts := mapAttachments("", m)
+		if text != "[Audio: song.mp3]" || atts[0].URL != "au" {
+			t.Fatalf("text=%q atts=%+v", text, atts)
+		}
+	})
+
+	t.Run("audio without name falls back", func(t *testing.T) {
+		m := &tgbotapi.Message{Audio: &tgbotapi.Audio{FileID: "au"}}
+		text, _ := mapAttachments("", m)
+		if text != "[Audio: audio]" {
+			t.Fatalf("text=%q", text)
+		}
+	})
+
+	t.Run("sticker placeholder", func(t *testing.T) {
+		m := &tgbotapi.Message{Sticker: &tgbotapi.Sticker{FileID: "st"}}
+		text, atts := mapAttachments("", m)
+		if text != "[Sticker]" || atts[0].URL != "st" {
+			t.Fatalf("text=%q atts=%+v", text, atts)
+		}
+	})
+
+	// The mapping is a switch: when more than one media field is set, Photo wins
+	// (it is the first case). Locks in that precedence so a reorder is caught.
+	t.Run("photo takes precedence over a co-present document", func(t *testing.T) {
+		m := &tgbotapi.Message{
+			Photo:    []tgbotapi.PhotoSize{{FileID: "p"}},
+			Document: &tgbotapi.Document{FileID: "d", FileName: "x.pdf"},
+		}
+		text, atts := mapAttachments("", m)
+		if text != "[Image]" || len(atts) != 1 || atts[0].URL != "p" {
+			t.Fatalf("expected photo to win, got text=%q atts=%+v", text, atts)
+		}
+	})
+
 	t.Run("caption is preserved as text alongside media", func(t *testing.T) {
 		// The caller passes the caption in as text; mapAttachments appends media.
 		m := &tgbotapi.Message{Photo: []tgbotapi.PhotoSize{{FileID: "p"}}}
