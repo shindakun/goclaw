@@ -250,18 +250,22 @@ differ.
 
 ### Hot add and hot reload
 
-An `fsnotify` watch on `plugins/`. On a change the Manager reconciles
-desired-vs-running:
+The IN-CONTAINER runner `fsnotify`-watches `/plugins` (the mounted plugins dir) and
+reconciles desired-vs-running on a change (debounced, since an install writes
+several files):
 
-- a new plugin dir appears (added by `/plugin add` or dropped in) and is enabled ->
-  launch + register its command/tools (HOT ADD, no host restart),
-- a plugin disabled via `/plugin disable` (sidecar flips) -> graceful `shutdown`
-  control frame, then deregister,
-- a plugin's binary or `plugin.yml` changes -> kill and relaunch (a subprocess
-  model "reloads code" by replacing the process).
+- a new plugin dir appears (staged by `/plugin add`, or dropped in) -> launch it +
+  register its tools and slash command (HOT ADD), no container restart,
+- a plugin dir is removed (`/plugin remove`) -> stop the plugin process and drop its
+  command (HOT REMOVE),
+- the runner skips hidden `.build-*` dirs (an in-progress install) until the
+  finished dir is renamed into place.
 
-In-flight invokes finish against the process they started on. This needs no host
-rebuild (plugins are independent binaries) and no host restart.
+The watch lives in the RUNNER, not the host: the host only stages binaries into the
+mounted dir, and the change propagates inward. This needs no host rebuild (plugins
+are independent binaries) and no container restart. The host-side `/commands`
+listing is refreshed in step by `/plugin add`/`remove` so the command is
+discoverable immediately.
 
 ## Distribution
 
@@ -449,23 +453,30 @@ wire-format change.
 goclawkit (the SDK + the `roll` demo) is DONE: `pkg/ipc` (frames/Session),
 `pkg/plugin` (Tool/Serve/ServeTool, channel stub), and `cmd/roll`.
 
-1. DONE. Host `Client` (`internal/plugin`): launch, handshake, invoke with ID
-   correlation. Verified live against the real `roll` binary over OS pipes.
-2. DONE. Slash-command path: `internal/command` registry + `/commands` listing;
-   the manager discovers `plugins/<name>/`, reads each `plugin.yml`, launches the
-   enabled plugins, and registers declared commands; `/roll 2d6` routes from the
-   message router to `Client.Invoke`. Discord @mention stripping so commands work
-   in channels.
-3. The `/plugin` command set + host-owned enable/disable sidecar + `fsnotify`
-   reconciliation (hot add/enable/disable/reload), and build-on-install
-   (`/plugin add <git-url>`). See "Distribution".
-4. Agent tool bridge: expose plugin tools to the in-container agent (resolved by
-   the spike, see open questions), so the LLM can call `roll` too.
+1. DONE. The `Client` (`internal/plugin`): launch, handshake, invoke with ID
+   correlation. The shared frame protocol the runner and host both use.
+2. DONE. Slash-command path + `/commands`: `internal/command` registry; `/roll 2d6`
+   dispatches to the plugin; Discord @mention stripping so commands work in
+   channels.
+3. DONE. Plugins run IN the agent container (security): the host mounts
+   `<data>/plugins` read-only at `/plugins`; the in-container runner discovers,
+   launches, and exposes them to the agent as local MCP tools (this dissolved the
+   "agent tool bridge", the plugin is already on the agent's side). The runner
+   `fsnotify`-watches `/plugins` and reconciles live, so an install/remove takes
+   effect with no restart.
+4. DONE. The `/plugin` command set (owner-only): `add <git-url>` / `list` /
+   `remove <name>`. `add` clones + scans + builds entirely inside a throwaway
+   sandbox container (untrusted code never builds on the host), pinning the source
+   commit; only the verified Linux binary + `plugin.yml` are staged into
+   `<data>/plugins/<name>/`, where the runner's watch loads it. See "Distribution"
+   and `docs/security.md`.
 5. The `channel` kind: the SDK `ServeChannel` runtime, the `channel.*` topics, the
    host-side `ChannelAdapter` shim, and a reference channel plugin.
 6. Optional: a marketplace lookup table (name -> git URL) so `/plugin add <name>`
    need not paste a URL. Data, not an engine; defer until a second plugin exists.
-7. Layer 2 (only when a plugin needs cross-plugin or plugin-to-host coordination):
+7. Optional: enable/disable without removing (a host-owned sidecar flag), and
+   private-repo installs (inject a stored token into the in-container clone).
+8. Layer 2 (only when a plugin needs cross-plugin or plugin-to-host coordination):
    a socket-backed `Transport` plus a host-side hub/registry routing
    topic-addressed frames between plugins, reusing the existing frame format. No
    change to Layer 1 or the wire format.

@@ -78,6 +78,39 @@ themselves, and it is the main security advantage of goclaw's plugin model:
   the host. Untrusted code stays code-you-run-in-a-box, not code-you-compile-into-
   yourself.
 
+### Installing a plugin: untrusted code never builds on the host either
+
+`/plugin add <git-url>` (owner-only) installs a plugin, and the install itself is
+sandboxed, not just the runtime. The host does NOT clone, scan, or `go build` the
+untrusted source. Instead the whole pipeline runs inside a throwaway, rootless,
+non-root container (the runner image, which carries git and the Go toolchain):
+
+1. **Bare public clone.** A shallow `git clone` of a PUBLIC repo, with
+   `GIT_TERMINAL_PROMPT=0` so a private URL fails fast rather than prompting. No
+   credentials are involved and the credential proxy is deliberately NOT in this
+   path: plugin installation and the agent's runtime API auth are separate concerns,
+   and a public clone needs no secret. Private-repo support is intentionally out of
+   scope for now (a documented follow-up would inject a stored token into the
+   in-container clone).
+2. **Red-flag scan, before building.** The source is rejected if it uses cgo
+   (`import "C"`, which compiles/links arbitrary C), `//go:generate` (runs arbitrary
+   commands at build time), or a `go.mod` `replace` directive (pulls code from
+   anywhere); and it must import `goclawkit` (a real goclaw plugin does). These are
+   the build-time code-execution vectors, refused before `go build` runs.
+3. **Pure-Go, pinned build.** `CGO_ENABLED=0 GOOS=linux go build` produces a static
+   Linux binary; CGO-off both enforces purity and matches how the plugin must run.
+   The exact source commit is recorded so an install is reproducible and an update
+   is an explicit re-fetch.
+4. **Only the artifact leaves the sandbox.** Just the built binary, its `plugin.yml`,
+   and the pinned commit are copied out (via the single mounted `/out` dir) into
+   `data/plugins/<name>/`. None of the untrusted source ever reaches the host
+   filesystem. The host then stages the dir atomically; the runner's filesystem
+   watch loads the new plugin live (no host or container restart).
+
+So untrusted plugin code is isolated at BOTH points it could run: at build (in the
+sandbox container) and at runtime (in the agent's sandbox). The host orchestrator,
+which the threat model trusts, never executes plugin author code at any stage.
+
 (Note: this is "rootless container with explicit mounts", a strong, real boundary,
 not a microVM. A container escape is out of scope here, as is host compromise.)
 

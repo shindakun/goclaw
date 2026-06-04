@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -67,6 +68,12 @@ func (m Manifest) validate() error {
 	}
 	if m.Exec == "" {
 		return fmt.Errorf("missing exec")
+	}
+	// exec is a bare binary filename relative to the plugin dir. Reject a path,
+	// whitespace, or anything that could escape the dir or make the host's Go
+	// parser and the build script's shell parser disagree on the name.
+	if m.Exec != filepath.Base(m.Exec) || strings.ContainsAny(m.Exec, " \t/\\") {
+		return fmt.Errorf("exec %q must be a bare filename (no path or spaces)", m.Exec)
 	}
 	switch m.Kind {
 	case "tool":
