@@ -353,17 +353,22 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID>   # real Claude
 
 The full message loop works end to end through a real per-agent-group container.
 Done: the real Go runner on [`shindakun/agent-sdk-go`](https://github.com/shindakun/agent-sdk-go)
-(multi-turn, `/reset`, `/compact`, auto-compact); the knowledge vault mount with
-scheduled maintenance; the GitHub dev environment (clone + open PRs); container
-teardown / idle-runner GC (`internal/sweep`); and the
+(multi-turn, `/reset`, `/compact`, auto-compact); **Telegram and Discord** channels
+on the same `ChannelAdapter` interface; the knowledge vault mount with scheduled
+maintenance; the GitHub dev environment (clone + open PRs); container teardown /
+idle-runner GC (`internal/sweep`); the
 [Credential proxy](#credential-proxy) that keeps the raw Anthropic and GitHub
-tokens out of the agent container (verified live).
+tokens out of the agent container (verified live); a central slash-command registry
+with `/commands`; and [Plugins](#plugins-run-sandboxed-in-the-agent-container) (tool
+plugins, run sandboxed in the agent container, with the `roll` reference plugin).
 
 Next:
 
-1. More channels (Discord, then Slack) on the same `ChannelAdapter` interface
-   (brief §7).
-2. Validated extra mounts on the runner via the allowlist (brief §8).
-3. More credential-proxy hosts as needed (the store and per-host injection are
+1. More channels (e.g. Slack) on the same `ChannelAdapter` interface (brief §7).
+2. The `/plugin` command set (add/enable/disable/list) + build-on-install and
+   fsnotify hot-reload; then channel plugins (see
+   [`docs/plugins-design.md`](docs/plugins-design.md)).
+3. Validated extra mounts on the runner via the allowlist (brief §8).
+4. More credential-proxy hosts as needed (the store and per-host injection are
    generic; add a host's auth scheme to `injectAuth` if it is neither x-api-key
    nor Bearer nor git-Basic).
