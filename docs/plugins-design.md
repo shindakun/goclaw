@@ -202,11 +202,19 @@ author's self-description):
 name: roll
 kind: tool
 version: "1.0.0"
+author: shindakun
+git: https://github.com/shindakun/roll   # source/home; `/plugin add` builds from here
 exec: roll                 # binary, relative to this plugin dir
 description: Roll dice in NdM notation.
 command: roll              # registers the /roll slash command (omit for none)
 env: [ ]                   # env var names the plugin needs (host supplies values)
 ```
+
+`author` and `git` are provenance: `author` shows in `/plugin list`, and `git` is
+the source URL `/plugin add <url>` builds or pulls from (and what `/plugin update`
+would re-fetch). Both are informational to the host launch path; only `git` is
+load-bearing, and only for the add/update front-ends, not for launching an
+already-present plugin.
 
 Enable/disable is HOST-owned state, kept OUT of the author's `plugin.yml` so the
 host never mutates a shipped artifact: a small host-owned sidecar (e.g.
