@@ -35,6 +35,11 @@ const (
 	baseClaudeMdContainerPath = "/app/CLAUDE.md"
 	skillsContainerBase       = "/app/skills"
 	vaultLibrarianSkillPath   = vaultMountPath + "/.claude/skills/librarian"
+	// vaultCriticalFactsPath is the always-load L0 facts file (brief §11). When a
+	// vault is mounted we import it directly into the entry-point CLAUDE.md so the
+	// owner/timezone/purpose facts are present on EVERY turn, not only when the
+	// agent decides to open the librarian skill.
+	vaultCriticalFactsPath = vaultMountPath + "/CRITICAL_FACTS.md"
 )
 
 // composedClaudeMdName is the entry-point prompt file written into claude-home;
@@ -70,8 +75,15 @@ func composeGroupPrompt(claudeHome string, vaultMounted bool) error {
 	}
 
 	// The entry point imports only: the base, then (implicitly) the skills the
-	// CLI discovers from skills/. Mirrors NanoClaw's imports-only CLAUDE.md.
+	// CLI discovers from skills/. Mirrors NanoClaw's imports-only CLAUDE.md. When
+	// a vault is mounted we also import its CRITICAL_FACTS.md so the L0 facts load
+	// on every turn regardless of whether the librarian skill is invoked. The
+	// import target is a container path (/vault/...), dangling on the host but
+	// resolved inside the container, like the skill symlinks above.
 	body := "<!-- Composed at launch by goclaw - do not edit. -->\n@./.claude-shared.md\n"
+	if vaultMounted {
+		body += "@" + vaultCriticalFactsPath + "\n"
+	}
 	if err := writeAtomic(filepath.Join(claudeHome, composedClaudeMdName), body); err != nil {
 		return err
 	}

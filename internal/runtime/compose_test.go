@@ -21,6 +21,11 @@ func TestComposeGroupPrompt_NoVault(t *testing.T) {
 		t.Fatalf("composed CLAUDE.md missing %q; got:\n%s", want, body)
 	}
 
+	// Without a vault there is no CRITICAL_FACTS import to resolve.
+	if bad := "@" + vaultCriticalFactsPath; contains(string(body), bad) {
+		t.Fatalf("composed CLAUDE.md should not import %q without a vault; got:\n%s", bad, body)
+	}
+
 	// .claude-shared.md -> /app/CLAUDE.md (container path, dangles on host).
 	if tgt, err := os.Readlink(filepath.Join(home, ".claude-shared.md")); err != nil || tgt != baseClaudeMdContainerPath {
 		t.Fatalf("shared link target = %q, err %v; want %q", tgt, err, baseClaudeMdContainerPath)
@@ -40,6 +45,17 @@ func TestComposeGroupPrompt_WithVault(t *testing.T) {
 	if err := composeGroupPrompt(home, true); err != nil {
 		t.Fatalf("compose: %v", err)
 	}
+
+	// With a vault, the entry point imports the always-load L0 facts file so it
+	// is present on every turn regardless of the librarian skill.
+	body, err := os.ReadFile(filepath.Join(home, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read composed CLAUDE.md: %v", err)
+	}
+	if want := "@" + vaultCriticalFactsPath; !contains(string(body), want) {
+		t.Fatalf("composed CLAUDE.md missing %q with a vault; got:\n%s", want, body)
+	}
+
 	if tgt, err := os.Readlink(filepath.Join(home, "skills", "librarian")); err != nil || tgt != vaultLibrarianSkillPath {
 		t.Fatalf("librarian link = %q, err %v; want %q", tgt, err, vaultLibrarianSkillPath)
 	}

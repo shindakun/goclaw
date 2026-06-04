@@ -410,7 +410,7 @@ A few small **always-loaded context files** at the vault root make the agent che
 
 - `index.md` - the page catalog (read first; see §11.4).
 - `log.md` - append-only activity log (see §11.4).
-- `CRITICAL_FACTS.md` - a tiny (~100–150 token) file of facts that must never be wrong or forgotten, loaded on every run regardless of budget.
+- `CRITICAL_FACTS.md` - a tiny (~100-150 token) file of facts that must never be wrong or forgotten, loaded on every run regardless of budget. The host enforces this: when a vault is mounted, the composed entry-point `CLAUDE.md` imports `/vault/CRITICAL_FACTS.md` directly (see §8 prompt composition), so the L0 facts are present every turn rather than depending on the agent choosing to open the librarian skill.
 - optionally an identity/`SOUL.md`-style file describing the owner and the vault's purpose, so synthesis stays grounded in who it's for.
 
 ### 11.3 Notes written for the agent, not for reading
