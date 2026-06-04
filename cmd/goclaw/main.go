@@ -182,10 +182,17 @@ func run(log *slog.Logger) error {
 			caCont := runtime.CACertContainerPath()
 			// Route HTTPS through the proxy; Node needs NODE_USE_ENV_PROXY. Reach
 			// the proxy itself directly (NO_PROXY) so the CONNECT is not proxied.
+			// Set BOTH cases: curl/Node honor the uppercase form, but git (libcurl)
+			// only reads the lowercase https_proxy/http_proxy - without these git
+			// connects directly and never gets the injected credential.
+			noProxy := "host.docker.internal,localhost,127.0.0.1"
 			claudeEnv["HTTPS_PROXY"] = proxyURL
 			claudeEnv["HTTP_PROXY"] = proxyURL
+			claudeEnv["https_proxy"] = proxyURL
+			claudeEnv["http_proxy"] = proxyURL
 			claudeEnv["NODE_USE_ENV_PROXY"] = "1"
-			claudeEnv["NO_PROXY"] = "host.docker.internal,localhost,127.0.0.1"
+			claudeEnv["NO_PROXY"] = noProxy
+			claudeEnv["no_proxy"] = noProxy
 			// Trust the proxy CA across the agent's tools.
 			claudeEnv["NODE_EXTRA_CA_CERTS"] = caCont // claude CLI (Node)
 			claudeEnv["SSL_CERT_FILE"] = caCont       // curl, python, Go
