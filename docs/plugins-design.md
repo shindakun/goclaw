@@ -118,10 +118,15 @@ Both shapes require a protocol that is:
 
 A new module `github.com/shindakun/goclawkit` holds the plugin-author SDK: the
 types, the framed protocol, and a `Serve` helper so a plugin author writes only the
-interesting part. goclaw imports the same module host-side for the types. This
-mirrors how godoorkit is the kit and gobbsgo is the host. The full SDK spec lives
-in `goclawkit/IMPLEMENTATION.md`; that file is the source of truth for the wire
-format. This section summarizes only what the host side needs.
+interesting part. This mirrors how godoorkit is the kit and gobbsgo is the host.
+
+The goclaw host does NOT import goclawkit. A plugin is a black-box compiled binary;
+the host speaks the wire protocol TO it, so the host carries its own small copy of
+the protocol constants and payload structs (a frozen wire contract, not shared Go
+code). Coupling the host to the SDK module would mean the host rebuilds when the
+SDK changes, which defeats the no-rebuild goal. The full SDK spec lives in
+`goclawkit/IMPLEMENTATION.md` and is the source of truth for the wire format both
+sides implement; this section summarizes only what the host side needs.
 
 ### Plugin-author surface (tools first)
 
