@@ -1,7 +1,6 @@
 # Build output. A bare `go build ./cmd/<name>` (no -o) drops the binary in the repo
-# root; ignore those names so a stray never gets committed. (Prefer `go build ./...`
-# which discards, or `go build -o /tmp/<name> ./cmd/<name>`.)
-/nanoclaw
+# root; ignore the cmd binary names so a stray never gets committed. (Prefer
+# `go build ./...` which discards, or `go build -o /tmp/<name> ./cmd/<name>`.)
 /goclaw
 /claude-runner
 /stub-runner
