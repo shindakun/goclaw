@@ -63,6 +63,7 @@ Config via environment:
 | `GOCLAW_PODMAN_BIN` | `podman` | podman binary |
 | `GOCLAW_SECRET_ENCRYPTION_KEY` | _(unset)_ | base64 32-byte key encrypting the credential store (see [Credential proxy](#credential-proxy)) |
 | `GOCLAW_CREDPROXY_PORT` | `18080` | host port the credential proxy listens on |
+| `GOCLAW_PROXY_CA_KEY` / `GOCLAW_PROXY_CA_CERT` | _(unset)_ | optional PEM override for the proxy CA; auto-generated under `{data_dir}/proxy/` if unset |
 
 ## Running the loop end to end
 
@@ -150,11 +151,12 @@ auto-compacts when the context window fills:
 
 ### Credential proxy
 
-A built-in credential proxy keeps the raw Anthropic key out of the agent
-container (brief §8). The host holds the key encrypted; the runner is pointed at
-the proxy via `ANTHROPIC_BASE_URL` and only ever sees a placeholder. The proxy
-injects the real key at the host boundary, so a prompt-injected agent that runs
-`echo $ANTHROPIC_API_KEY` gets nothing useful.
+A built-in TLS-intercepting proxy keeps raw API tokens out of the agent container
+(brief §8). The host holds the tokens encrypted; the runner routes its HTTPS
+through the proxy (`HTTPS_PROXY`) and trusts the proxy's CA. The proxy injects
+the real token per request at the host boundary, so a prompt-injected agent that
+runs `echo $ANTHROPIC_API_KEY` or `echo $GH_TOKEN` gets only the literal string
+`placeholder`. It covers Anthropic and GitHub today.
 
 Set up:
 
@@ -163,31 +165,48 @@ Set up:
 #    data dir; .env is fine, or source it from elsewhere).
 export GOCLAW_SECRET_ENCRYPTION_KEY="$(head -c 32 /dev/urandom | base64)"
 
-# 2. Store the real Anthropic key. It is encrypted at rest (AES-256-GCM) in
-#    goclaw.db and never written in plaintext.
+# 2. Store the real tokens. Each is encrypted at rest (AES-256-GCM) in goclaw.db,
+#    never written in plaintext. The proxy matches an outbound request by target
+#    host and injects the matching token.
 goclaw auth add anthropic https://api.anthropic.com sk-ant-api03-...
+# GitHub needs two hosts: github.com for `git clone`, api.github.com for `gh`.
+goclaw auth add github https://github.com      github_pat_...
+goclaw auth add github https://api.github.com  github_pat_...
 
 goclaw auth list                 # id, name, target, masked token
 goclaw auth delete <id>          # remove by the id from `list`
 ```
 
-When an `api.anthropic.com` credential is stored (and the encryption key is set),
-the host starts the proxy and launches runners with `ANTHROPIC_BASE_URL`
-pointing at it plus a placeholder `ANTHROPIC_API_KEY` - so you do **not** set
-`GOCLAW_ANTHROPIC_API_KEY`. With no stored credential, goclaw falls back to
-passing the raw key as before.
+When a credential is stored (and the encryption key is set), the host starts the
+proxy and launches runners with `HTTPS_PROXY` pointing at it, the CA mounted, and
+**placeholder** values for `ANTHROPIC_API_KEY` / `GH_TOKEN` - so you do **not**
+set `GOCLAW_ANTHROPIC_API_KEY` or `GOCLAW_GITHUB_TOKEN`. With no stored
+credential, goclaw falls back to passing the raw tokens as before.
 
-What it covers and does not:
+How it injects, per host:
 
-- Covers services reachable by a base-URL override (the `claude` CLI honors
-  `ANTHROPIC_BASE_URL`); the store can hold multiple, matched by target host and
-  injected (`api.anthropic.com` -> `x-api-key`, otherwise `Authorization: Bearer`).
-- Does **not** cover `git`/`gh` (they hit `github.com` over TLS with no redirect);
-  scope a fine-grained GitHub token instead.
+- `api.anthropic.com` -> `x-api-key: <token>`
+- `github.com` / `codeload.github.com` (git smart-HTTP) -> HTTP Basic
+  `x-access-token:<token>` (the git endpoints reject Bearer)
+- everything else, including `api.github.com` (the `gh`/API host) ->
+  `Authorization: Bearer <token>`
+
+Hosts with no stored credential are blind-tunneled: the proxy pipes the bytes
+without decrypting, so that traffic stays end-to-end encrypted to its real
+destination.
+
+Notes and caveats:
+
+- The agent's tools trust the proxy CA via `NODE_EXTRA_CA_CERTS` (the `claude`
+  CLI), `GIT_SSL_CAINFO` (git/gh), and `SSL_CERT_FILE` (curl, Go, python). The CA
+  is auto-generated under `{data_dir}/proxy/` (or supplied via
+  `GOCLAW_PROXY_CA_KEY` / `GOCLAW_PROXY_CA_CERT`).
+- `gh` is given a placeholder `GH_TOKEN` so it considers itself logged in (it
+  checks locally before any request); the real token is injected on the wire.
 - At-rest caveat: the encryption key lives in the environment, not the data dir,
   so a stolen data dir or DB dump does not include it - but a full host compromise
   still exposes both. This matches the standard "encrypt at rest with a local key"
-  model.
+  model. The proxy CA private key is similarly host-local.
 
 You can also run the Claude runner directly (uses your host's logged-in Claude
 session or `ANTHROPIC_API_KEY`):
@@ -271,13 +290,9 @@ agent container (verified live).
 
 Next:
 
-1. Extend the credential proxy to other tokens, at least `GH_TOKEN` for
-   GitHub. The proxy today only handles base-URL-redirectable APIs (Anthropic),
-   so `git`/`gh` still get the raw `GOCLAW_GITHUB_TOKEN` passed into the
-   container. Options: scope a fine-grained GitHub PAT to shrink the blast
-   radius, or add TLS interception so `github.com`/`api.github.com` can be
-   proxied like Anthropic. Until then the GitHub token is the remaining raw
-   secret in the container.
-2. More channels (Discord, then Slack) on the same `ChannelAdapter` interface
+1. More channels (Discord, then Slack) on the same `ChannelAdapter` interface
    (brief §7).
-3. Validated extra mounts on the runner via the allowlist (brief §8).
+2. Validated extra mounts on the runner via the allowlist (brief §8).
+3. More credential-proxy hosts as needed (the store and per-host injection are
+   generic; add a host's auth scheme to `injectAuth` if it is neither x-api-key
+   nor Bearer nor git-Basic).

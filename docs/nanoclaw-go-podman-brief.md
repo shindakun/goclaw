@@ -287,15 +287,17 @@ In the Go host you replicate this at container-spawn time - it's all env + mount
 
 You can keep running OneCLI itself unchanged - it's an external process, not part of the host you're rewriting.
 
-### 8.1 What goclaw actually shipped: a built-in proxy (not OneCLI)
+### 8.1 What goclaw actually shipped: a built-in TLS-intercepting proxy
 
-OneCLI's self-hosted gateway turned out to be the right idea but a heavy dependency (a separate Postgres + Next.js + Rust stack, and at the time a self-hosted-auth bug that blocked the dashboard). So goclaw ships its **own small credential proxy** instead, covering the high-value case without an external service:
+goclaw ships its **own credential proxy** in the host process, no external service:
 
-- **Encrypted store** (`internal/credstore`): credentials live in the central `goclaw.db`, encrypted at rest with AES-256-GCM. The key comes from `GOCLAW_SECRET_ENCRYPTION_KEY` (env only, never the data dir), so a stolen data dir / DB dump doesn't include it. Managed by `goclaw auth add|list|delete` (UUID-keyed).
-- **Host proxy** (`internal/credproxy`): a goroutine in the host that injects the real token per request (`api.anthropic.com` -> `x-api-key`, else `Authorization: Bearer`) and forwards to the real API, streaming SSE through.
-- **Wiring**: when an `api.anthropic.com` credential is stored, the runner is launched with `ANTHROPIC_BASE_URL=http://host.docker.internal:<port>` and a **placeholder** `ANTHROPIC_API_KEY`; the real key never enters the container. Verified: the `claude` CLI honors `ANTHROPIC_BASE_URL` and sends `x-api-key`; a runner container reaches `host.docker.internal` with no extra flags.
+- **Encrypted store** (`internal/credstore`): credentials live in the central `goclaw.db`, encrypted at rest with AES-256-GCM. The key comes from `GOCLAW_SECRET_ENCRYPTION_KEY` (env only, never the data dir), so a stolen data dir / DB dump doesn't include it. Managed by `goclaw auth add|list|delete` (UUID-keyed, matched by target host).
+- **CA + leaf machinery** (`internal/credproxy/ca.go`): a CA (auto-generated under `{data_dir}/proxy/`, or supplied via `GOCLAW_PROXY_CA_KEY`/`_CERT`) that mints short-lived per-host leaf certs on demand, cached and refreshed before expiry. The leaf advertises only `http/1.1` (the intercept loop is HTTP/1.1).
+- **TLS-intercepting proxy** (`internal/credproxy/mitmproxy.go`): a host goroutine. For each `CONNECT`, if a credential is stored for the host it terminates the client TLS with a leaf the container trusts, injects the real token per request, and forwards to the real upstream over fresh TLS (SSE-safe). Hosts with no credential are **blind-tunneled** (piped opaquely, never decrypted).
+- **Per-host injection scheme**: `api.anthropic.com` -> `x-api-key`; `github.com`/`codeload.github.com` (git smart-HTTP) -> HTTP Basic `x-access-token:<token>` (these reject Bearer); everything else, incl. `api.github.com` -> `Authorization: Bearer`.
+- **Wiring**: when any credential is stored, the runner gets `HTTPS_PROXY`/`HTTP_PROXY` (both cases, because git/libcurl read the lowercase form), `NODE_USE_ENV_PROXY=1`, `NO_PROXY` for the proxy host, the CA mounted RO with `NODE_EXTRA_CA_CERTS`/`GIT_SSL_CAINFO`/`SSL_CERT_FILE` pointing at it, and **placeholder** `ANTHROPIC_API_KEY` / `GH_TOKEN` (the latter so `gh` considers itself logged in). No raw token enters the container.
 
-This is **base-URL-redirect**, not TLS interception, so it deliberately does NOT cover `git`/`gh` (fixed HTTPS host, no redirect) - scope a fine-grained GitHub token for those. The `internal/vault` stub remains as the alternative path for wiring an external OneCLI-style gateway if that's ever preferred (TLS MITM, covers everything over HTTPS). Fail-open behavior is preserved: no stored credential -> fall back to passing the raw key.
+Covers Anthropic + GitHub (`claude`, `git`, `gh`, `curl`), verified live: private clones via both git and gh, chats answer, and the container env holds only placeholders. Fail-open: no stored credential -> fall back to passing the raw tokens. The `internal/vault` stub remains as the alternative path for wiring an external HTTPS-proxy gateway if ever preferred.
 
 ---
 

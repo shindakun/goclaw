@@ -166,8 +166,9 @@ func (s *Store) ResolveByHost(host string) (token, targetURL string, ok bool, er
 }
 
 // Hosts returns the set of target hosts that have a stored credential, so the
-// host can decide which base-URL overrides to set on a runner (e.g. only set
-// ANTHROPIC_BASE_URL when an api.anthropic.com credential exists).
+// host can decide whether to run the credential proxy and which placeholders to
+// set on a runner (e.g. a GH_TOKEN placeholder when a github.com credential
+// exists).
 func (s *Store) Hosts() (map[string]bool, error) {
 	rows, err := s.db.Query(`SELECT target_host FROM credentials`)
 	if err != nil {
