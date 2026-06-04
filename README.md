@@ -115,22 +115,32 @@ image bundles Node + the CLI.
 # 1. Build the Claude runner image:
 podman build -f container/claude.Containerfile -t goclaw-claude:latest .
 
-# 2. .env - point at the Claude image and provide auth:
+# 2. .env - point at the Claude image and provide auth. RECOMMENDED: store the
+#    key in the credential proxy instead (see below) so it never enters the
+#    container. The direct-env key shown here is the simpler fallback.
 GOCLAW_LAUNCH_RUNNER=1
 GOCLAW_RUNNER_IMAGE=goclaw-claude:latest
-GOCLAW_ANTHROPIC_API_KEY=sk-ant-api03-...   # recommended: long-lived
+GOCLAW_ANTHROPIC_API_KEY=sk-ant-api03-...   # fallback; prefer the credential proxy
 
 go run ./cmd/goclaw
 ```
 
+> **Recommended: use the [Credential proxy](#credential-proxy).** It keeps the
+> raw Anthropic key (and your GitHub token) out of the agent container entirely.
+> The direct `GOCLAW_ANTHROPIC_API_KEY` / `GOCLAW_GITHUB_TOKEN` shown here and
+> below are the simpler path, but they put the real tokens inside the container
+> where a prompt-injected agent could read them. With the proxy, the container
+> only ever holds the literal string `placeholder`.
+
 **Auth: use an API key.** A standard Anthropic API key
 (`GOCLAW_ANTHROPIC_API_KEY`, from console.anthropic.com) is long-lived and the
-runner keeps working indefinitely - this is what NanoClaw uses too. A Claude Code
-subscription token (`GOCLAW_CLAUDE_CODE_OAUTH_TOKEN`) is also supported and bills
-against your Claude plan, **but it expires in ~12h and the container cannot
-refresh it** (on macOS the live token is in the Keychain, unreachable from the
-container) - so it will eventually 401 and you'll have to re-extract it. Prefer
-the API key for anything left running. If both are set, the API key wins.
+runner keeps working indefinitely. A Claude Code subscription token
+(`GOCLAW_CLAUDE_CODE_OAUTH_TOKEN`) is also supported and bills against your
+Claude plan, **but it expires in ~12h and the container cannot refresh it** (on
+macOS the live token is in the Keychain, unreachable from the container) - so it
+will eventually 401 and you'll have to re-extract it. Prefer the API key for
+anything left running. If both are set, the API key wins. Either way, the
+[Credential proxy](#credential-proxy) is the more secure way to provide it.
 
 Now messaging the bot gets a real Claude answer. The host passes the credential
 into the container (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`); the runner
@@ -221,21 +231,30 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID> -once
 
 The Claude runner image is a real dev environment: git, the GitHub CLI (`gh`),
 build-essential, Python 3, Go, ripgrep, jq, and more, so the agent can clone,
-build, script, and open pull requests. Set a GitHub token to enable private
-clones and PRs:
+build, script, and open pull requests. To enable private clones and PRs, provide
+a GitHub token.
+
+> **Recommended: put the GitHub token in the [Credential proxy](#credential-proxy),
+> not `GOCLAW_GITHUB_TOKEN`.** The proxy injects it on the wire so the container
+> only sees a placeholder, whereas `GOCLAW_GITHUB_TOKEN` passes the raw token into
+> the container as `GH_TOKEN` where the agent can read it. `git` and `gh` both work
+> through the proxy (verified). Use a fine-grained PAT scoped to the repos you want
+> the agent to reach.
+
+The direct-env fallback:
 
 ```sh
-# .env
+# .env (simpler, but the raw token enters the container - prefer the proxy above)
 GOCLAW_GITHUB_TOKEN=github_pat_...   # passed in as GH_TOKEN
 GOCLAW_GIT_USER_NAME=Your Name       # commit author (defaults work)
 GOCLAW_GIT_USER_EMAIL=you@example.com
 ```
 
-Then "clone X, make this change, open a PR" works end to end: the agent clones in
-`/work`, branches, commits (using your git identity), and runs `gh pr create`.
-For a repo you don't own, `gh repo fork` pushes the branch to your fork and opens
-the PR against upstream. Without a token, the agent can still clone public repos
-but cannot push or open PRs.
+Either way, "clone X, make this change, open a PR" works end to end: the agent
+clones in `/work`, branches, commits (using your git identity), and runs
+`gh pr create`. For a repo you don't own, `gh repo fork` pushes the branch to
+your fork and opens the PR against upstream. Without any token, the agent can
+still clone public repos but cannot push or open PRs.
 
 ### Knowledge vault
 
