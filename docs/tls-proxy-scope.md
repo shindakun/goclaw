@@ -95,21 +95,25 @@ is plain-HTTP-local carrying only a placeholder).
    "replace" is viable: Anthropic can move onto the MITM path. Note: the CLI also
    CONNECTs to `http-intake.logs.us5.datadoghq.com:443` (Anthropic telemetry);
    we have no credential for it, so it gets blind-tunneled (correct).
-2. **RESOLVED (2026-06-03): Bearer works for both git and gh.** Verified against
-   real GitHub through the MITM proxy: `git ls-remote` of a PRIVATE repo and
-   `curl api.github.com/user` both authenticated with `Authorization: Bearer
-   <token>` (the token resolved to the right account). Modern GitHub accepts
-   Bearer on the git smart-HTTP endpoints, so the existing host-based injection
-   (`api.anthropic.com` -> x-api-key, else Bearer) is correct as-is; no Basic-auth
-   special case needed. Still true that the credential must be stored for each
-   host the agent hits: `github.com` (git), `api.github.com` (gh), and
-   `codeload.github.com` (some clones/LFS). Store under each, or the spawn wiring
-   can add all three from one GitHub token.
+2. **RESOLVED (2026-06-03), but the scheme is host-specific.** An early probe
+   wrongly concluded "Bearer works for git" (it tested a path that slipped
+   through). The live private-clone test with a VALID token corrected this:
+   - `api.github.com` (the gh/API host): `Authorization: Bearer <token>` -> works.
+   - `github.com` (git smart-HTTP, `.../info/refs`): Bearer -> **401** with
+     `WWW-Authenticate: Basic`; the same token as HTTP Basic
+     (`x-access-token:<token>`) -> **200**.
+   So `injectAuth` is three-way by host: anthropic -> x-api-key; github.com /
+   codeload.github.com -> Basic(x-access-token); else (incl api.github.com) ->
+   Bearer. Store the credential under each host the agent hits: `github.com`
+   (git), `api.github.com` (gh), `codeload.github.com` (archives/LFS).
 
-   BUG found and fixed during this probe: the leaf cert advertised ALPN `h2`, but
-   the intercept loop only speaks HTTP/1.1, so h2-capable clients (curl) hung
-   (`HTTP 000`). The leaf now advertises only `http/1.1`; clients fall back
-   cleanly. This would have been a silent failure in production.
+   Two BUGS found and fixed during live testing (offline tests missed both
+   because Go's HTTP client is forgiving):
+   - Leaf advertised ALPN `h2` but the intercept loop only speaks HTTP/1.1, so
+     h2-capable clients (curl) hung (`HTTP 000`). Leaf now advertises only
+     `http/1.1`.
+   - Only the UPPERCASE `HTTPS_PROXY` was set; git (libcurl) reads the LOWERCASE
+     `https_proxy`, so git bypassed the proxy entirely. Both cases now set.
 3. **`http.Hijacker` + `http.Server` interplay.** Standard but must be done right:
    after hijack we own the conn; the `http.Server`'s read/write timeouts and
    graceful shutdown no longer apply to it. Need explicit conn deadlines and to
