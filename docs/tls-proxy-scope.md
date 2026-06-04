@@ -95,13 +95,21 @@ is plain-HTTP-local carrying only a placeholder).
    "replace" is viable: Anthropic can move onto the MITM path. Note: the CLI also
    CONNECTs to `http-intake.logs.us5.datadoghq.com:443` (Anthropic telemetry);
    we have no credential for it, so it gets blind-tunneled (correct).
-2. **GitHub uses two hosts.** `gh` API calls hit `api.github.com`; `git clone`
-   hits `github.com` (and Git LFS / `codeload.github.com`). A single credential
-   for one host will not cover both. Decide: store the token under multiple hosts,
-   or match by suffix (`*.github.com` + `github.com`). The injection header for
-   git's HTTPS is also not a simple `Authorization: Bearer` in all cases (git uses
-   Basic with the token as password for some flows). **Needs its own verification**
-   that an injected header actually authenticates a real `git clone` / `gh`.
+2. **RESOLVED (2026-06-03): Bearer works for both git and gh.** Verified against
+   real GitHub through the MITM proxy: `git ls-remote` of a PRIVATE repo and
+   `curl api.github.com/user` both authenticated with `Authorization: Bearer
+   <token>` (the token resolved to the right account). Modern GitHub accepts
+   Bearer on the git smart-HTTP endpoints, so the existing host-based injection
+   (`api.anthropic.com` -> x-api-key, else Bearer) is correct as-is; no Basic-auth
+   special case needed. Still true that the credential must be stored for each
+   host the agent hits: `github.com` (git), `api.github.com` (gh), and
+   `codeload.github.com` (some clones/LFS). Store under each, or the spawn wiring
+   can add all three from one GitHub token.
+
+   BUG found and fixed during this probe: the leaf cert advertised ALPN `h2`, but
+   the intercept loop only speaks HTTP/1.1, so h2-capable clients (curl) hung
+   (`HTTP 000`). The leaf now advertises only `http/1.1`; clients fall back
+   cleanly. This would have been a silent failure in production.
 3. **`http.Hijacker` + `http.Server` interplay.** Standard but must be done right:
    after hijack we own the conn; the `http.Server`'s read/write timeouts and
    graceful shutdown no longer apply to it. Need explicit conn deadlines and to

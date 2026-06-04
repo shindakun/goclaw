@@ -86,7 +86,11 @@ func (c *CA) LeafConfig(host string) (*tls.Config, error) {
 	return &tls.Config{
 		Certificates: []tls.Certificate{leaf},
 		MinVersion:   tls.VersionTLS12,
-		NextProtos:   []string{"h2", "http/1.1"}, // allow HTTP/2 over the intercepted conn
+		// Advertise ONLY http/1.1. The intercept loop speaks HTTP/1.1
+		// (http.ReadRequest + a 1.1 response); advertising h2 here would make
+		// clients negotiate HTTP/2 and then stall on the 1.1 response. Clients
+		// (curl, git, gh, node) fall back to 1.1 cleanly.
+		NextProtos: []string{"http/1.1"},
 	}, nil
 }
 
