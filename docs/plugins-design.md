@@ -338,6 +338,96 @@ binary, not a source change, and plugins run as crash-isolated subprocesses. Tha
 is the whole point of the subprocess model and the reason "add a plugin without
 rebuilding or restarting the host" holds.
 
+## Where plugins run: host now, container next (the security move)
+
+### The problem with host-side plugins
+
+A plugin is untrusted code: it is downloaded from a git URL, compiled, and run.
+Today the host launches it (`internal/plugin` does `exec.CommandContext` on the
+host), which means that untrusted code runs as the HOST USER, with the host's
+filesystem, the host's network, and the host's environment (which holds real
+credentials). For stranger-authored code that is the worst possible place to run
+it. The crash isolation a subprocess gives is real, but it is not a security
+boundary: a malicious plugin host-side can read your files and exfiltrate secrets.
+
+### The move: run plugins INSIDE the agent container
+
+goclaw already runs the agent in a Podman container that is rootless,
+`--user 1000:1000`, has no view of the host filesystem beyond explicit mounts, and
+dies cleanly. Running plugins there puts untrusted code inside that same sandbox
+instead of on the host. A malicious plugin can then touch only what the container
+can (its mounts: `/sessions`, `/vault`, a mounted `/plugins`), never the host.
+
+The architecture, mirroring the host-side model one level in:
+
+- The host stages plugin binaries into a directory it mounts into the container
+  read-only (e.g. host `plugins/` mounted at `/plugins`, alongside `/sessions` and
+  `/vault`). Installing a plugin (`/plugin add`, enable/disable) stays a HOST
+  operation: the host owns what lands in that dir and the enable sidecar. The host
+  never executes the plugin.
+- The RUNNER (`cmd/claude-runner`, already a long-running loop in the container)
+  becomes the in-container plugin manager. It does exactly what the host manager
+  does now, one level in: walk `/plugins`, read each `plugin.yml`, launch the
+  enabled plugin binaries as child processes, and speak the same frame protocol to
+  them. No new mechanism, the same walk-and-load.
+- HOT RELOAD does not require restarting the container. The runner runs its own
+  `fsnotify` watch on `/plugins`, just like the host does on its `plugins/` dir.
+  When the host drops in, removes, or toggles a plugin, the watcher in the runner
+  launches or stops that plugin subprocess. The container keeps running; only the
+  plugin processes inside it cycle. (This was the apparent objection to in-container
+  plugins, and it dissolves: the manager moves into the runner, the watcher moves
+  with it.)
+
+### The agent path gets SIMPLER, not harder
+
+The agent runs in the container; the plugins now run in the same container. So a
+plugin tool is exposed to the agent as a LOCAL tool (an MCP/stdio tool the runner
+registers with `claude.Query`, the SDK already supports MCP servers). The agent
+calls it in-process to the container, with NO host boundary crossing. This DISSOLVES
+the "agent tool bridge" open question: there is nothing to bridge, because the plugin
+is already on the agent's side. The runner translates an MCP tool call into the
+plugin's `tool.invoke` frame and returns the result.
+
+### The cost: the slash-command path crosses inward
+
+The one thing that gets harder is the user slash command. Today `/roll 2d6` is pure
+host-side: router -> host plugin -> reply, instant, no container needed. With the
+plugin in the container, `/roll` must reach inward to the plugin. Options, in order
+of preference:
+
+- Route the slash command through the SAME inbound path a normal message takes (the
+  host writes a `tool.invoke`-style request into the session, the runner dispatches
+  it to the plugin and writes the result to outbound). Reuses the existing
+  host<->container boundary (the two SQLite files); no new channel. Cost: a slash
+  command now waits on the container the way a normal message does (a warm container
+  is fast; the first one is the usual lazy-launch delay).
+- Or keep a small host-side fast path only for a vetted/built-in subset, and let
+  third-party plugin commands take the inward route. More moving parts; probably not
+  worth it.
+
+The trade is deliberate: a little slash-command latency in exchange for never
+running stranger code as the host user. For untrusted plugins that is the right
+call.
+
+### Threat-model delta (summary)
+
+| | host-side (today) | in-container (proposed) |
+|---|---|---|
+| Plugin runs as | the host user | rootless `1000:1000` in the sandbox |
+| Can read host filesystem | yes | no (only container mounts) |
+| Can reach host env/secrets | yes | no (only what the container is given) |
+| Blast radius of a malicious plugin | the whole host | the container's mounts (`/sessions`, `/vault`) |
+| Agent tool bridge | a boundary to cross | gone (plugin is local to the agent) |
+| Slash command | host-local, instant | crosses inward via the session DBs |
+| Hot reload | host watcher relaunches | runner watcher relaunches (container stays up) |
+
+This is a planned migration, not a rewrite: the wire protocol, `plugin.yml`,
+the manager logic, and the `/plugin` command set are unchanged; the manager simply
+moves from the host into the runner, and the host's job narrows to staging binaries
+into the mounted dir. The container is not a perfect sandbox (it is not a microVM),
+but "rootless container with explicit mounts" is a large, real improvement over
+"runs as you on the host" for code you downloaded and compiled.
+
 ## Extensibility: channels (and more) later
 
 `Info.Kind` plus the topic-namespaced protocol are the seam. Tools are
