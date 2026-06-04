@@ -260,13 +260,20 @@ go run ./cmd/claude-runner -dir data/sessions/<agentGroupID>   # real Claude
 The full message loop works end to end through a real per-agent-group container.
 Done: the real Go runner on [`shindakun/agent-sdk-go`](https://github.com/shindakun/agent-sdk-go)
 (multi-turn, `/reset`, `/compact`, auto-compact); the knowledge vault mount with
-scheduled maintenance; the GitHub dev environment (clone + open PRs); and
-container teardown / idle-runner GC (`internal/sweep`).
+scheduled maintenance; the GitHub dev environment (clone + open PRs); container
+teardown / idle-runner GC (`internal/sweep`); and the
+[Credential proxy](#credential-proxy) that keeps the raw Anthropic key out of the
+agent container (verified live).
 
 Next:
 
-1. Credential vault proxy so the raw API key never enters the container
-   (`internal/vault`, brief §8) - the last security shortcut.
+1. Extend the credential proxy to other tokens, at least `GH_TOKEN` for
+   GitHub. The proxy today only handles base-URL-redirectable APIs (Anthropic),
+   so `git`/`gh` still get the raw `GOCLAW_GITHUB_TOKEN` passed into the
+   container. Options: scope a fine-grained GitHub PAT to shrink the blast
+   radius, or add TLS interception so `github.com`/`api.github.com` can be
+   proxied like Anthropic. Until then the GitHub token is the remaining raw
+   secret in the container.
 2. More channels (Discord, then Slack) on the same `ChannelAdapter` interface
    (brief §7).
 3. Validated extra mounts on the runner via the allowlist (brief §8).
