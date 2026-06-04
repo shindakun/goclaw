@@ -213,6 +213,35 @@ For this shape the question is WHERE the outbound dial happens:
   third-party protocol parsing back onto the host, which is most of what we were
   trying to avoid. Reject unless egress policy forbids A.
 
+WORKED EXAMPLE: an IRC gateway. IRC is the cleanest 4b case (cleaner than webhook ever
+was) and worth walking because it exercises what webhook's stateless POSTs never did.
+
+- ONE dial-out, no listener. The plugin opens a single long-lived TCP connection to
+  `irc.example.net:6697` and never binds anything (DCC, which does listen, is a side
+  feature we never expose). So section 4.0's frozen-ports problem simply does not exist
+  here: nothing inbound to publish. It hot-adds with zero ingress wiring.
+- INBOUND and OUTBOUND share that one socket. Server `PRIVMSG` pushes become
+  `channel.inbound` events; the agent's reply becomes a `channel.send` the plugin writes
+  as a `PRIVMSG` back over the SAME connection. The boundary carries only normalized
+  Inbound/Outbound, never raw IRC lines.
+- STATEFUL and long-lived: the plugin's `Start()` holds the connection for hours,
+  answers `PING` with `PONG` (or the server drops it), and owns reconnect/backoff and
+  re-`JOIN` after a netsplit. The goclawkit `Channel` contract already delegates this
+  ("the implementation owns reconnect/backoff", channel.go). This is what proves the
+  boundary socket must stay up for the life of the container, not be torn down between
+  messages, a property webhook never tested.
+- ChatID / identity mapping is REAL work here, and it is the plugin's job: a `PRIVMSG`
+  to `#go-nuts` is a group message (ChatID = the channel name); a `PRIVMSG` to the bot's
+  own nick is a DM (ChatID = the sender's nick). The IRC server ASSERTS the sender nick
+  and does NOT authenticate it (absent SASL/NickServ), so per section 7 the relay
+  namespaces it (`irc:<network>/<nick>`) and never trusts it as an owner id. IRC makes
+  the "identity is not the plugin's to assert" rule concrete in a way webhook's single
+  asserted sender did not.
+
+This is the example to BUILD first (section 9): it has no inbound port, so it isolates
+the boundary + hot-reload + long-lived-connection mechanics with nothing else in the way.
+Discord/Matrix/XMPP are the same shape with heavier protocols.
+
 The recommendation (section 9): build 4b (outbound dialer) FIRST as the real
 hot-addable channel plugin, because it needs no inbound port and so exercises the
 boundary + hot-reload with no ingress complications. Build 4a (inbound webhook) as a
@@ -454,9 +483,13 @@ needs no ingress), then the inbound host feature.
    `channel.inbound`, writing `channel.send`. Register it; make the router treat it like
    Telegram. Enforce identity namespacing in the relay (section 7).
 4. Sub-shape 4b (outbound dialer) as the FIRST end-to-end channel plugin and a worked
-   goclawkit example: it hot-adds with no inbound port, so it exercises discovery, the
-   socket boundary, and hot-reload with no ingress complications. Validates that
-   untrusted upstream-protocol parsing stays in the box.
+   goclawkit example. An IRC GATEWAY is the recommended first one: a single dial-out, no
+   inbound port, so it isolates discovery, the socket boundary, hot-reload, and the
+   long-lived stateful connection (PING/PONG, reconnect, re-JOIN) with nothing else in
+   the way. It also forces the real ChatID/identity mapping (channel vs PM,
+   server-asserted nicks namespaced per section 7). Validates that untrusted
+   upstream-protocol parsing stays in the box. Discord/Matrix/XMPP follow as the same
+   shape with heavier protocols.
 5. Host-side `kind: channel` discovery and hot-reload for 4b (section 8).
    `channels.Registry.Unregister` is already in place for the hot-remove path.
 6. Inbound host ingress (section 4a): one always-on listener, `/channels/<name>/inbound`
