@@ -77,3 +77,22 @@ type SystemAction struct {
 	Kind string // "typing", "reaction", ...
 	Data string
 }
+
+// SplitMessage breaks s into chunks of at most max runes each, so a reply that
+// exceeds a channel's per-message limit (Telegram 4096, Discord 2000) is sent as
+// several messages instead of being rejected. It splits on rune boundaries, never
+// mid-rune, so multi-byte characters stay intact. An empty string yields a single
+// empty chunk so the caller still sends one message; a non-positive max disables
+// splitting (one chunk). Each adapter passes its own limit.
+func SplitMessage(s string, max int) []string {
+	if max <= 0 || len(s) <= max {
+		return []string{s}
+	}
+	var chunks []string
+	runes := []rune(s)
+	for len(runes) > max {
+		chunks = append(chunks, string(runes[:max]))
+		runes = runes[max:]
+	}
+	return append(chunks, string(runes))
+}

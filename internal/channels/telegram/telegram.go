@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -67,17 +68,25 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 					continue // ignore edits, callbacks, etc. for v0
 				}
 				raw, _ := json.Marshal(upd)
-				in := channels.InboundMsg{
-					Channel:   channelName,
-					ChatID:    strconv.FormatInt(msg.Chat.ID, 10),
-					SenderID:  senderID(msg),
-					Sender:    senderName(msg),
-					Text:      msg.Text,
-					Raw:       raw,
-					Timestamp: time.Unix(int64(msg.Date), 0),
+				// Telegram puts a caption (not Text) on media messages; prefer
+				// whichever is present so the agent sees the user's words.
+				body := msg.Text
+				if body == "" {
+					body = msg.Caption
 				}
-				// TODO: map msg.Document / msg.Photo into channels.Attachment
-				// and resolve file URLs via a.bot.GetFile for the ingest path.
+				body, atts := mapAttachments(body, msg)
+				in := channels.InboundMsg{
+					Channel:     channelName,
+					ChatID:      strconv.FormatInt(msg.Chat.ID, 10),
+					SenderID:    senderID(msg),
+					Sender:      senderName(msg),
+					Text:        body,
+					Attachments: atts,
+					Raw:         raw,
+					Timestamp:   time.Unix(int64(msg.Date), 0),
+				}
+				// TODO: resolve file URLs via a.bot.GetFile for the ingest path so
+				// the agent can fetch the bytes, not just see the placeholder.
 				select {
 				case out <- in:
 				case <-ctx.Done():
@@ -89,17 +98,25 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 	return out, nil
 }
 
-// Send delivers a reply, respecting the outbound rate limit.
+// telegramMaxMessageLen is Telegram's per-message character limit; a longer reply
+// is rejected, so we split it across messages.
+const telegramMaxMessageLen = 4096
+
+// Send delivers a reply, respecting the outbound rate limit. Replies over
+// Telegram's 4096-character limit are split into several messages (each chunk
+// rate-limited in turn) so a long agent answer is not dropped.
 func (a *Adapter) Send(ctx context.Context, m channels.OutboundMsg) error {
-	if err := a.limiter.Wait(ctx); err != nil {
-		return err
-	}
 	chatID, err := strconv.ParseInt(m.ChatID, 10, 64)
 	if err != nil {
 		return fmt.Errorf("telegram: bad chat id %q: %w", m.ChatID, err)
 	}
-	if _, err := a.bot.Send(tgbotapi.NewMessage(chatID, m.Text)); err != nil {
-		return fmt.Errorf("telegram: send: %w", err)
+	for _, chunk := range channels.SplitMessage(m.Text, telegramMaxMessageLen) {
+		if err := a.limiter.Wait(ctx); err != nil {
+			return err
+		}
+		if _, err := a.bot.Send(tgbotapi.NewMessage(chatID, chunk)); err != nil {
+			return fmt.Errorf("telegram: send: %w", err)
+		}
 	}
 	// TODO: send m.Attachments.
 	return nil
@@ -131,6 +148,61 @@ func telegramAction(kind string) string {
 	default:
 		return ""
 	}
+}
+
+// mapAttachments inspects a Telegram message for media and, when present, appends
+// a typed placeholder line to text (so the agent, which reads only Text, knows
+// something non-text arrived) and returns matching channels.Attachment values.
+// Telegram media URLs are not in the update: fetching bytes needs an async
+// GetFile call (see the TODO at the call site), so URL is left empty here and the
+// FileID is carried so a later ingest step can resolve it.
+func mapAttachments(text string, m *tgbotapi.Message) (string, []channels.Attachment) {
+	var (
+		placeholders []string
+		atts         []channels.Attachment
+	)
+	add := func(placeholder, fileID, filename, mime string) {
+		placeholders = append(placeholders, placeholder)
+		atts = append(atts, channels.Attachment{
+			Filename: filename,
+			MIMEType: mime,
+			URL:      fileID, // a Telegram file_id, resolved to a URL later
+		})
+	}
+
+	switch {
+	case len(m.Photo) > 0:
+		// Photo is a slice of sizes; the last is the largest. No filename.
+		p := m.Photo[len(m.Photo)-1]
+		add("[Image]", p.FileID, "", "image/jpeg")
+	case m.Document != nil:
+		name := m.Document.FileName
+		if name == "" {
+			name = "file"
+		}
+		add("[File: "+name+"]", m.Document.FileID, m.Document.FileName, m.Document.MimeType)
+	case m.Video != nil:
+		add("[Video]", m.Video.FileID, m.Video.FileName, m.Video.MimeType)
+	case m.Audio != nil:
+		name := m.Audio.FileName
+		if name == "" {
+			name = "audio"
+		}
+		add("[Audio: "+name+"]", m.Audio.FileID, m.Audio.FileName, m.Audio.MimeType)
+	case m.Voice != nil:
+		add("[Voice]", m.Voice.FileID, "", m.Voice.MimeType)
+	case m.Sticker != nil:
+		add("[Sticker]", m.Sticker.FileID, "", "")
+	}
+
+	if len(placeholders) == 0 {
+		return text, nil
+	}
+	joined := strings.Join(placeholders, "\n")
+	if text == "" {
+		return joined, atts
+	}
+	return text + "\n" + joined, atts
 }
 
 func senderID(m *tgbotapi.Message) string {

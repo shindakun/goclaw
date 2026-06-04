@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"golang.org/x/time/rate"
@@ -62,14 +63,16 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 			return // ignore other bots too
 		}
 		raw, _ := json.Marshal(m)
+		text, atts := mapAttachments(m.Content, m.Attachments)
 		in := channels.InboundMsg{
-			Channel:   channelName,
-			ChatID:    m.ChannelID,
-			SenderID:  senderID(m),
-			Sender:    senderName(m),
-			Text:      m.Content,
-			Raw:       raw,
-			Timestamp: m.Timestamp,
+			Channel:     channelName,
+			ChatID:      m.ChannelID,
+			SenderID:    senderID(m),
+			Sender:      senderName(m),
+			Text:        text,
+			Attachments: atts,
+			Raw:         raw,
+			Timestamp:   m.Timestamp,
 		}
 		// Deliver, but never block past ctx cancellation.
 		select {
@@ -106,13 +109,21 @@ func (a *Adapter) DMChannelID(userID string) (string, error) {
 	return ch.ID, nil
 }
 
-// Send delivers a reply, respecting the outbound rate limit.
+// discordMaxMessageLen is Discord's hard per-message character limit; a send over
+// it is rejected, so we split longer replies into multiple messages.
+const discordMaxMessageLen = 2000
+
+// Send delivers a reply, respecting the outbound rate limit. Replies longer than
+// Discord's 2000-character limit are split across several messages (each chunk is
+// rate-limited in turn) so a long agent answer is not dropped.
 func (a *Adapter) Send(ctx context.Context, m channels.OutboundMsg) error {
-	if err := a.limiter.Wait(ctx); err != nil {
-		return err
-	}
-	if _, err := a.session.ChannelMessageSend(m.ChatID, m.Text); err != nil {
-		return fmt.Errorf("discord: send: %w", err)
+	for _, chunk := range channels.SplitMessage(m.Text, discordMaxMessageLen) {
+		if err := a.limiter.Wait(ctx); err != nil {
+			return err
+		}
+		if _, err := a.session.ChannelMessageSend(m.ChatID, chunk); err != nil {
+			return fmt.Errorf("discord: send: %w", err)
+		}
 	}
 	// TODO: send m.Attachments.
 	return nil
@@ -129,6 +140,65 @@ func (a *Adapter) SendAction(ctx context.Context, chatID, kind string) error {
 		return fmt.Errorf("discord: typing: %w", err)
 	}
 	return nil
+}
+
+// mapAttachments turns Discord attachments into channels.Attachment values and,
+// so the agent (which reads only Text) knows something non-text arrived, appends a
+// typed placeholder line per attachment, like "[Image: cat.png]". Returns the
+// possibly-augmented text and the attachment slice (nil when there are none).
+func mapAttachments(text string, in []*discordgo.MessageAttachment) (string, []channels.Attachment) {
+	if len(in) == 0 {
+		return text, nil
+	}
+	atts := make([]channels.Attachment, 0, len(in))
+	placeholders := make([]string, 0, len(in))
+	for _, att := range in {
+		if att == nil {
+			continue
+		}
+		atts = append(atts, channels.Attachment{
+			Filename: att.Filename,
+			MIMEType: att.ContentType,
+			URL:      att.URL,
+		})
+		placeholders = append(placeholders, attachmentPlaceholder(att))
+	}
+	if len(placeholders) == 0 {
+		return text, atts
+	}
+	joined := strings.Join(placeholders, "\n")
+	if text == "" {
+		return joined, atts
+	}
+	return text + "\n" + joined, atts
+}
+
+// attachmentPlaceholder renders a single attachment as a typed placeholder, keyed
+// off its MIME type (image/video/audio, else a generic file).
+func attachmentPlaceholder(att *discordgo.MessageAttachment) string {
+	name := att.Filename
+	switch {
+	case strings.HasPrefix(att.ContentType, "image/"):
+		if name == "" {
+			name = "image"
+		}
+		return "[Image: " + name + "]"
+	case strings.HasPrefix(att.ContentType, "video/"):
+		if name == "" {
+			name = "video"
+		}
+		return "[Video: " + name + "]"
+	case strings.HasPrefix(att.ContentType, "audio/"):
+		if name == "" {
+			name = "audio"
+		}
+		return "[Audio: " + name + "]"
+	default:
+		if name == "" {
+			name = "file"
+		}
+		return "[File: " + name + "]"
+	}
 }
 
 func senderID(m *discordgo.MessageCreate) string {
