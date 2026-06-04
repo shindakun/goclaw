@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -158,5 +159,53 @@ func TestCommand_PluginCommandRuns(t *testing.T) {
 	}
 	if len(fs.sent) != 1 || fs.sent[0].Text != "rolled: 2d6" {
 		t.Fatalf("plugin command reply wrong: %+v", fs.sent)
+	}
+}
+
+// RegisterPluginCommands lists a plugin's command in /commands as a pass-through
+// (host does not execute it; the in-container runner does).
+func TestRegisterPluginCommands_ListsAsPassThrough(t *testing.T) {
+	r, _, fs := cmdSetup(t)
+
+	// Stage a plugin dir with a plugin.yml declaring a /roll command.
+	dir := t.TempDir()
+	pdir := dir + "/roll"
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yml := "name: roll\nkind: tool\nversion: \"1.0.0\"\nexec: roll\n" +
+		"description: Roll dice.\ncommand: roll\n"
+	if err := os.WriteFile(pdir+"/plugin.yml", []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r.RegisterPluginCommands(dir)
+
+	c, ok := r.Commands().Get("roll")
+	if !ok || !c.PassThrough {
+		t.Fatalf("/roll should be a pass-through listing, got %+v ok=%v", c, ok)
+	}
+
+	// It shows in /commands for the owner.
+	owner, _ := r.central.UserByIdentity("telegram", "1000")
+	if _, err := r.handleCommand(context.Background(),
+		channels.InboundMsg{Channel: "telegram", ChatID: "1000", SenderID: "1000", Text: "/commands"},
+		owner); err != nil {
+		t.Fatalf("commands: %v", err)
+	}
+	if len(fs.sent) == 0 || !strings.Contains(fs.sent[len(fs.sent)-1].Text, "/roll") {
+		t.Fatalf("/commands listing should include /roll: %v", fs.sent)
+	}
+
+	// And the host does NOT execute it: /roll falls through (PassThrough), so the
+	// message routes inward to the runner.
+	handled, err := r.handleCommand(context.Background(),
+		channels.InboundMsg{Channel: "telegram", ChatID: "1000", SenderID: "1000", Text: "/roll 2d6"},
+		owner)
+	if err != nil {
+		t.Fatalf("roll: %v", err)
+	}
+	if handled {
+		t.Fatal("/roll is pass-through; the host must NOT handle it")
 	}
 }

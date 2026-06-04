@@ -13,6 +13,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/mounts"
 	"github.com/shindakun/goclaw/internal/permissions"
+	"github.com/shindakun/goclaw/internal/plugin"
 )
 
 // RunnerEnsurer makes sure a runner is up for an agent group after a message is
@@ -237,6 +240,34 @@ func (r *Router) registerBuiltinCommands() {
 // Commands exposes the registry so the host (e.g. the plugin manager) can register
 // or remove plugin-provided commands at runtime.
 func (r *Router) Commands() *command.Registry { return r.commands }
+
+// RegisterPluginCommands reads each plugin.yml under pluginsDir and registers any
+// declared slash command as a PASS-THROUGH listing, so /commands shows it. The host
+// does NOT execute plugin commands: plugins run in the agent container, and the
+// in-container runner intercepts the command (the host lets it route inward, exactly
+// like /reset and /compact). This only makes plugin commands DISCOVERABLE from the
+// host; it does not launch anything. A bad manifest is skipped, never fatal.
+func (r *Router) RegisterPluginCommands(pluginsDir string) {
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return // no plugins dir is fine
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		man, err := plugin.LoadManifest(filepath.Join(pluginsDir, e.Name()))
+		if err != nil || man.Command == "" {
+			continue
+		}
+		r.commands.Register(command.Command{
+			Name:        man.Command,
+			Description: man.Description,
+			Source:      man.Name,
+			PassThrough: true, // host does not run it; the in-container runner does
+		})
+	}
+}
 
 // handleCommand dispatches a host-executed slash command. It returns (handled,
 // err): handled is true only when the host consumed the message. A pass-through

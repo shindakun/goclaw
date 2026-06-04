@@ -298,6 +298,11 @@ func run(log *slog.Logger) error {
 	// to the agent. The host deliberately does NOT execute plugin binaries: they are
 	// untrusted downloaded code and must stay in the sandbox. (Slash-command routing
 	// to plugins goes inward through the session DBs; see docs/plugins-design.md.)
+	//
+	// The host still reads plugin.yml from ./plugins to LIST each plugin's slash
+	// command in /commands (as a pass-through it does not execute), so plugin
+	// commands stay discoverable even though the runner is what runs them.
+	rtr.RegisterPluginCommands("plugins")
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rtr.Run(gctx, inbound) })
