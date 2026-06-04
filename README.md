@@ -7,7 +7,8 @@
 A self-hosted personal-AI-agent host in Go + Podman: it routes chat messages
 into per-agent-group containers where a Claude agent runs with OS-level
 isolation, then delivers replies back. Inspired by NanoClaw; see
-[`docs/nanoclaw-go-podman-brief.md`](docs/nanoclaw-go-podman-brief.md) for the full design.
+[`docs/nanoclaw-go-podman-brief.md`](docs/nanoclaw-go-podman-brief.md) for the
+full design and [`docs/security.md`](docs/security.md) for the threat model.
 
 The full message loop runs end to end: a real per-agent-group Podman container
 drives Claude (multi-turn, with `/reset` and `/compact`), reads and writes a
