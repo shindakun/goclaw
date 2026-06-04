@@ -16,18 +16,26 @@ import (
 // into the agent container where the runner discovers it (via fsnotify) and
 // launches it. The host never clones, scans, builds, or executes the plugin.
 type Installer struct {
-	pluginsDir string // host data/plugins dir (staged artifacts land here)
+	pluginsDir string // host plugins dir: ONLY finished, installed plugins live here
+	buildDir   string // host scratch dir for in-progress builds (sibling of plugins)
 	image      string // OCI image with git + the Go toolchain (the runner image)
 	podmanBin  string // podman binary
 }
 
 // NewInstaller builds an Installer. image must contain git and a Go toolchain
-// (goclaw-claude:latest does); pluginsDir is the host data/plugins directory.
+// (goclaw-claude:latest does); pluginsDir is the host plugins directory. Build
+// scratch goes in a sibling `<pluginsDir>-build` dir so the plugins dir (which the
+// runner watches) only ever contains finished plugins, never build noise.
 func NewInstaller(pluginsDir, image, podmanBin string) *Installer {
 	if podmanBin == "" {
 		podmanBin = "podman"
 	}
-	return &Installer{pluginsDir: pluginsDir, image: image, podmanBin: podmanBin}
+	return &Installer{
+		pluginsDir: pluginsDir,
+		buildDir:   pluginsDir + "-build",
+		image:      image,
+		podmanBin:  podmanBin,
+	}
 }
 
 // InstallResult reports what an install produced.
@@ -48,15 +56,17 @@ func (in *Installer) Add(ctx context.Context, gitURL string) (*InstallResult, er
 		return nil, err
 	}
 
-	// A per-install staging dir for the build container's /out mount. It must live
-	// somewhere podman can bind-mount, so it sits NEXT TO the plugins dir (under the
-	// data dir), NOT in the OS temp dir, which may be a per-process path podman
-	// cannot see. The build container writes only the verified binary + plugin.yml +
-	// a meta file here; nothing else from the untrusted source reaches the host.
-	if err := os.MkdirAll(in.pluginsDir, 0o755); err != nil {
-		return nil, fmt.Errorf("install: create plugins dir: %w", err)
+	// A per-install staging dir for the build container's /out mount, in the BUILD
+	// dir, NOT the plugins dir: the plugins dir is watched by the runner and must
+	// contain only finished plugins, never an in-progress build. The build dir lives
+	// under the data dir (a path podman can bind-mount), unlike the OS temp dir which
+	// may be a per-process path podman cannot see. The build container writes only
+	// the verified binary + plugin.yml + the pinned commit here; nothing else from
+	// the untrusted source reaches the host.
+	if err := os.MkdirAll(in.buildDir, 0o755); err != nil {
+		return nil, fmt.Errorf("install: create build dir: %w", err)
 	}
-	out, err := os.MkdirTemp(in.pluginsDir, ".build-*")
+	out, err := os.MkdirTemp(in.buildDir, "build-*")
 	if err != nil {
 		return nil, fmt.Errorf("install: staging dir: %w", err)
 	}
@@ -116,9 +126,11 @@ func (in *Installer) acceptArtifact(out string) (*InstallResult, error) {
 	if err := os.MkdirAll(in.pluginsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("install: create plugins dir: %w", err)
 	}
-	// Stage atomically: write to a sibling temp dir, then rename over the dest. The
-	// rename is what the runner's fsnotify watch reacts to (a complete dir appears).
-	staging := dest + ".installing"
+	// Stage atomically: write to a HIDDEN sibling dir, then rename it onto the dest.
+	// The dir is dot-prefixed so the runner's watch (which skips hidden dirs) never
+	// loads a half-staged plugin; only the final rename (a complete, non-hidden dir
+	// appearing) triggers a load.
+	staging := filepath.Join(in.pluginsDir, "."+man.Name+".installing")
 	_ = os.RemoveAll(staging)
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return nil, fmt.Errorf("install: staging dir: %w", err)
