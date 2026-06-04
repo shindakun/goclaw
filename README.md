@@ -144,6 +144,12 @@ will eventually 401 and you'll have to re-extract it. Prefer the API key for
 anything left running. If both are set, the API key wins. Either way, the
 [Credential proxy](#credential-proxy) is the more secure way to provide it.
 
+> ⚠️ **Terms caution:** a Claude Code subscription token is intended for
+> interactive Claude Code use, not for driving an automated/headless agent like
+> this. Using it to run goclaw unattended may violate the subscription's terms of
+> service. Check the current Anthropic / Claude terms before relying on it; for
+> automation, the standard API key (billed as API usage) is the intended path.
+
 Now messaging the bot gets a real Claude answer. The host passes the credential
 into the container (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`); the runner
 calls `claude.Query` per message and writes the result to outbound.
