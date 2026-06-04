@@ -31,7 +31,7 @@ func TestRoundTrip(t *testing.T) {
 	if _, err := host.EnqueueInbound("telegram", "555", "6306189728", "@steve", "ping"); err != nil {
 		t.Fatalf("enqueue inbound: %v", err)
 	}
-	host.Close()
+	_ = host.Close()
 
 	// 2. Stub runner: consume pending inbound, echo to outbound. Runner opener:
 	// outbound read-write (it owns outbound.db + the inbound high-water mark).
@@ -54,7 +54,7 @@ func TestRoundTrip(t *testing.T) {
 			t.Fatalf("advance hwm: %v", err)
 		}
 	}
-	runner.Close()
+	_ = runner.Close()
 
 	// 3. Delivery dispatches the echo.
 	if err := d.drain(context.Background()); err != nil {

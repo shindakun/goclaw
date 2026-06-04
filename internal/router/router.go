@@ -366,7 +366,7 @@ func (r *Router) enqueueDurable(agentGroupID int64, sessionKey string, msg chann
 			continue
 		}
 		id, err := sess.EnqueueInbound(msg.Channel, msg.ChatID, msg.SenderID, msg.Sender, msg.Text)
-		sess.Close()
+		_ = sess.Close()
 		if err == nil {
 			return id, nil
 		}

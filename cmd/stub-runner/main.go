@@ -116,7 +116,7 @@ func processSession(dir string, log *slog.Logger) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	pending, err := sess.PendingInbound()
 	if err != nil {

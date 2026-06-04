@@ -193,7 +193,7 @@ func (s *Scheduler) fire(ctx context.Context, job Job, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	if _, err := sess.EnqueueInbound(s.target.Channel, s.target.ChatID, "system", "maintenance", job.Prompt); err != nil {
 		return err

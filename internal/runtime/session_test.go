@@ -80,11 +80,11 @@ func TestHelperProcess(t *testing.T) {
 	}
 	switch kind {
 	case "ps":
-		os.Stdout.WriteString(psOutput)
+		_, _ = os.Stdout.WriteString(psOutput)
 	case "imageinspect":
-		os.Stdout.WriteString(fakeImageID + "\n")
+		_, _ = os.Stdout.WriteString(fakeImageID + "\n")
 	default:
-		os.Stdout.WriteString("fake-container-id\n")
+		_, _ = os.Stdout.WriteString("fake-container-id\n")
 	}
 	os.Exit(0)
 }

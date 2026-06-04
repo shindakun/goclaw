@@ -94,7 +94,7 @@ func (d *DB) AgentMounts(agentGroupID int64) ([]AgentMount, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list agent mounts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []AgentMount
 	for rows.Next() {
 		var m AgentMount
@@ -195,7 +195,7 @@ func (d *DB) ActiveSessions() ([]Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Session
 	for rows.Next() {
@@ -218,7 +218,7 @@ func (d *DB) AgentGroupIDsActiveSince(cutoff string) (map[int64]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("active groups since: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make(map[int64]bool)
 	for rows.Next() {
 		var id int64

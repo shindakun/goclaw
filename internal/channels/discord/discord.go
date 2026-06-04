@@ -91,7 +91,7 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 	// Close the gateway when ctx is cancelled.
 	go func() {
 		<-ctx.Done()
-		a.session.Close()
+		_ = a.session.Close()
 		close(out)
 	}()
 	return out, nil

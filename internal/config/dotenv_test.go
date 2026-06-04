@@ -24,7 +24,7 @@ ALREADY_SET=fromfile
 	t.Setenv("ALREADY_SET", "fromenv")
 	// Ensure the file-only keys are unset to start.
 	for _, k := range []string{"QUOTED", "SINGLE", "PLAIN"} {
-		os.Unsetenv(k)
+		_ = os.Unsetenv(k)
 	}
 
 	if err := loadDotEnv(envFile); err != nil {

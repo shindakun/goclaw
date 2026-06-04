@@ -11,7 +11,7 @@ func TestSessionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session dir: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// --- inbound + high-water mark ---
 	if hwm, err := s.InboundHWM(); err != nil || hwm != 0 {
@@ -90,7 +90,7 @@ func TestMarkFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	outID, err := s.EnqueueOutbound("telegram", "42", "boom")
 	if err != nil {
@@ -110,7 +110,7 @@ func TestSessionMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if _, ok, err := s.GetMeta("k"); err != nil || ok {
 		t.Fatalf("absent meta should be (_, false, nil); ok=%v err=%v", ok, err)

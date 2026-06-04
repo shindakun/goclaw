@@ -78,7 +78,7 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 	if err != nil {
 		return err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	pending, err := sess.PendingOutbound()
 	if err != nil {

@@ -15,7 +15,7 @@ func (d *DB) UpsertUserWithIdentity(name, role, channel, senderID string) (int64
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Does this identity already map to a user?
 	var userID int64
@@ -24,8 +24,8 @@ func (d *DB) UpsertUserWithIdentity(name, role, channel, senderID string) (int64
 		channel, senderID,
 	).Scan(&userID)
 
-	switch {
-	case err == nil:
+	switch err {
+	case nil:
 		// Identity exists - update the user's name/role to match.
 		if _, err := tx.Exec(`UPDATE users SET name = ?, role = ? WHERE id = ?`, name, role, userID); err != nil {
 			return 0, fmt.Errorf("update user: %w", err)

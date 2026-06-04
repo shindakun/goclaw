@@ -14,7 +14,7 @@ func TestOpenSession_HostCreatesInboundNotOutbound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	dir := SessionDir(base, 1, "telegram:555")
 	if _, err := os.Stat(filepath.Join(dir, "inbound.db")); err != nil {
@@ -52,7 +52,7 @@ func TestOpenSessionDir_RunnerCreatesBoth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session dir: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if _, err := os.Stat(filepath.Join(dir, "outbound.db")); err != nil {
 		t.Fatalf("runner should create outbound.db: %v", err)
 	}
@@ -72,13 +72,13 @@ func TestHostCannotWriteOutbound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runner open: %v", err)
 	}
-	runner.Close()
+	_ = runner.Close()
 
 	host, err := OpenSession(base, 1, "telegram:555")
 	if err != nil {
 		t.Fatalf("host open: %v", err)
 	}
-	defer host.Close()
+	defer func() { _ = host.Close() }()
 	if host.Outbound == nil {
 		t.Fatal("expected host to open existing outbound.db read-only")
 	}
@@ -94,7 +94,7 @@ func TestEnqueueInbound_WritesPendingRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	id, err := s.EnqueueInbound("telegram", "42", "6306189728", "@steve", "hello")
 	if err != nil {
@@ -135,7 +135,7 @@ func TestResolveOrCreateSession_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	// A session FKs to an agent group, so create one first.
 	agID, err := d.upsertAgentGroup("default", "default")

@@ -108,7 +108,7 @@ func TestApproval_OwnerApprovesAndMessageReplays(t *testing.T) {
 	}
 	// The pending row is gone.
 	var n int
-	d.QueryRow(`SELECT count(*) FROM pending_approvals WHERE id=?`, approvalID).Scan(&n)
+	_ = d.QueryRow(`SELECT count(*) FROM pending_approvals WHERE id=?`, approvalID).Scan(&n)
 	if n != 0 {
 		t.Fatalf("pending approval not cleared")
 	}
@@ -117,7 +117,7 @@ func TestApproval_OwnerApprovesAndMessageReplays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	in, _ := sess.PendingInbound()
 	if len(in) != 1 || in[0].Text != "let me in" {
 		t.Fatalf("approved message did not replay into inbound: %+v", in)
@@ -132,7 +132,7 @@ func TestApproval_OwnerDeniesClearsRow(t *testing.T) {
 		t.Fatalf("route: %v", err)
 	}
 	var id int64
-	d.QueryRow(`SELECT id FROM pending_approvals WHERE sender_id='777'`).Scan(&id)
+	_ = d.QueryRow(`SELECT id FROM pending_approvals WHERE sender_id='777'`).Scan(&id)
 
 	if err := r.route(context.Background(), channels.InboundMsg{
 		Channel: "telegram", ChatID: "1000", SenderID: "1000", Text: "/deny " + itoa(id),
@@ -140,7 +140,7 @@ func TestApproval_OwnerDeniesClearsRow(t *testing.T) {
 		t.Fatalf("route deny: %v", err)
 	}
 	var n int
-	d.QueryRow(`SELECT count(*) FROM pending_approvals WHERE id=?`, id).Scan(&n)
+	_ = d.QueryRow(`SELECT count(*) FROM pending_approvals WHERE id=?`, id).Scan(&n)
 	if n != 0 {
 		t.Fatalf("deny did not clear the pending row")
 	}

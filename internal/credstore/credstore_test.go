@@ -24,7 +24,7 @@ func testStore(t *testing.T, encKey string) *Store {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	return New(d.DB, encKey)
 }
 

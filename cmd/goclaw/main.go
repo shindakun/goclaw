@@ -79,7 +79,7 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer central.Close()
+	defer func() { _ = central.Close() }()
 	log.Info("central db ready", "path", cfg.CentralDBPath)
 
 	// Optional startup seeding so a first user can message the host without

@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"text/tabwriter"
 	"os"
+	"text/tabwriter"
 
 	"github.com/shindakun/goclaw/internal/config"
 	"github.com/shindakun/goclaw/internal/credstore"
@@ -51,7 +51,7 @@ func openCredStore() (*credstore.Store, func(), error) {
 		return nil, nil, fmt.Errorf("open central db: %w", err)
 	}
 	store := credstore.New(d.DB, cfg.SecretEncryptionKey)
-	return store, func() { d.Close() }, nil
+	return store, func() { _ = d.Close() }, nil
 }
 
 func authAdd(store *credstore.Store, args []string) error {
@@ -61,7 +61,7 @@ func authAdd(store *credstore.Store, args []string) error {
 	if !store.HasKey() {
 		return fmt.Errorf("GOCLAW_SECRET_ENCRYPTION_KEY is unset or not a 32-byte base64 key.\n" +
 			"Generate one with:  head -c 32 /dev/urandom | base64\n" +
-			"then set it in your environment/.env before storing credentials.")
+			"then set it in your environment/.env before storing credentials")
 	}
 	name, targetURL, token := args[0], args[1], args[2]
 	id, err := store.Add(name, targetURL, token)
@@ -86,9 +86,9 @@ func authList(store *credstore.Store) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tTARGET\tTOKEN")
+	_, _ = fmt.Fprintln(w, "ID\tNAME\tTARGET\tTOKEN")
 	for _, c := range creds {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.ID, c.Name, c.TargetURL, c.Preview)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.ID, c.Name, c.TargetURL, c.Preview)
 	}
 	return w.Flush()
 }

@@ -38,12 +38,12 @@ func Open(path string) (*DB, error) {
 	}
 	// The central DB is host-only (one process), so WAL is fine and faster.
 	if err := applyPragmas(sqlDB, journalWAL); err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		return nil, err
 	}
 	d := &DB{DB: sqlDB, path: path}
 	if err := d.migrate(); err != nil {
-		sqlDB.Close()
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate central db: %w", err)
 	}
 	return d, nil
@@ -187,12 +187,12 @@ func openInboundRW(dir string) (*sql.DB, error) {
 	// Session DBs cross the container bind mount, so they must NOT use WAL -
 	// use the rollback journal so cross-process writes are visible (brief §5.1).
 	if err := applyPragmas(inbound, journalDelete); err != nil {
-		inbound.Close()
+		_ = inbound.Close()
 		return nil, err
 	}
 	inbound.SetMaxOpenConns(1)
 	if _, err := inbound.Exec(inboundSchema); err != nil {
-		inbound.Close()
+		_ = inbound.Close()
 		return nil, fmt.Errorf("init inbound schema: %w", err)
 	}
 	return inbound, nil
@@ -223,15 +223,15 @@ func OpenSessionHostDir(dir string) (*SessionDBs, error) {
 	// applyPragmas still lets reads wait out the runner's write lock.
 	outbound, err := sql.Open("sqlite", "file:"+outPath+"?mode=ro")
 	if err != nil {
-		inbound.Close()
+		_ = inbound.Close()
 		return nil, fmt.Errorf("open outbound.db (ro): %w", err)
 	}
 	// Read-only handle: only set reader-safe pragmas. journal_mode/synchronous
 	// are writes and error on a mode=ro db (776), which is what broke the first
 	// drain after the read-only change.
 	if err := applyReadPragmas(outbound); err != nil {
-		inbound.Close()
-		outbound.Close()
+		_ = inbound.Close()
+		_ = outbound.Close()
 		return nil, err
 	}
 	s.Outbound = outbound
@@ -252,17 +252,17 @@ func OpenSessionDir(dir string) (*SessionDBs, error) {
 
 	outbound, err := sql.Open("sqlite", filepath.Join(dir, "outbound.db"))
 	if err != nil {
-		inbound.Close()
+		_ = inbound.Close()
 		return nil, fmt.Errorf("open outbound.db: %w", err)
 	}
 	if err := applyPragmas(outbound, journalDelete); err != nil {
-		inbound.Close()
-		outbound.Close()
+		_ = inbound.Close()
+		_ = outbound.Close()
 		return nil, err
 	}
 	if _, err := outbound.Exec(outboundSchema); err != nil {
-		inbound.Close()
-		outbound.Close()
+		_ = inbound.Close()
+		_ = outbound.Close()
 		return nil, fmt.Errorf("init outbound schema: %w", err)
 	}
 
@@ -321,7 +321,7 @@ func (s *SessionDBs) PendingOutbound() ([]OutboundMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read pending outbound: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []OutboundMessage
 	for rows.Next() {
@@ -440,7 +440,7 @@ func (s *SessionDBs) PendingInbound() ([]InboundMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read pending inbound: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []InboundMessage
 	for rows.Next() {

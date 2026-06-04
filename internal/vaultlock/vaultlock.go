@@ -27,7 +27,7 @@ func Acquire(lockPath string) (*Lock, error) {
 		return nil, fmt.Errorf("vaultlock: open %q: %w", lockPath, err)
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("vaultlock: flock %q: %w", lockPath, err)
 	}
 	return &Lock{f: f}, nil
@@ -41,7 +41,7 @@ func TryAcquire(lockPath string) (*Lock, bool, error) {
 		return nil, false, fmt.Errorf("vaultlock: open %q: %w", lockPath, err)
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		if err == unix.EWOULDBLOCK {
 			return nil, false, nil
 		}
@@ -56,7 +56,7 @@ func (l *Lock) Release() error {
 		return nil
 	}
 	if err := unix.Flock(int(l.f.Fd()), unix.LOCK_UN); err != nil {
-		l.f.Close()
+		_ = l.f.Close()
 		return fmt.Errorf("vaultlock: unlock: %w", err)
 	}
 	return l.f.Close()

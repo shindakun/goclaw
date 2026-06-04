@@ -42,7 +42,7 @@ func setup(t *testing.T) (*Deliverer, *db.DB, int64, string, *fakeAdapter) {
 	if err != nil {
 		t.Fatalf("open central: %v", err)
 	}
-	t.Cleanup(func() { central.Close() })
+	t.Cleanup(func() { _ = central.Close() })
 
 	_, agID, err := central.Apply(db.Bootstrap{
 		DefaultAgentGroupName:   "default",
@@ -77,7 +77,7 @@ func TestDrain_DeliversOriginChat(t *testing.T) {
 	if _, err := runner.EnqueueOutbound("telegram", "555", "echo: hi"); err != nil {
 		t.Fatalf("enqueue outbound: %v", err)
 	}
-	runner.Close()
+	_ = runner.Close()
 
 	if err := d.drain(context.Background()); err != nil {
 		t.Fatalf("drain: %v", err)
@@ -91,7 +91,7 @@ func TestDrain_DeliversOriginChat(t *testing.T) {
 	// mutating outbound.db. The outbound row stays 'pending' there - that file
 	// belongs to the runner and the host never writes it (brief §5.1).
 	sess, _ := db.OpenSession(dataDir, agID, key)
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	delivered, err := sess.WasDelivered(1)
 	if err != nil {
 		t.Fatalf("WasDelivered: %v", err)
@@ -127,7 +127,7 @@ func TestDrain_DeniesNonOriginWithoutDestination(t *testing.T) {
 	if _, err := runner.EnqueueOutbound("telegram", "999", "leak"); err != nil {
 		t.Fatalf("enqueue outbound: %v", err)
 	}
-	runner.Close()
+	_ = runner.Close()
 
 	if err := d.drain(context.Background()); err != nil {
 		t.Fatalf("drain: %v", err)

@@ -43,7 +43,7 @@ func setup(t *testing.T) (*db.DB, int64, string) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { central.Close() })
+	t.Cleanup(func() { _ = central.Close() })
 	_, agID, err := central.Apply(db.Bootstrap{
 		DefaultAgentGroupName:   "default",
 		DefaultAgentGroupFolder: "default",
@@ -68,7 +68,7 @@ func TestRecoverRunners_EnsuresWhenPending(t *testing.T) {
 	if _, err := sess.EnqueueInbound("telegram", "555", "u", "n", "queued while runner dead"); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	sess.Close()
+	_ = sess.Close()
 
 	fe := &fakeRunners{}
 	s := New(central, dataDir, fe, quiet())
@@ -94,7 +94,7 @@ func TestRecoverRunners_DedupesByAgentGroup(t *testing.T) {
 		if _, err := sess.EnqueueInbound("telegram", key, "u", "n", "hi"); err != nil {
 			t.Fatalf("enqueue: %v", err)
 		}
-		sess.Close()
+		_ = sess.Close()
 	}
 
 	fe := &fakeRunners{}
@@ -118,7 +118,7 @@ func TestRecoverRunners_SkipsWhenNoPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	sess.Close()
+	_ = sess.Close()
 
 	fe := &fakeRunners{}
 	s := New(central, dataDir, fe, quiet())
@@ -186,7 +186,7 @@ func TestGCIdleRunners_KeepsGroupWithPending(t *testing.T) {
 	if _, err := sess.EnqueueInbound("telegram", "555", "u", "n", "still queued"); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	sess.Close()
+	_ = sess.Close()
 
 	fr := &fakeRunners{running: []int64{agID}}
 	s := New(central, dataDir, fr, quiet())

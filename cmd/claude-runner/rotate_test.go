@@ -86,8 +86,8 @@ func TestRotateReason_UnparseableTimestamp_SkipsAge(t *testing.T) {
 }
 
 func TestLoadRotateConfig_Defaults(t *testing.T) {
-	os.Unsetenv("GOCLAW_TRANSCRIPT_ROTATE_BYTES")
-	os.Unsetenv("GOCLAW_TRANSCRIPT_ROTATE_AGE_DAYS")
+	_ = os.Unsetenv("GOCLAW_TRANSCRIPT_ROTATE_BYTES")
+	_ = os.Unsetenv("GOCLAW_TRANSCRIPT_ROTATE_AGE_DAYS")
 	cfg := loadRotateConfig()
 	if cfg.maxBytes != defaultRotateBytes {
 		t.Fatalf("default bytes = %d, want %d", cfg.maxBytes, defaultRotateBytes)

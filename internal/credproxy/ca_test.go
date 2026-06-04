@@ -105,7 +105,7 @@ func TestCA_LeafCacheAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	c2, _ := ca.leafFor("api.github.com")
-	if &c1.Certificate[0] == nil || string(c1.Certificate[0]) != string(c2.Certificate[0]) {
+	if len(c1.Certificate) == 0 || string(c1.Certificate[0]) != string(c2.Certificate[0]) {
 		t.Fatal("expected the cached leaf to be reused")
 	}
 	// Advance past refresh window -> a fresh leaf.
@@ -149,8 +149,8 @@ func TestCA_ServesRealTLS(t *testing.T) {
 	// trusts our CA, asserting the server name.
 	clientCfg := &tls.Config{RootCAs: roots, ServerName: "example.test"}
 	serverConn, clientConn := tlsPipe(t, leafCfg, clientCfg)
-	defer serverConn.Close()
-	defer clientConn.Close()
+	defer func() { _ = serverConn.Close() }()
+	defer func() { _ = clientConn.Close() }()
 	if err := clientConn.Handshake(); err != nil {
 		t.Fatalf("client TLS handshake against minted leaf failed: %v", err)
 	}
@@ -162,6 +162,6 @@ func tlsPipe(t *testing.T, serverCfg, clientCfg *tls.Config) (*tls.Conn, *tls.Co
 	c1, c2 := net.Pipe()
 	server := tls.Server(c1, serverCfg)
 	client := tls.Client(c2, clientCfg)
-	go server.Handshake() //nolint: the client.Handshake in the test drives it
+	go func() { _ = server.Handshake() }() // the client.Handshake in the test drives it
 	return server, client
 }

@@ -43,7 +43,7 @@ func TestTryAcquire_HeldLockContends(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-	defer held.Release()
+	defer func() { _ = held.Release() }()
 
 	l, ok, err := TryAcquire(lp)
 	if err != nil {
@@ -51,7 +51,7 @@ func TestTryAcquire_HeldLockContends(t *testing.T) {
 	}
 	if ok {
 		if l != nil {
-			l.Release()
+			_ = l.Release()
 		}
 		t.Fatal("TryAcquire returned ok=true while lock was held")
 	}
@@ -67,7 +67,7 @@ func TestTryAcquire_HeldLockContends(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("TryAcquire after release: ok=%v err=%v", ok, err)
 	}
-	l2.Release()
+	_ = l2.Release()
 }
 
 func TestRelease_NilSafe(t *testing.T) {

@@ -50,7 +50,7 @@ func parseTranscript(path string) ([]parsedMsg, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var out []parsedMsg
 	sc := bufio.NewScanner(f)

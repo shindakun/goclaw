@@ -177,7 +177,7 @@ func (r *runner) processSession(ctx context.Context, dir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	pending, err := sess.PendingInbound()
 	if err != nil {

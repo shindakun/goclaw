@@ -17,7 +17,7 @@ func testDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
@@ -160,7 +160,7 @@ func TestFire_EnqueuesAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	pend, _ := sess.PendingInbound()
 	if len(pend) != 1 || pend[0].Text != "do maintenance" {
 		t.Fatalf("expected the maintenance prompt enqueued, got %+v", pend)

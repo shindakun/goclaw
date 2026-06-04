@@ -21,7 +21,7 @@ func loadDotEnv(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -43,7 +43,7 @@ func loadDotEnv(path string) error {
 		if _, present := os.LookupEnv(key); present {
 			continue // real env var wins
 		}
-		os.Setenv(key, val)
+		_ = os.Setenv(key, val)
 	}
 	return sc.Err()
 }

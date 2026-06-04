@@ -55,7 +55,7 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 func TestRegistry_Send(t *testing.T) {
 	r := NewRegistry()
 	a := newFake("discord")
-	r.Register(a)
+	_ = r.Register(a)
 
 	if err := r.Send(context.Background(), OutboundMsg{Channel: "discord", Text: "hi"}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -74,8 +74,8 @@ func TestRegistry_Send(t *testing.T) {
 func TestRegistry_StartAllFanIn(t *testing.T) {
 	r := NewRegistry()
 	a, b := newFake("telegram"), newFake("discord")
-	r.Register(a)
-	r.Register(b)
+	_ = r.Register(a)
+	_ = r.Register(b)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	fan, err := r.StartAll(ctx)

@@ -71,7 +71,7 @@ func (d *DB) appliedVersions() (map[int]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read schema_migrations: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	applied := make(map[int]bool)
 	for rows.Next() {
@@ -92,7 +92,7 @@ func (d *DB) applyMigration(m migration) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() // no-op after a successful Commit
+	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
 
 	if _, err := tx.Exec(m.sql); err != nil {
 		return err

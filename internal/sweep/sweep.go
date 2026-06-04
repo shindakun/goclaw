@@ -201,6 +201,6 @@ func (s *Sweeper) hasPendingInbound(sess db.Session) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer sdb.Close()
+	defer func() { _ = sdb.Close() }()
 	return sdb.HasPendingInbound()
 }

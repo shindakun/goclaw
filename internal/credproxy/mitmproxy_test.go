@@ -32,8 +32,8 @@ func startMITM(t *testing.T, p *MITMProxy) (string, func()) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: p}
-	go srv.Serve(ln)
-	return ln.Addr().String(), func() { srv.Close() }
+	go func() { _ = srv.Serve(ln) }()
+	return ln.Addr().String(), func() { _ = srv.Close() }
 }
 
 // proxyClient builds an http.Client that CONNECTs through proxyAddr and trusts
@@ -55,7 +55,7 @@ func TestMITM_InterceptInjectsAndForwards(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
-		io.WriteString(w, "upstream-ok")
+		_, _ = io.WriteString(w, "upstream-ok")
 	}))
 	defer upstream.Close()
 	upHost := upstream.Listener.Addr().String() // 127.0.0.1:port
@@ -83,7 +83,7 @@ func TestMITM_InterceptInjectsAndForwards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request through MITM: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	if string(body) != "upstream-ok" {
@@ -101,11 +101,11 @@ func TestMITM_StreamsSSEThroughIntercept(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
-		io.WriteString(w, "data: one\n\n")
+		_, _ = io.WriteString(w, "data: one\n\n")
 		if fl != nil {
 			fl.Flush()
 		}
-		io.WriteString(w, "data: two\n\n")
+		_, _ = io.WriteString(w, "data: two\n\n")
 	}))
 	defer upstream.Close()
 	upHost := upstream.Listener.Addr().String()
@@ -122,7 +122,7 @@ func TestMITM_StreamsSSEThroughIntercept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sse request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "data: one") || !strings.Contains(string(body), "data: two") {
 		t.Fatalf("SSE not fully proxied through MITM: %q", body)
@@ -134,7 +134,7 @@ func TestMITM_BlindTunnelNoCredential(t *testing.T) {
 	// client's own TLS to the upstream succeeds end to end (the proxy never
 	// presents a forged cert).
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, "direct-tls")
+		_, _ = io.WriteString(w, "direct-tls")
 	}))
 	defer upstream.Close()
 	upHost := upstream.Listener.Addr().String()
@@ -159,7 +159,7 @@ func TestMITM_BlindTunnelNoCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("blind-tunnel request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "direct-tls" {
 		t.Fatalf("blind tunnel body = %q", body)

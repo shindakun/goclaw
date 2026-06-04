@@ -17,7 +17,7 @@ func testDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { d.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 	return d
 }
 
@@ -70,7 +70,7 @@ func TestRoute_OwnerAutoWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	var text, status string
 	if err := sess.Inbound.QueryRow(
 		`SELECT text, status FROM messages ORDER BY id DESC LIMIT 1`,

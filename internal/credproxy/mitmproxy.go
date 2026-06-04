@@ -107,7 +107,7 @@ func (m *MITMProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		m.log.Error("mitm hijack", "err", err)
 		return
 	}
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	// Tell the client the tunnel is established.
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
@@ -134,10 +134,10 @@ func (m *MITMProxy) blindTunnel(client net.Conn, hostPort string) {
 		m.log.Warn("mitm blind dial", "host", hostPort, "err", err)
 		return
 	}
-	defer upstream.Close()
+	defer func() { _ = upstream.Close() }()
 	done := make(chan struct{}, 2)
-	go func() { io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
 	<-done // first half to finish tears the tunnel down
 }
 
@@ -155,7 +155,7 @@ func (m *MITMProxy) intercept(client net.Conn, host, hostPort, token, targetURL 
 		m.log.Warn("mitm client handshake", "host", host, "err", err)
 		return
 	}
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 
 	// Dial the real upstream once and reuse via a ReverseProxy per request.
 	upstream, err := url.Parse(normalizeUpstream(targetURL, hostPort))
@@ -224,13 +224,13 @@ func (w *connResponseWriter) WriteHeader(code int) {
 		return
 	}
 	w.wroteHeader = true
-	fmt.Fprintf(w.conn, "HTTP/1.1 %d %s\r\n", code, http.StatusText(code))
+	_, _ = fmt.Fprintf(w.conn, "HTTP/1.1 %d %s\r\n", code, http.StatusText(code))
 	// Force connection close after this response to keep the loop simple and
 	// correct (no need to track response framing for keep-alive reuse).
 	w.header.Set("Connection", "close")
 	w.closeAfter = true
-	w.header.Write(w.conn)
-	io.WriteString(w.conn, "\r\n")
+	_ = w.header.Write(w.conn)
+	_, _ = io.WriteString(w.conn, "\r\n")
 }
 
 func (w *connResponseWriter) Write(b []byte) (int, error) {

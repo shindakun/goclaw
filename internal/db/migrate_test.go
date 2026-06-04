@@ -13,7 +13,7 @@ func TestMigrate_AppliesAndTracks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	// At least the initial migration must be recorded.
 	var count int
@@ -42,7 +42,7 @@ func TestMigrate_RunsEachMigrationOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 
 	var before int
 	if err := d.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&before); err != nil {

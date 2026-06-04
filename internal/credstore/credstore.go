@@ -111,7 +111,7 @@ func (s *Store) List() ([]Credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("credstore: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Credential
 	for rows.Next() {
@@ -174,7 +174,7 @@ func (s *Store) Hosts() (map[string]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("credstore: hosts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := map[string]bool{}
 	for rows.Next() {
 		var h string
