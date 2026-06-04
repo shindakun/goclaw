@@ -200,6 +200,14 @@ func run(log *slog.Logger) error {
 			// The CLI still wants a key present even though the proxy supplies the
 			// real one; a decoy is fine (the proxy swaps it for the stored key).
 			claudeEnv["ANTHROPIC_API_KEY"] = "placeholder"
+			// gh refuses to run most subcommands unless it sees a token (it checks
+			// "gh auth status" locally before any network call). Give it a
+			// PLACEHOLDER when a GitHub credential is stored: gh considers itself
+			// logged in and sends the placeholder to api.github.com, where the proxy
+			// swaps in the real token. The real token never enters the container.
+			if hosts, _ := credStore.Hosts(); hosts["api.github.com"] || hosts["github.com"] {
+				claudeEnv["GH_TOKEN"] = "placeholder"
+			}
 			proxyCAHostPath = caPath
 			log.Info("credential proxy active - raw tokens stay on the host",
 				"proxy", proxyURL, "credentials", credHostList(credStore))
