@@ -20,15 +20,16 @@ const sessionsMountPath = "/sessions"
 // it mounts the group's sessions directory and the runner loops over the session
 // subdirectories within.
 type GroupRunner struct {
-	Image        string  // runner image, e.g. "goclaw-runner:latest"
-	Runtime      Runtime // OCI runtime (crun default)
-	AgentGroupID int64
-	GroupDir     string         // host path to the dir holding this group's session subdirs
-	ClaudeHome   string         // OPTIONAL host dir persisted as the container's ~/.claude
-	VaultDir     string         // OPTIONAL host knowledge-vault dir, mounted rw at /vault
-	CACertPath   string         // OPTIONAL host path to the credential-proxy CA, mounted RO
-	PluginsDir   string         // OPTIONAL host plugins dir, mounted RO at /plugins
-	ExtraMounts  []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
+	Image          string  // runner image, e.g. "goclaw-runner:latest"
+	Runtime        Runtime // OCI runtime (crun default)
+	AgentGroupID   int64
+	GroupDir       string         // host path to the dir holding this group's session subdirs
+	ClaudeHome     string         // OPTIONAL host dir persisted as the container's ~/.claude
+	VaultDir       string         // OPTIONAL host knowledge-vault dir, mounted rw at /vault
+	CACertPath     string         // OPTIONAL host path to the credential-proxy CA, mounted RO
+	PluginsDir     string         // OPTIONAL host plugins dir, mounted RO at /plugins
+	ChannelSockDir string         // OPTIONAL host channel-socket dir, mounted RW at /run/goclaw/channels
+	ExtraMounts    []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
 
 // claudeHomePath is where the container's claude CLI keeps its config + session
@@ -48,6 +49,15 @@ const pluginsMountPath = "/plugins"
 // PluginsContainerPath is the in-container path of the plugins mount, exported so
 // the runner knows where to discover plugins.
 func PluginsContainerPath() string { return pluginsMountPath }
+
+// channelSockMountPath is where the host's per-channel Unix sockets are mounted
+// READ-WRITE. The in-container runner dials <name>.sock here to bridge a channel
+// plugin's stdio to the host relay. Must match cmd/claude-runner's channelSocketDir.
+const channelSockMountPath = "/run/goclaw/channels"
+
+// ChannelSockContainerPath is the in-container path of the channel-socket mount,
+// exported so the host and runner agree on where the sockets live.
+func ChannelSockContainerPath() string { return channelSockMountPath }
 
 // caCertMountPath is where the credential-proxy CA cert is mounted (read-only)
 // in the container. The runner's trust env vars (NODE_EXTRA_CA_CERTS,
@@ -197,6 +207,27 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 				ReadWrite:     false,
 			})
 		}
+	}
+
+	// Mount the channel-socket dir READ-WRITE at /run/goclaw/channels. The HOST listens
+	// on each per-channel <name>.sock (the trusted relay); the in-container runner dials
+	// it and bridges the channel plugin's stdio across. This is the one container mount
+	// the runner writes (a duplex socket), and it is mounted ONCE as a DIRECTORY so a
+	// hot-added channel is just a new socket file inside it, never a new mount (which a
+	// running container cannot take). The dir is created so the mount source exists.
+	if gr.ChannelSockDir != "" {
+		sockDir, err := filepath.Abs(gr.ChannelSockDir)
+		if err != nil {
+			return fmt.Errorf("runtime: resolve channel socket dir %q: %w", gr.ChannelSockDir, err)
+		}
+		if err := os.MkdirAll(sockDir, 0o755); err != nil {
+			return fmt.Errorf("runtime: create channel socket dir %q: %w", sockDir, err)
+		}
+		groupMounts = append(groupMounts, mounts.Mount{
+			HostPath:      sockDir,
+			ContainerPath: channelSockMountPath,
+			ReadWrite:     true,
+		})
 	}
 
 	spec := Spec{

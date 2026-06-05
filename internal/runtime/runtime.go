@@ -45,14 +45,15 @@ type Spec struct {
 
 // Manager drives Podman.
 type Manager struct {
-	podmanBin  string            // path/name of the podman binary
-	image      string            // runner image to launch
-	runtime    Runtime           // OCI runtime for launched containers
-	allowlist  *mounts.Allowlist // validates extra group mounts (may be nil)
-	env        map[string]string // env vars set on every launched container
-	vaultDir   string            // host knowledge-vault dir, mounted at /vault (may be empty)
-	caCertPath string            // host path to the credential-proxy CA cert, mounted RO (may be empty)
-	pluginsDir string            // host plugins dir, mounted RO at /plugins (may be empty)
+	podmanBin   string            // path/name of the podman binary
+	image       string            // runner image to launch
+	runtime     Runtime           // OCI runtime for launched containers
+	allowlist   *mounts.Allowlist // validates extra group mounts (may be nil)
+	env         map[string]string // env vars set on every launched container
+	vaultDir    string            // host knowledge-vault dir, mounted at /vault (may be empty)
+	caCertPath  string            // host path to the credential-proxy CA cert, mounted RO (may be empty)
+	pluginsDir  string            // host plugins dir, mounted RO at /plugins (may be empty)
+	chanSockDir string            // host channel-socket dir, mounted RW at /run/goclaw/channels (may be empty)
 
 	// ensureMu serializes EnsureGroupRunner per agent group. The router (on a new
 	// message) and the sweep (recovery) both call EnsureRunner concurrently; the
@@ -135,6 +136,18 @@ func (m *Manager) WithPlugins(dir string) *Manager {
 	return m
 }
 
+// WithChannelSockets sets the host directory holding per-channel Unix sockets, mounted
+// READ-WRITE at /run/goclaw/channels in every runner container. The HOST listens on
+// each <name>.sock (the trusted channel relay); the in-container runner DIALS it and
+// bridges the channel plugin's stdio across, so the host drives a sandboxed channel
+// plugin without ever running it. This is the ONE container mount the runner writes
+// (a duplex socket), distinct from the read-only /plugins and the single-writer SQLite
+// pair. Empty disables channel plugins. Returns m for chaining.
+func (m *Manager) WithChannelSockets(dir string) *Manager {
+	m.chanSockDir = dir
+	return m
+}
+
 // EnsureRunner implements the RunnerEnsurer interface used by the router and
 // sweep: it ensures a runner container is up for the given agent group,
 // launching one (mounting groupDir at /sessions, plus any extra mounts that
@@ -144,15 +157,16 @@ func (m *Manager) WithPlugins(dir string) *Manager {
 func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir string, extra ...mounts.Request) error {
 	validated := m.validateExtra(extra)
 	return m.EnsureGroupRunner(ctx, GroupRunner{
-		Image:        m.image,
-		Runtime:      m.runtime,
-		AgentGroupID: agentGroupID,
-		GroupDir:     groupDir,
-		ClaudeHome:   claudeHomeFor(groupDir),
-		VaultDir:     m.vaultDir,
-		CACertPath:   m.caCertPath,
-		PluginsDir:   m.pluginsDir,
-		ExtraMounts:  validated,
+		Image:          m.image,
+		Runtime:        m.runtime,
+		AgentGroupID:   agentGroupID,
+		GroupDir:       groupDir,
+		ClaudeHome:     claudeHomeFor(groupDir),
+		VaultDir:       m.vaultDir,
+		CACertPath:     m.caCertPath,
+		PluginsDir:     m.pluginsDir,
+		ChannelSockDir: m.chanSockDir,
+		ExtraMounts:    validated,
 	})
 }
 

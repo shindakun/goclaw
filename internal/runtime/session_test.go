@@ -136,6 +136,52 @@ func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestEnsureGroupRunner_MountsChannelSocketDirRW(t *testing.T) {
+	var calls []string
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
+
+	sockDir := t.TempDir()
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
+	gr := GroupRunner{
+		Image:          "goclaw-runner:latest",
+		AgentGroupID:   1,
+		GroupDir:       filepath.Join("data", "sessions", "1"),
+		ChannelSockDir: sockDir,
+	}
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	run := calls[1]
+
+	absSock, _ := filepath.Abs(sockDir)
+	// The channel socket dir is mounted READ-WRITE (":Z", not ":ro") at the agreed
+	// container path, so the in-container runner can dial the host's sockets there.
+	want := absSock + ":" + channelSockMountPath + ":Z"
+	if !strings.Contains(run, want) {
+		t.Errorf("run argv missing channel socket mount %q\n  got: %s", want, run)
+	}
+	if strings.Contains(run, absSock+":"+channelSockMountPath+":ro") {
+		t.Errorf("channel socket mount is read-only; must be RW: %s", run)
+	}
+	// The exported container path must match what the runner dials.
+	if ChannelSockContainerPath() != channelSockMountPath {
+		t.Errorf("ChannelSockContainerPath()=%q != %q", ChannelSockContainerPath(), channelSockMountPath)
+	}
+}
+
+func TestEnsureGroupRunner_NoChannelMountWhenUnset(t *testing.T) {
+	var calls []string
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
+	gr := GroupRunner{Image: "goclaw-runner:latest", AgentGroupID: 1, GroupDir: filepath.Join("data", "sessions", "1")}
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if strings.Contains(calls[1], channelSockMountPath) {
+		t.Errorf("channel socket mount present when ChannelSockDir unset: %s", calls[1])
+	}
+}
+
 func TestEnsureGroupRunner_SkipsWhenRunning(t *testing.T) {
 	var calls []string
 	name := "goclaw-1"
