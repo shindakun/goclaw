@@ -167,6 +167,59 @@ Property: the agent can **use** a credential (make authenticated calls) but cann
 **read** it. An injecting proxy never exposes the token to the caller; an API does
 not echo your auth header back. The agent gets the capability, not the secret.
 
+### How interception works (and how HTTPS is "maintained")
+
+A natural question: if the proxy intercepts TLS, how is the connection still HTTPS once
+the cert is reauthored by the proxy? The framing has a hidden assumption worth correcting
+first: **the upstream's real cert is never intercepted or rewritten. It is never even seen
+by the client.** The proxy TERMINATES one TLS session and ORIGINATES a second, separate
+one. "Maintaining HTTPS" does not mean preserving the original cert end to end; it means
+each of the two legs is independently a valid, encrypted, authenticated TLS session.
+
+Step by step, for `https://api.anthropic.com`:
+
+1. **The client opts into the proxy.** The container's env has
+   `HTTPS_PROXY=http://host.docker.internal:<port>`, so the agent's tooling does NOT dial
+   Anthropic. It sends the proxy an HTTP `CONNECT api.anthropic.com:443`. The proxy
+   hijacks that raw TCP connection, replies `200 Connection Established`, and the client,
+   believing it has a clean tunnel, starts a TLS handshake INTO that tunnel.
+2. **The proxy terminates the client's TLS with a freshly MINTED leaf, not Anthropic's
+   cert.** On the fly it generates a new certificate that CLAIMS to be `api.anthropic.com`:
+   a new ECDSA P-256 key, `CommonName`/SAN = the requested host (no wildcards), 24h
+   validity, cached per host, and **signed by goclaw's own CA private key** (with the CA
+   cert appended to the chain). `tls.Server(client, leafCfg)` then completes a handshake
+   AS IF it were Anthropic. The client's TLS now terminates at the proxy, with a key the
+   proxy holds, so the proxy can read the plaintext.
+3. **The client accepts that cert only because goclaw's CA is trusted IN THE CONTAINER.**
+   A normal client would reject it (the CA is in no public root store). It validates only
+   because goclaw's CA cert is mounted read-only into the container's trust store
+   (`NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `GIT_SSL_CAINFO` point at it). So inside the
+   container, and only there, a leaf goclaw signed for `api.anthropic.com` chains to a
+   trusted root and the name matches, so the handshake succeeds.
+4. **The proxy opens a SECOND, independent TLS session to the real Anthropic.** Holding
+   the plaintext request, it injects the real `Authorization` header (the token the
+   container never has) and forwards over a fresh TLS connection to the actual
+   `api.anthropic.com`, validated against the SYSTEM root store, Anthropic's real cert,
+   verified normally. Here the proxy is just an ordinary HTTPS client.
+
+The topology is two TLS sessions spliced at the proxy, not one passed through:
+
+```text
+container client ──TLS #1──> proxy ──TLS #2──> api.anthropic.com
+  trusts goclaw CA          (plaintext          validates Anthropic's
+  cert says "anthropic"      visible here;        real cert vs the
+  signed by goclaw CA        token injected)      system root store
+```
+
+So is HTTPS maintained? **Yes, but not end to end.** There is a point, inside the proxy,
+on the host, where the bytes are plaintext, and that is the POINT, not a flaw: the proxy
+must see plaintext to inject the credential the container is not allowed to hold. What is
+maintained is that each leg is a real, validated TLS session (leg 1 against goclaw's CA we
+deliberately trust in-container; leg 2 against Anthropic's real cert via system roots), so
+nothing speaks unencrypted over the network. This is the SAME mechanism as a generic MITM
+attack; what makes it safe rather than an attack is the trust scoping below, the forging
+CA is trusted ONLY inside the sandbox, nowhere else.
+
 ### Proxy CA
 
 The proxy mints short-lived per-host leaf certs from a CA the container trusts:
