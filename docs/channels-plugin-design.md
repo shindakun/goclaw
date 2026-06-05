@@ -1,10 +1,20 @@
 # Channel plugins: running an untrusted channel in the sandbox
 
-Status: DESIGN (nothing here is built yet). This doc covers how a third-party
-**channel** can be added to goclaw WITHOUT giving untrusted code a foothold on the
-host. The deciding constraint and the whole reason this doc exists: a channel needs a
-network front door, the sandbox cannot bind a hot-added one, and we refuse to run
-untrusted code on the host.
+Status: PARTIAL. The host<->channel-plugin PROTOCOL is built and proven LIVE: goclaw
+launches the goclawkit IRC reference plugin (`goclawkit/cmd/irc`), it dials Libera over
+TLS, joins a channel, and messages flow both ways through goclaw's host-side
+`ChannelClient` (a real `#goclawtester` mention arrived as inbound and a reply posted
+back). What is built so far is the DIRECT (no-container) path: `internal/plugin.
+ChannelClient` (host half of `ServeChannel`), `kind: channel` accepted in the manifest,
+the env allowlist (`Manifest.InjectEnv` / `MinimalEnvBase`), and a dev harness
+(`cmd/chantest`). NOT yet built: the `channels.ChannelAdapter` wrapper that puts inbound
+through the real router/agent (next), the sandboxed relay-over-socket boundary, and
+hot-reload. See section 9 for the current position in the build order.
+
+This doc covers how a third-party **channel** can be added to goclaw WITHOUT giving
+untrusted code a foothold on the host. The deciding constraint and the whole reason this
+doc exists: a channel needs a network front door, the sandbox cannot bind a hot-added
+one, and we refuse to run untrusted code on the host.
 
 ## What a channel actually is (the contract, not the transport)
 
@@ -420,11 +430,12 @@ no-host local smoke test it is today.
 ### 6d. The dialer (4a) is what the SDK's channel side is FOR
 
 The outbound dialer (section 4a) is the shape that justifies a channel PLUGIN: untrusted
-third-party protocol code we want in the box. `cmd/webhook` does NOT exercise it (it is a
-listener, not a dialer), so a SECOND worked example in goclawkit would be valuable: a
-minimal outbound-dialer channel (even one that dials a localhost echo upstream, or the
-IRC gateway from section 4a) to prove the dialer path end to end. That is an SDK addition
-(a new `cmd/<example>`), not a wire change. `ServeChannel` already supports it unchanged.
+third-party protocol code we want in the box. `cmd/webhook` does not exercise it (it is a
+listener, not a dialer), so goclawkit ships a SECOND worked example that does:
+`goclawkit/cmd/irc`, a minimal IRC bridge (dials out over TLS, joins, relays mentions and
+DMs). It proves the dialer path end to end and is the build goclaw's `ChannelClient` was
+validated against (PROVEN LIVE on Libera). `ServeChannel` supported it with no wire
+change, exactly as predicted: the channel SDK side needed nothing new.
 
 ## 7. Security review
 
@@ -503,45 +514,52 @@ INTERNET-INBOUND CHANNELS (4b) and LOCAL-BRIDGE CHANNELS (4c), the first-party f
 - Config (channel name, token, outbound/local target) is host-side state, not a
   downloaded artifact. Adding/removing one is a host config change, applied live.
 
-## 9. Recommended build order
+## 9. Build order (with current status)
 
-Build the boundary, then the OUTBOUND DIALER first (it is the real hot-add plugin, needs
-no ingress, and is the shape nearly every chat platform supports). Internet-inbound and
-local-bridge are first-party host features built only when a target platform forces them.
+Prove the host<->plugin PROTOCOL on the direct (no-container) path FIRST, with the
+OUTBOUND DIALER (the real hot-add plugin, needs no ingress, the shape nearly every chat
+platform supports), THEN slide the sandboxed boundary underneath it. Building the
+boundary first would have meant debugging two new things at once; proving the protocol
+against a real server first means the boundary is the only unknown when we add it.
 
-1. Pre-mounted socket dir: mount `<dataDir>/run/channels/` -> `/run/goclaw/channels/`
-   read-write at container start (section 5a). One mount, fixed at run time.
-2. Boundary: a Unix-socket `Transport` on the host relay and the in-container glue that
-   pipes a socket file <-> plugin stdio. Prove it with the EXISTING stub/roll machinery
-   before any channel semantics.
-3. Host channel relay implementing `channels.ChannelAdapter` over the boundary, reading
-   `channel.inbound`, writing `channel.send`. Register it; make the router treat it like
-   Telegram. Enforce identity namespacing in the relay (section 7).
-4. Sub-shape 4a (outbound dialer) as the FIRST end-to-end channel plugin and a worked
-   goclawkit example. An IRC GATEWAY is the recommended first one: a single dial-out, no
-   inbound port, so it isolates discovery, the socket boundary, hot-reload, and the
-   long-lived stateful connection (PING/PONG, reconnect, re-JOIN) with nothing else in
-   the way. It also forces the real ChatID/identity mapping (channel vs PM,
-   server-asserted nicks namespaced per section 7). Validates that untrusted
-   upstream-protocol parsing stays in the box. Discord/Matrix/XMPP follow as the same
-   shape with heavier protocols.
-5. Host-side `kind: channel` discovery and hot-reload for 4a (section 8).
-   `channels.Registry.Unregister` is already in place for the hot-remove path.
-6. (Only if a target platform forces it) Internet-inbound host ingress (section 4b): one
-   always-on listener, `/channels/<name>/inbound` routes, host-side auth + identity. This
-   is the fallback inbound webhook, a FIRST-PARTY feature; goclawkit's `cmd/webhook` is
-   the SDK protocol demo for it, not an installed plugin. Local-bridge (4c) is the same
-   first-party pattern on a loopback/unix endpoint.
-7. Manifest: flip `internal/plugin/manifest.go`'s `case "channel"` from
-   "not supported yet" to validated (a channel manifest has no `command`, lists its
-   env var NAMES, declares `kind: channel`). Note this is for the 4a dialer shape; the
-   inbound and local-bridge features are host config, not a plugin manifest.
+1. DONE. Accept `kind: channel` in the manifest (`internal/plugin/manifest.go`); a
+   channel has no `command`, lists its env var NAMES, declares `kind: channel`.
+2. DONE. Env allowlist: `Manifest.InjectEnv` + `MinimalEnvBase` hand a plugin ONLY its
+   declared env: names on a PATH-only base, never the host env (section 6/7). The
+   tool-plugin launcher leak (bare os.Environ()) was fixed in the same change.
+3. DONE. Host channel client: `internal/plugin.ChannelClient`, the host half of
+   goclawkit's `ServeChannel`. Handshake asserting kind=channel, a read loop surfacing
+   `channel.inbound` as a Go channel, `SendOutbound` writing `channel.send` correlated
+   by frame id.
+4. DONE. Dev harness `cmd/chantest`: launches a channel plugin DIRECTLY (no container,
+   no socket, no agent), prints inbound, optionally echoes. PROVEN LIVE against the
+   goclawkit IRC plugin: dialed Libera over TLS, joined `#goclawtester`, a real mention
+   arrived as inbound and a reply posted back. This isolates the channel.* protocol with
+   the boundary still absent, which is exactly the point.
+5. NEXT. `channels.ChannelAdapter` wrapper over `ChannelClient`: `Start()` returns the
+   inbound stream mapped to `channels.InboundMsg`; `Send()` calls `SendOutbound`. Register
+   it in `channels.Registry` so the real ROUTER and AGENT see IRC messages (today chantest
+   prints them; this routes them). Enforce identity namespacing (`irc:<network>/<nick>`,
+   section 7) at the mapping boundary. The two message types are field-for-field aligned,
+   so this is thin.
+6. THEN. The sandboxed boundary (sections 4.0, 5a): pre-mounted socket dir mounted once at
+   container start, the in-container relay glue that pipes a per-channel socket file <->
+   plugin stdio, so the SAME `ChannelClient` reaches a plugin running in the box instead of
+   on the host. Plus host-side `kind: channel` discovery and hot-reload (section 8);
+   `channels.Registry.Unregister` is already in place for hot-remove.
+7. (Only if a target platform forces it) Internet-inbound host ingress (section 4b): one
+   always-on listener, `/channels/<name>/inbound` routes, host-side auth + identity. The
+   fallback inbound webhook, a FIRST-PARTY feature; goclawkit's `cmd/webhook` is the SDK
+   protocol demo, not an installed plugin. Local-bridge (4c) is the same first-party
+   pattern on a loopback/unix endpoint.
 
 ## 10. Open questions to resolve during build
 
-- Container egress for 4a dialers: does the egress policy permit a chat-gateway dial
-  from the container, or must specific upstreams be allowlisted (like the credential
-  proxy's per-host injection)? Determines whether 4a option A (plugin dials) is viable.
+- Container egress for 4a dialers: HOST egress is proven (the IRC plugin dialed Libera
+  over TLS from the host via chantest). The open question is the CONTAINER: does the
+  agent container's egress policy permit a chat-gateway dial, or must specific upstreams
+  be allowlisted (like the credential proxy's per-host injection)? Determines whether 4a
+  option A (plugin dials, in the box) is viable once the sandboxed boundary lands.
 - RESOLVED (section 4.0 / 6b): a pure inbound webhook is a FIRST-PARTY host-ingress
   feature, not a hot-added plugin, because a hot-added channel cannot get an externally
   -reachable container port without a restart. It is also a FALLBACK shape, reached only
