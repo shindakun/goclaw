@@ -13,20 +13,16 @@ import (
 	"github.com/shindakun/goclaw/internal/plugin"
 )
 
-// TestLaunchChannel_BridgesStdioToSocket proves the runner's channel glue connects a
-// plugin process's stdin/stdout to the host's per-channel Unix socket in BOTH
-// directions. It uses `cat` as a stand-in plugin (echoes stdin to stdout), so the test
-// exercises the byte bridge itself without a real plugin binary or the framed protocol:
-// a line the host writes to the socket should come back, having passed
-// socket -> plugin stdin -> (cat) -> plugin stdout -> socket.
-func TestLaunchChannel_BridgesStdioToSocket(t *testing.T) {
-	// Point the in-container socket dir at a temp dir for the test.
+// TestLaunchChannel_BridgesStdioToEndpoint proves the runner's channel glue reads the
+// host-written .endpoint, dials it, and connects the plugin process's stdin/stdout to
+// that connection in BOTH directions. It uses `cat` as a stand-in plugin (echoes stdin
+// to stdout) and a unix endpoint (the test runs natively, so the endpoint path is a real
+// socket): a line the host writes should come back, having passed
+// conn -> plugin stdin -> (cat) -> plugin stdout -> conn.
+func TestLaunchChannel_BridgesStdioToEndpoint(t *testing.T) {
 	tmp := t.TempDir()
-	old := channelSocketDir
-	channelSocketDir = tmp
-	defer func() { channelSocketDir = old }()
 
-	// Host side: listen on the per-channel socket the runner will dial.
+	// Host side: listen on a unix socket the runner will dial via the .endpoint.
 	sockPath := filepath.Join(tmp, "echo.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -68,6 +64,12 @@ func TestLaunchChannel_BridgesStdioToSocket(t *testing.T) {
 	man, err := plugin.LoadManifest(pdir)
 	if err != nil {
 		t.Fatalf("load manifest: %v", err)
+	}
+
+	// The host writes .endpoint into the plugin dir; the runner reads it to know how to
+	// dial. Here it points at the real test socket (native run, so the path is direct).
+	if err := plugin.WriteChannelEndpoint(pdir, plugin.ChannelEndpoint{Transport: "unix", Path: sockPath}); err != nil {
+		t.Fatalf("write endpoint: %v", err)
 	}
 
 	ph.launchChannel(ctx, man, pdir)

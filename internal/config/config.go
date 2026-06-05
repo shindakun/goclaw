@@ -79,6 +79,12 @@ type Config struct {
 	// runner reaches it at host.docker.internal:<port>; the real API key never
 	// enters the container (brief §8).
 	CredProxyPort string
+	// ChannelTransport selects how the host channel relay and the in-container runner
+	// connect for channel plugins: "unix" (a mounted Unix socket; works on native Linux)
+	// or "tcp" (the host binds TCP and the container dials host.docker.internal; works on
+	// macOS+podman-VM, where a mounted Unix socket connect is "operation not supported").
+	// Defaults to "tcp" since the common dev host is macOS.
+	ChannelTransport string
 	// ProxyCAKey / ProxyCACert optionally provide the TLS-intercepting proxy's CA
 	// (PEM) via the environment, keeping it out of the data dir. When unset, the
 	// proxy auto-generates a CA and persists it under the data dir (0600 key).
@@ -122,6 +128,7 @@ func Load() (*Config, error) {
 		GitHubToken:             os.Getenv("GOCLAW_GITHUB_TOKEN"),
 		SecretEncryptionKey:     os.Getenv("GOCLAW_SECRET_ENCRYPTION_KEY"),
 		CredProxyPort:           getenv("GOCLAW_CREDPROXY_PORT", "18080"),
+		ChannelTransport:        getenv("GOCLAW_CHANNEL_TRANSPORT", "tcp"),
 		ProxyCAKey:              os.Getenv("GOCLAW_PROXY_CA_KEY"),
 		ProxyCACert:             os.Getenv("GOCLAW_PROXY_CA_CERT"),
 	}

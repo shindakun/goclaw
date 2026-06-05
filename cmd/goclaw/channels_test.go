@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/shindakun/goclaw/internal/channels"
+	chanplugin "github.com/shindakun/goclaw/internal/channels/plugin"
+	"github.com/shindakun/goclaw/internal/plugin"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -28,14 +30,14 @@ func writePlugin(t *testing.T, root, name, body string) {
 // plugin and a dot-dir are skipped.
 func TestSetupChannelPlugins_RegistersChannelsOnly(t *testing.T) {
 	pluginsDir := t.TempDir()
-	sockDir := t.TempDir()
 
 	writePlugin(t, pluginsDir, "irc", "name: irc\nkind: channel\nexec: irc\nenv:\n  - IRC_SERVER\n")
 	writePlugin(t, pluginsDir, "roll", "name: roll\nkind: tool\nexec: roll\ncommand: roll\n")
 	writePlugin(t, pluginsDir, ".half.installing", "name: x\nkind: channel\nexec: x\n")
 
+	cfg := chanplugin.Config{Transport: chanplugin.TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}
 	registry := channels.NewRegistry()
-	relay, err := setupChannelPlugins(registry, sockDir, pluginsDir, quietLog())
+	relay, err := setupChannelPlugins(registry, cfg, pluginsDir, quietLog())
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -55,16 +57,21 @@ func TestSetupChannelPlugins_RegistersChannelsOnly(t *testing.T) {
 		t.Fatalf("registered %d channels, want 1", got)
 	}
 
-	// The relay bound the channel's socket under sockDir.
-	if _, err := os.Stat(filepath.Join(sockDir, "irc.sock")); err != nil {
-		t.Fatalf("irc socket not bound: %v", err)
+	// The relay wrote a .endpoint into the channel's plugin dir (so the runner can dial).
+	ep, err := plugin.ReadChannelEndpoint(filepath.Join(pluginsDir, "irc"))
+	if err != nil {
+		t.Fatalf("irc .endpoint not written: %v", err)
+	}
+	if ep.Transport != "tcp" || ep.Addr == "" || ep.Token == "" {
+		t.Fatalf("endpoint = %+v, want tcp with addr+token", ep)
 	}
 }
 
 // An absent plugins dir is fine (no channels), and still returns a usable relay.
 func TestSetupChannelPlugins_NoPluginsDir(t *testing.T) {
+	cfg := chanplugin.Config{Transport: chanplugin.TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}
 	registry := channels.NewRegistry()
-	relay, err := setupChannelPlugins(registry, t.TempDir(), filepath.Join(t.TempDir(), "absent"), quietLog())
+	relay, err := setupChannelPlugins(registry, cfg, filepath.Join(t.TempDir(), "absent"), quietLog())
 	if err != nil {
 		t.Fatalf("setup with absent plugins dir: %v", err)
 	}

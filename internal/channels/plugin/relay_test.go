@@ -7,11 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/shindakun/goclaw/internal/channels"
+	plug "github.com/shindakun/goclaw/internal/plugin"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -21,36 +21,44 @@ func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, n
 // adapter whose Start surfaces an inbound (sender namespaced) and whose Send reaches the
 // plugin. This exercises Relay -> AttachChannel -> Adapter over a real Unix socket.
 func TestRelay_OpenAttachesAndRoutes(t *testing.T) {
-	sockDir := t.TempDir()
-	r, err := NewRelay(sockDir, quietLog())
+	// Use the TCP transport: it is the path that works on macOS, and the endpoint Addr is
+	// a real bind address the fake runner can dial (the unix endpoint path is a container
+	// path that does not exist in a native test).
+	pdir := t.TempDir()
+	r, err := NewRelay(Config{Transport: TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}, quietLog())
 	if err != nil {
 		t.Fatalf("new relay: %v", err)
 	}
 	defer r.CloseAll()
 
-	// The fake runner dials the socket once it exists and speaks the plugin side.
-	pluginSent := make(chan string, 1)
-	go func() {
-		sockPath := filepath.Join(sockDir, "irc.sock")
-		conn := dialWhenReady(t, sockPath, 5*time.Second)
-		if conn == nil {
-			return
-		}
-		_ = fakeChannelPluginWire(conn, pluginSent)
-	}()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Open returns immediately (the plugin dials in the background); inbound flows once
-	// the fake runner connects and the handshake completes.
-	adapter, err := r.Open("irc")
+	// the fake runner reads .endpoint, dials, sends the token, and handshakes.
+	adapter, err := r.Open("irc", pdir)
 	if err != nil {
 		t.Fatalf("relay open: %v", err)
 	}
 	if adapter.Name() != "irc" {
 		t.Fatalf("adapter name = %q, want irc", adapter.Name())
 	}
+
+	// The fake runner reads the host-written .endpoint, dials TCP, sends the token line,
+	// then speaks the plugin side of the protocol.
+	pluginSent := make(chan string, 1)
+	go func() {
+		ep, derr := plug.ReadChannelEndpoint(pdir)
+		if derr != nil {
+			return
+		}
+		conn := dialTCPWhenReady(t, ep.Addr, 5*time.Second)
+		if conn == nil {
+			return
+		}
+		_, _ = conn.Write([]byte(ep.Token + "\n")) // token line first
+		_ = fakeChannelPluginWire(conn, pluginSent)
+	}()
 
 	stream, err := adapter.Start(ctx)
 	if err != nil {
@@ -83,32 +91,34 @@ func TestRelay_OpenAttachesAndRoutes(t *testing.T) {
 		t.Fatal("plugin never received the outbound")
 	}
 
-	// Close removes the channel and unlinks the socket.
+	// Close removes the channel and stops listening (the endpoint addr stops accepting).
+	ep, _ := plug.ReadChannelEndpoint(pdir)
 	if !r.Close("irc") {
 		t.Fatal("Close reported the channel was not open")
 	}
-	if _, err := net.Dial("unix", filepath.Join(sockDir, "irc.sock")); err == nil {
-		t.Fatal("socket still connectable after Close")
+	if c, err := net.DialTimeout("tcp", ep.Addr, 500*time.Millisecond); err == nil {
+		_ = c.Close()
+		t.Fatal("endpoint still accepting after Close")
 	}
 }
 
 func TestRelay_RejectsBadName(t *testing.T) {
-	r, _ := NewRelay(t.TempDir(), quietLog())
+	r, _ := NewRelay(Config{Transport: TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}, quietLog())
 	for _, bad := range []string{"", "../evil", "a/b", "x.sock"} {
-		if _, err := r.Open(bad); err == nil {
+		if _, err := r.Open(bad, t.TempDir()); err == nil {
 			t.Errorf("Open(%q) succeeded, want rejection", bad)
 		}
 	}
 }
 
 // Open returns immediately even with no dialer (the container launches lazily). Until a
-// plugin attaches, Send errors with "not connected", and Close cleans up the socket.
+// plugin attaches, Send errors with "not connected".
 func TestRelay_OpenReturnsBeforeDialAndSendErrorsUntilAttached(t *testing.T) {
-	r, _ := NewRelay(t.TempDir(), quietLog())
+	r, _ := NewRelay(Config{Transport: TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}, quietLog())
 	defer r.CloseAll()
 
 	start := time.Now()
-	adapter, err := r.Open("lonely")
+	adapter, err := r.Open("lonely", t.TempDir())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -123,9 +133,6 @@ func TestRelay_OpenReturnsBeforeDialAndSendErrorsUntilAttached(t *testing.T) {
 
 	if !r.Close("lonely") {
 		t.Fatal("Close reported not open")
-	}
-	if _, err := net.Dial("unix", filepath.Join(r.sockDir, "lonely.sock")); err == nil {
-		t.Fatal("socket left behind after Close")
 	}
 }
 
@@ -257,11 +264,11 @@ func readWire(r io.Reader) (wireFrame, error) {
 	return f, nil
 }
 
-func dialWhenReady(t *testing.T, path string, timeout time.Duration) net.Conn {
+func dialTCPWhenReady(t *testing.T, addr string, timeout time.Duration) net.Conn {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if c, err := net.Dial("unix", path); err == nil {
+		if c, err := net.Dial("tcp", addr); err == nil {
 			return c
 		}
 		time.Sleep(20 * time.Millisecond)

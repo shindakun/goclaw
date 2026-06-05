@@ -2,28 +2,22 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/shindakun/goclaw/internal/plugin"
 )
 
-// channelSocketDir is the in-container path where the host mounts the per-channel Unix
-// sockets (one <name>.sock per channel plugin). The host listens on each socket; the
-// runner DIALS it and bridges the plugin's stdio across, so the framed channel.*
-// protocol flows between the in-container plugin and the host relay. The host never
-// runs the plugin: it runs here, in the sandbox, and the host only connects.
-//
-// A var (not a const) so a test can point it at a temp dir; production never reassigns.
-var channelSocketDir = "/run/goclaw/channels"
+// The runner launches a kind:channel plugin in the sandbox and bridges its stdio to the
+// host relay, dialing whatever the host's .endpoint file in the plugin dir says (a Unix
+// socket on native Linux, or TCP to host.docker.internal across the macOS podman VM). The
+// host never runs the plugin: it runs here, in the sandbox, and the host only connects.
 
-// loadedChannel is one running channel plugin: its process, the socket connection
+// loadedChannel is one running channel plugin: its process, the relay connection
 // bridging it to the host, and the machinery to tear both down.
 type loadedChannel struct {
 	name string
@@ -62,13 +56,21 @@ func (ph *pluginHost) launchChannel(ctx context.Context, man plugin.Manifest, pd
 		return
 	}
 
-	// Dial the host's per-channel socket. The host listens; we retry until it is up
-	// (the host may create the socket slightly after the plugin dir appears, the same
-	// lazy-launch posture the container already has).
-	sock := filepath.Join(channelSocketDir, man.Name+".sock")
-	conn, err := dialSocket(ctx, sock, 10*time.Second)
+	// Read the host's dial info (.endpoint) from the plugin dir. The host writes it when
+	// it opens the relay; it tells us whether to dial a Unix socket or a TCP address (and
+	// carries the TCP auth token). Retry the read briefly: the host may write .endpoint
+	// slightly after the plugin dir appears.
+	ep, err := readEndpoint(ctx, pdir, 10*time.Second)
 	if err != nil {
-		ph.log.Error("channel: dial host socket", "plugin", man.Name, "sock", sock, "err", err)
+		ph.log.Error("channel: read endpoint", "plugin", man.Name, "dir", pdir, "err", err)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return
+	}
+	// Dial the host relay per the endpoint (unix or tcp), retrying until it accepts.
+	conn, err := plugin.DialChannelEndpoint(ep, 10*time.Second)
+	if err != nil {
+		ph.log.Error("channel: dial host relay", "plugin", man.Name, "endpoint", ep.LogString(), "err", err)
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return
@@ -82,15 +84,38 @@ func (ph *pluginHost) launchChannel(ctx context.Context, man plugin.Manifest, pd
 		done: make(chan struct{}),
 	}
 
-	// Bridge: socket -> plugin stdin, plugin stdout -> socket. Either direction ending
-	// (process exit or host disconnect) tears the channel down.
+	// Bridge: relay conn -> plugin stdin, plugin stdout -> relay conn. Either direction
+	// ending (process exit or host disconnect) tears the channel down.
 	go lc.pump(ph.log, conn, stdin, "host->plugin")
 	go lc.pump(ph.log, stdout, conn, "plugin->host")
 
 	ph.mu.Lock()
 	ph.channels[man.Name] = lc
 	ph.mu.Unlock()
-	ph.log.Info("channel plugin launched", "plugin", man.Name, "sock", sock)
+	ph.log.Info("channel plugin launched", "plugin", man.Name, "endpoint", ep.LogString())
+}
+
+// readEndpoint reads the host-written .endpoint from the plugin dir, retrying until it
+// appears or the deadline passes.
+func readEndpoint(ctx context.Context, pdir string, timeout time.Duration) (plugin.ChannelEndpoint, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		ep, err := plugin.ReadChannelEndpoint(pdir)
+		if err == nil {
+			return ep, nil
+		}
+		if ctx.Err() != nil {
+			return plugin.ChannelEndpoint{}, ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return plugin.ChannelEndpoint{}, err
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return plugin.ChannelEndpoint{}, ctx.Err()
+		}
+	}
 }
 
 // pump copies src->dst until one side closes, then tears the channel down so the other
@@ -121,30 +146,6 @@ func (lc *loadedChannel) stop() {
 			_ = lc.cmd.Wait()
 		}
 	})
-}
-
-// dialSocket dials a Unix socket, retrying until it connects or the deadline passes.
-// The host creates the socket; the runner waits for it.
-func dialSocket(ctx context.Context, path string, timeout time.Duration) (net.Conn, error) {
-	deadline := time.Now().Add(timeout)
-	var d net.Dialer
-	for {
-		conn, err := d.DialContext(ctx, "unix", path)
-		if err == nil {
-			return conn, nil
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("dial %s: %w", path, err)
-		}
-		select {
-		case <-time.After(100 * time.Millisecond):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
 }
 
 // loggerLike is the slice of *slog.Logger the pump uses (kept tiny so a test can pass a

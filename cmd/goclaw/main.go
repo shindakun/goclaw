@@ -143,7 +143,7 @@ func run(log *slog.Logger) error {
 	// channel is logged and skipped, never fatal.
 	var chanRelay *chanplugin.Relay
 	if cfg.LaunchRunner {
-		chanRelay, err = setupChannelPlugins(registry, channelSocketsHostDir(cfg), pluginsHostDir(cfg), log)
+		chanRelay, err = setupChannelPlugins(registry, channelRelayConfig(cfg), pluginsHostDir(cfg), log)
 		if err != nil {
 			return err
 		}
@@ -280,9 +280,14 @@ func run(log *slog.Logger) error {
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir).
-			WithCredCA(proxyCAHostPath).                   // empty when the proxy is off
-			WithPlugins(pluginsHostDir(cfg)).              // <data>/plugins, mounted RO at /plugins
-			WithChannelSockets(channelSocketsHostDir(cfg)) // <data>/run/channels, mounted RW
+			WithCredCA(proxyCAHostPath).     // empty when the proxy is off
+			WithPlugins(pluginsHostDir(cfg)) // <data>/plugins, mounted RO at /plugins
+		// The channel-socket mount is only needed for the "unix" channel transport; the
+		// "tcp" transport (default, for macOS) dials host.docker.internal and needs no
+		// mounted socket.
+		if cfg.ChannelTransport == "unix" {
+			mgr = mgr.WithChannelSockets(channelSocketsHostDir(cfg))
+		}
 		ensurer = mgr
 		runners = mgr
 		log.Info("runner launch enabled", "image", cfg.RunnerImage,
@@ -464,10 +469,21 @@ func pluginsHostDir(cfg *config.Config) string {
 }
 
 // channelSocketsHostDir is the host dir holding per-channel Unix sockets, mounted RW
-// into the container at /run/goclaw/channels. The host relay binds a socket here per
-// channel plugin; the in-container runner dials it. Lives under the data dir.
+// into the container at /run/goclaw/channels. Used only by the "unix" channel transport.
+// Lives under the data dir.
 func channelSocketsHostDir(cfg *config.Config) string {
 	return filepath.Join(cfg.DataDir, "run", "channels")
+}
+
+// channelRelayConfig builds the channel relay's transport config from cfg. "tcp" (the
+// default) has the host bind TCP and the container dial host.docker.internal, which works
+// on macOS+podman-VM where a mounted Unix socket connect fails; "unix" uses the mounted
+// socket dir (native Linux).
+func channelRelayConfig(cfg *config.Config) chanplugin.Config {
+	if cfg.ChannelTransport == "unix" {
+		return chanplugin.Config{Transport: chanplugin.TransportUnix, SockDir: channelSocketsHostDir(cfg)}
+	}
+	return chanplugin.Config{Transport: chanplugin.TransportTCP, TCPHost: "host.docker.internal"}
 }
 
 // setupChannelPlugins discovers installed kind:channel plugins, binds a host relay
@@ -475,8 +491,8 @@ func channelSocketsHostDir(cfg *config.Config) string {
 // like a built-in channel. The relay listens now and accepts the in-container runner's
 // dial in the background (the container launches lazily). A failure for one channel is
 // logged and skipped, never fatal; the returned relay is closed on host shutdown.
-func setupChannelPlugins(registry *channels.Registry, sockDir, pluginsDir string, log *slog.Logger) (*chanplugin.Relay, error) {
-	relay, err := chanplugin.NewRelay(sockDir, log)
+func setupChannelPlugins(registry *channels.Registry, cfg chanplugin.Config, pluginsDir string, log *slog.Logger) (*chanplugin.Relay, error) {
+	relay, err := chanplugin.NewRelay(cfg, log)
 	if err != nil {
 		return nil, fmt.Errorf("channel relay: %w", err)
 	}
@@ -491,11 +507,14 @@ func setupChannelPlugins(registry *channels.Registry, sockDir, pluginsDir string
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		man, err := plugin.LoadManifest(filepath.Join(pluginsDir, e.Name()))
+		pdir := filepath.Join(pluginsDir, e.Name())
+		man, err := plugin.LoadManifest(pdir)
 		if err != nil || man.Kind != "channel" {
 			continue // not a (valid) channel plugin
 		}
-		adapter, err := relay.Open(man.Name)
+		// pdir is the host plugin dir; the relay writes .endpoint here, and the runner
+		// reads it from the same dir mounted read-only into the container.
+		adapter, err := relay.Open(man.Name, pdir)
 		if err != nil {
 			log.Error("channel plugin: relay open failed", "channel", man.Name, "err", err)
 			continue

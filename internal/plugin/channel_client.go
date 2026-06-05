@@ -96,7 +96,15 @@ func LaunchChannel(ctx context.Context, name, execPath string, env []string, log
 // the client closes it. Performs the same handshake (requiring kind=channel) and starts
 // the same read loop as LaunchChannel.
 func AttachChannel(ctx context.Context, name string, rw io.ReadWriteCloser, log *slog.Logger) (*ChannelClient, error) {
-	c := newChannelClient(name, rw, rw, rw.Close, log)
+	return AttachChannelReader(ctx, name, rw, rw, rw.Close, log)
+}
+
+// AttachChannelReader is AttachChannel with an explicit reader, writer, and closer, so a
+// caller that has ALREADY consumed a prefix of the stream (e.g. a tcp endpoint reading a
+// leading auth-token line into a bufio.Reader) can hand that buffered reader in without
+// losing the buffered bytes. r and w are typically the same conn; closer tears it down.
+func AttachChannelReader(ctx context.Context, name string, r io.Reader, w io.Writer, closer func() error, log *slog.Logger) (*ChannelClient, error) {
+	c := newChannelClient(name, r, w, closer, log)
 	if err := c.start(); err != nil {
 		return nil, err
 	}
