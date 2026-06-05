@@ -190,6 +190,16 @@ func (r *Relay) Close(name string) bool {
 	return true
 }
 
+// OpenCount returns how many channels are currently open (registered). The host uses a
+// non-zero count to decide it should eagerly launch a runner container at startup, so a
+// channel plugin connects to its upstream immediately instead of waiting for a first
+// unrelated message.
+func (r *Relay) OpenCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.open)
+}
+
 // CloseAll tears down every open channel (host shutdown).
 func (r *Relay) CloseAll() {
 	r.mu.Lock()

@@ -294,6 +294,23 @@ func run(log *slog.Logger) error {
 			"mount_allowlist", cfg.MountAllowlistPath,
 			"claude_auth", claudeAuthKind(cfg),
 			"vault", vaultStatus(cfg.VaultDir))
+		// A channel plugin runs IN the container and must connect to its upstream (e.g.
+		// IRC) as soon as the host is up, not wait for some unrelated first message. So
+		// when channel plugins are installed, eagerly launch the default agent group's
+		// container at startup: its in-container runner discovers the channel plugins and
+		// they dial out immediately. Done in the background so a slow podman launch does
+		// not block host startup; a failure is logged, and the normal on-message launch
+		// path still applies.
+		if chanRelay != nil && chanRelay.OpenCount() > 0 {
+			go func() {
+				groupDir := db.AgentGroupDir(cfg.DataDir, agentGroupID)
+				if err := mgr.EnsureRunner(ctx, agentGroupID, groupDir); err != nil {
+					log.Error("eager runner launch for channel plugins failed", "agent_group", agentGroupID, "err", err)
+					return
+				}
+				log.Info("eager runner launched for channel plugins", "agent_group", agentGroupID)
+			}()
+		}
 		// A Claude Code OAuth token is short-lived (~12h) and the container can't
 		// refresh it - it WILL eventually 401. Steer toward a long-lived API key.
 		if cfg.ClaudeCodeOAuthToken != "" && cfg.AnthropicAPIKey == "" {
