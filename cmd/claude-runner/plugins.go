@@ -105,7 +105,12 @@ func (ph *pluginHost) reconcile(ctx context.Context) {
 // launch starts one plugin, registers its tools on the MCP server, and binds its
 // slash command. Errors are logged, never fatal.
 func (ph *pluginHost) launch(ctx context.Context, man plugin.Manifest, pdir string) {
-	c, err := plugin.Launch(ctx, man.Name, man.ExecPath(), os.Environ(), ph.log)
+	// A plugin gets ONLY the manifest's allowlisted env names on top of a secret-free
+	// PATH-only base, never the runner's full environment: a plugin is untrusted, and
+	// leaking the runner's env (which may carry injected values) to it is a needless
+	// over-share. The manifest env: list is the allowlist.
+	env := man.InjectEnv(plugin.MinimalEnvBase(), os.LookupEnv)
+	c, err := plugin.Launch(ctx, man.Name, man.ExecPath(), env, ph.log)
 	if err != nil {
 		ph.log.Error("plugins: launch failed", "plugin", man.Name, "err", err)
 		return

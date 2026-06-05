@@ -17,6 +17,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 )
 
 // Protocol constants. These MUST match goclawkit/pkg/ipc exactly; they are the
@@ -55,6 +56,13 @@ const (
 	topicShutdown  = "shutdown"
 	topicHeartbeat = "heartbeat"
 	topicInvoke    = "tool.invoke"
+
+	// Channel topics. A channel plugin (kind: channel) PUSHES inbound up as a one-way
+	// frameEvent on topicChannelInbound, and the host pushes outbound down as a
+	// frameRequest on topicChannelSend (correlated by ID like any request). These
+	// mirror the SDK's channel.* topics; tool plugins never use them.
+	topicChannelInbound = "channel.inbound"
+	topicChannelSend    = "channel.send"
 )
 
 // frame is one wire message. Payload is opaque bytes (JSON, decoded per topic).
@@ -227,4 +235,35 @@ type ToolInfo struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
+// --- channel payload structs (mirror goclawkit/pkg/plugin's Inbound/Outbound) ---
+
+// ChannelInbound is the payload of a channel.inbound event (frameEvent): a message
+// the channel plugin pushes up from the outside world. It mirrors goclawkit's
+// plugin.Inbound field for field so decoding is a straight unmarshal. The host maps
+// it onto channels.InboundMsg before it enters the router (where the access gate,
+// not the plugin, authorizes the sender).
+type ChannelInbound struct {
+	Channel   string    `json:"channel"`
+	ChatID    string    `json:"chat_id"`
+	SenderID  string    `json:"sender_id"`
+	Sender    string    `json:"sender"`
+	Text      string    `json:"text"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// ChannelOutbound is the payload of a channel.send request (frameRequest): a reply
+// the host hands the plugin to deliver. Mirrors goclawkit's plugin.Outbound.
+type ChannelOutbound struct {
+	Channel string `json:"channel"`
+	ChatID  string `json:"chat_id"`
+	Text    string `json:"text"`
+}
+
+// ChannelSendResult is the reply to channel.send (frameResult): OK on success, Error
+// set on failure. Mirrors goclawkit's plugin.SendResult.
+type ChannelSendResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
