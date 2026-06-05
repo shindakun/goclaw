@@ -26,9 +26,13 @@ import (
 // that reuses this same client.
 type ChannelClient struct {
 	name string
-	cmd  *exec.Cmd
-	sess *session
-	log  *slog.Logger
+	// shutdown tears down the underlying transport: for a spawned process it kills and
+	// reaps it (LaunchChannel); for an attached stream it closes the connection
+	// (AttachChannel). Decoupling this from a *exec.Cmd is what lets the SAME client
+	// drive a plugin over either a host child's stdio OR a socket to a sandboxed plugin.
+	shutdown func() error
+	sess     *session
+	log      *slog.Logger
 
 	info Info // filled by the handshake
 
@@ -69,23 +73,59 @@ func LaunchChannel(ctx context.Context, name, execPath string, env []string, log
 		return nil, fmt.Errorf("channel %q: start %s: %w", name, execPath, err)
 	}
 
-	c := &ChannelClient{
-		name:    name,
-		cmd:     cmd,
-		sess:    newSession(stdout, stdin),
-		log:     log,
-		inbound: make(chan ChannelInbound),
-		pending: make(map[uint64]chan ChannelSendResult),
-		done:    make(chan struct{}),
+	// shutdown for a spawned process: kill and reap it.
+	shutdown := func() error {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		return cmd.Wait()
 	}
+	c := newChannelClient(name, stdout, stdin, shutdown, log)
 	go c.drainStderr(stderr)
 
-	if err := c.handshake(); err != nil {
-		_ = c.kill()
+	if err := c.start(); err != nil {
 		return nil, err
 	}
-	go c.readLoop()
 	return c, nil
+}
+
+// AttachChannel drives a channel plugin over an ALREADY-CONNECTED stream (rw), instead
+// of spawning a process. This is the path the real daemon uses: the plugin runs in the
+// container and the host attaches to it across the boundary (a Unix socket), so the host
+// never exec-s the plugin binary. rw carries the framed protocol both ways; on shutdown
+// the client closes it. Performs the same handshake (requiring kind=channel) and starts
+// the same read loop as LaunchChannel.
+func AttachChannel(ctx context.Context, name string, rw io.ReadWriteCloser, log *slog.Logger) (*ChannelClient, error) {
+	c := newChannelClient(name, rw, rw, rw.Close, log)
+	if err := c.start(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// newChannelClient builds a client over a reader/writer pair with a transport-specific
+// shutdown. It does NOT handshake or loop; call start() for that.
+func newChannelClient(name string, r io.Reader, w io.Writer, shutdown func() error, log *slog.Logger) *ChannelClient {
+	return &ChannelClient{
+		name:     name,
+		shutdown: shutdown,
+		sess:     newSession(r, w),
+		log:      log,
+		inbound:  make(chan ChannelInbound),
+		pending:  make(map[uint64]chan ChannelSendResult),
+		done:     make(chan struct{}),
+	}
+}
+
+// start runs the handshake and, on success, launches the read loop. On a handshake
+// failure it tears the transport down.
+func (c *ChannelClient) start() error {
+	if err := c.handshake(); err != nil {
+		_ = c.shutdown()
+		return err
+	}
+	go c.readLoop()
+	return nil
 }
 
 // Info returns the plugin's announced identity.
@@ -243,13 +283,5 @@ func (c *ChannelClient) Close() error {
 	c.mu.Unlock()
 
 	_ = c.sess.send(frame{Type: frameControl, Topic: topicShutdown})
-	return c.kill()
-}
-
-// kill terminates the process and reaps it.
-func (c *ChannelClient) kill() error {
-	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	return c.cmd.Wait()
+	return c.shutdown()
 }
