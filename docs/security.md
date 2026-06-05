@@ -109,6 +109,20 @@ non-root container (the runner image, which carries git and the Go toolchain):
    commands at build time), or a `go.mod` `replace` directive (pulls code from
    anywhere); and it must import `goclawkit` (a real goclaw plugin does). These are
    the build-time code-execution vectors, refused before `go build` runs.
+   The scan also rejects source that references goclaw's host/agent CREDENTIAL env
+   var names (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `GOCLAW_GITHUB_TOKEN`,
+   `CLAUDE_CODE_OAUTH_TOKEN`, `GOCLAW_SECRET_ENCRYPTION_KEY`), and the distinctive
+   fragments those names split into, to catch a plugin reading them (including a
+   `"ANTHROPIC" + "_API_KEY"` style concatenation). IMPORTANT, read honestly: this
+   is a BEST-EFFORT DETERRENT, not a guarantee. A determined plugin can assemble the
+   var name at runtime (mid-word splits, base64, a value fetched at runtime) and slip
+   past any static grep; we do some looking, but a plugin is open-source code you
+   chose to install, and the source is public, so it is easy to work around. The
+   final responsibility is the operator's: install plugins you trust. The REAL
+   protections that do not depend on the scan are (a) the env allowlist, a plugin is
+   never handed these vars in the first place (see "Plugins run in the sandbox"), and
+   (b) the credential proxy, the container holds only placeholders. The scan is a
+   third, softer layer on top of those two.
 3. **Pure-Go, pinned build.** `CGO_ENABLED=0 GOOS=linux go build` produces a static
    Linux binary; CGO-off both enforces purity and matches how the plugin must run.
    The exact source commit is recorded so an install is reproducible and an update

@@ -197,6 +197,18 @@ func (in *Installer) List() ([]Manifest, error) {
 	return out, nil
 }
 
+// secretEnvScanPattern is the extended-regex (egrep) alternation the install scan
+// uses to reject plugin source that references goclaw's host/agent credential env var
+// names, or the distinctive fragments those names split into (to catch a
+// "ANTHROPIC" + "_API_KEY" style concatenation). It is a BEST-EFFORT DETERRENT, not a
+// guarantee: a runtime-assembled name (mid-word splits, base64, a fetched value)
+// evades any static grep. The real protections are the env allowlist (InjectEnv) and
+// the credential proxy. Common tokens (API/KEY/TOKEN alone) are deliberately excluded
+// to avoid false-positiving a plugin's own config; os.Environ() is not matched.
+// Exported via this constant so secretEnvScanPattern_test can verify catch/no-catch
+// against fixtures without the regex drifting from the script.
+const secretEnvScanPattern = `ANTHROPIC_API_KEY|ANTHROPIC|GH_TOKEN|GOCLAW_GITHUB_TOKEN|GITHUB_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|_OAUTH_TOKEN|GOCLAW_SECRET_ENCRYPTION_KEY|SECRET_ENCRYPTION`
+
 // installScript runs inside the build container. It clones (public, no auth),
 // scans the source for high-risk build-time and runtime red flags, builds a
 // pure-Go Linux binary, verifies it imports goclawkit, and stages the artifact +
@@ -204,7 +216,10 @@ func (in *Installer) List() ([]Manifest, error) {
 //
 // SECURITY: every step here runs in the sandbox (rootless, non-root, /out is the
 // only host-shared path). The host never sees or runs the untrusted source.
-const installScript = `
+//
+// installScript is composed (not a plain const) so the secret-scan regex is the single
+// source of truth shared with the test (secretEnvScanPattern).
+var installScript = `
 set -eu
 SRC=/work/plugin-src
 rm -rf "$SRC"
@@ -238,6 +253,27 @@ fi
 # Must depend on the plugin SDK (a goclaw plugin imports goclawkit).
 if ! grep -q 'github.com/shindakun/goclawkit' go.mod; then
   echo "rejected: not a goclaw plugin (does not require goclawkit)" >&2; exit 2
+fi
+
+# --- Host-secret read scan (DEFENSE IN DEPTH, best-effort, EVADABLE). ---
+# A plugin never legitimately needs to read goclaw's host/agent credential env
+# vars. Reject a plugin whose source names them, or names the distinctive
+# fragments those names split into (to catch a literal "ANT"+"HROPIC_API_KEY"
+# style concatenation). This is a deterrent against a naive hostile plugin and a
+# guard against an accidental leak, NOT a guarantee: a determined plugin can
+# assemble the var name at runtime (string math, base64, a fetched constant) and
+# slip past any static grep. The REAL protections are the env allowlist (the
+# plugin is never handed these vars; see Manifest.InjectEnv) and the credential
+# proxy (the container holds only placeholders). Because plugins are open-source
+# code the operator chooses to install, the final responsibility is the operator's:
+# install plugins you trust. See docs/security.md.
+#
+# Fragments are chosen to be distinctive enough that a benign plugin will not
+# contain them; common tokens like API/KEY/TOKEN alone are deliberately NOT matched
+# (they false-positive a plugin's own config). os.Environ() is deliberately NOT
+# matched (too many benign uses).
+if grep -rEn '` + secretEnvScanPattern + `' --include='*.go' . >/dev/null 2>&1; then
+  echo "rejected: plugin source references a host secret env var (e.g. ANTHROPIC_API_KEY / GH_TOKEN). A plugin has no reason to read goclaw's credentials." >&2; exit 2
 fi
 
 # --- Build: pure-Go, Linux, the container's arch. CGO off both enforces purity
