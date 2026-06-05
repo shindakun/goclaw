@@ -34,11 +34,31 @@ type Sweeper struct {
 	dataDir string
 	runners RunnerManager
 	log     *slog.Logger
+
+	// pinned agent groups are never reaped as idle. A group hosting an always-on
+	// channel plugin (e.g. an IRC bridge) must keep its container running even with no
+	// recent agent activity, or the channel disconnects. Set via WithPinnedGroups.
+	pinned map[int64]bool
 }
 
 // New constructs a Sweeper. runners may be nil to disable runner recovery + GC.
 func New(central *db.DB, dataDir string, runners RunnerManager, log *slog.Logger) *Sweeper {
 	return &Sweeper{central: central, dataDir: dataDir, runners: runners, log: log}
+}
+
+// WithPinnedGroups marks agent groups that must never be idle-reaped (they host an
+// always-on channel plugin whose container must stay up). Returns s for chaining.
+func (s *Sweeper) WithPinnedGroups(ids ...int64) *Sweeper {
+	if len(ids) == 0 {
+		return s
+	}
+	if s.pinned == nil {
+		s.pinned = make(map[int64]bool, len(ids))
+	}
+	for _, id := range ids {
+		s.pinned[id] = true
+	}
+	return s
 }
 
 // Run ticks every interval until ctx is cancelled.
@@ -152,6 +172,9 @@ func (s *Sweeper) gcIdleRunners(ctx context.Context, now time.Time) {
 	}
 
 	for _, agentGroupID := range running {
+		if s.pinned[agentGroupID] {
+			continue // hosts an always-on channel plugin: never reap (channel must stay up)
+		}
 		if active[agentGroupID] {
 			continue // recently active - keep its runner
 		}

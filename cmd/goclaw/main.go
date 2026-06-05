@@ -332,6 +332,12 @@ func run(log *slog.Logger) error {
 	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, nil, log)
 	del := delivery.New(central, registry, cfg.DataDir, typer, log)
 	swp := sweep.New(central, cfg.DataDir, runners, log)
+	// Pin the channel-hosting agent group so the sweep never reaps its container as
+	// idle: an always-on channel plugin (e.g. IRC) must keep its container running to
+	// stay connected, even with no recent agent activity.
+	if chanRelay != nil && chanRelay.OpenCount() > 0 {
+		swp = swp.WithPinnedGroups(agentGroupID)
+	}
 
 	// Plugins run INSIDE the agent container, not on the host. The host mounts the
 	// <data>/plugins dir read-only at /plugins (WithPlugins above); the in-container

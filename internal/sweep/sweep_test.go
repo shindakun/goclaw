@@ -155,6 +155,23 @@ func TestGCIdleRunners_ReapsIdle(t *testing.T) {
 	}
 }
 
+// A pinned group (hosting an always-on channel plugin) is NOT reaped even when idle.
+func TestGCIdleRunners_KeepsPinned(t *testing.T) {
+	central, agID, dataDir := setup(t)
+	const key = "telegram:555"
+	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	fr := &fakeRunners{running: []int64{agID}}
+	s := New(central, dataDir, fr, quiet()).WithPinnedGroups(agID)
+	// Far-future GC makes the group idle; pinned must override that.
+	s.gcIdleRunners(context.Background(), time.Now().Add(24*time.Hour))
+
+	if len(fr.stopped) != 0 {
+		t.Fatalf("pinned group was reaped: %v", fr.stopped)
+	}
+}
+
 // A recently-active group is NOT reaped.
 func TestGCIdleRunners_KeepsRecentlyActive(t *testing.T) {
 	central, agID, dataDir := setup(t)
