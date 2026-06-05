@@ -73,10 +73,17 @@ const (
 // instead of failing.
 func applyPragmas(sqlDB *sql.DB, journal journalMode) error {
 	for _, p := range []string{
+		// busy_timeout MUST be set FIRST. journal_mode (and synchronous) take a write
+		// lock on the db header; without a busy_timeout already in effect, that lock
+		// attempt fails IMMEDIATELY with SQLITE_BUSY if another writer holds it, instead
+		// of waiting. (We hit exactly that: two host goroutines, the router enqueuing
+		// inbound and the delivery loop opening inbound.db for the ledger, raced and the
+		// later journal_mode = DELETE failed with "database is locked".) busy_timeout
+		// itself never blocks and takes effect on the connection at once, so it leads.
+		"PRAGMA busy_timeout = 10000;",
 		"PRAGMA journal_mode = " + string(journal) + ";",
 		"PRAGMA synchronous = FULL;",
 		"PRAGMA foreign_keys = ON;",
-		"PRAGMA busy_timeout = 10000;",
 	} {
 		if _, err := sqlDB.Exec(p); err != nil {
 			return fmt.Errorf("pragma %q: %w", p, err)
@@ -92,8 +99,10 @@ func applyPragmas(sqlDB *sql.DB, journal journalMode) error {
 // it lets a read wait out the runner's write lock instead of failing immediately.
 func applyReadPragmas(sqlDB *sql.DB) error {
 	for _, p := range []string{
-		"PRAGMA foreign_keys = ON;",
+		// busy_timeout first (see applyPragmas): so a read that meets the runner's
+		// write lock waits it out instead of failing immediately.
 		"PRAGMA busy_timeout = 10000;",
+		"PRAGMA foreign_keys = ON;",
 	} {
 		if _, err := sqlDB.Exec(p); err != nil {
 			return fmt.Errorf("read pragma %q: %w", p, err)
@@ -184,13 +193,19 @@ func openInboundRW(dir string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open inbound.db: %w", err)
 	}
+	// Cap to ONE connection BEFORE applying pragmas. Connection-level pragmas
+	// (busy_timeout especially) apply only to the connection they ran on; with the
+	// default unbounded pool, the four pragma Execs could land on different
+	// connections, so busy_timeout set on one would not protect journal_mode on
+	// another. One connection makes every pragma, the schema, and all later ops share
+	// the same connection state. (Single writer is also the brief §5.1 invariant.)
+	inbound.SetMaxOpenConns(1)
 	// Session DBs cross the container bind mount, so they must NOT use WAL -
 	// use the rollback journal so cross-process writes are visible (brief §5.1).
 	if err := applyPragmas(inbound, journalDelete); err != nil {
 		_ = inbound.Close()
 		return nil, err
 	}
-	inbound.SetMaxOpenConns(1)
 	if _, err := inbound.Exec(inboundSchema); err != nil {
 		_ = inbound.Close()
 		return nil, fmt.Errorf("init inbound schema: %w", err)
@@ -226,6 +241,9 @@ func OpenSessionHostDir(dir string) (*SessionDBs, error) {
 		_ = inbound.Close()
 		return nil, fmt.Errorf("open outbound.db (ro): %w", err)
 	}
+	// One connection, so busy_timeout (set below) applies to the connection reads
+	// actually run on, not a sibling from the pool. See openInboundRW.
+	outbound.SetMaxOpenConns(1)
 	// Read-only handle: only set reader-safe pragmas. journal_mode/synchronous
 	// are writes and error on a mode=ro db (776), which is what broke the first
 	// drain after the read-only change.
