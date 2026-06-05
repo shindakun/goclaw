@@ -21,6 +21,7 @@ import (
 
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/channels/discord"
+	chanplugin "github.com/shindakun/goclaw/internal/channels/plugin"
 	"github.com/shindakun/goclaw/internal/channels/telegram"
 	"github.com/shindakun/goclaw/internal/config"
 	"github.com/shindakun/goclaw/internal/credproxy"
@@ -133,6 +134,22 @@ func run(log *slog.Logger) error {
 		discordAdapter = dc
 		log.Info("registered channel", "channel", dc.Name())
 	}
+	// Channel PLUGINS (kind: channel) register here too, but only when the runner is
+	// enabled: the plugin runs IN the container and the host connects to it over the
+	// boundary socket, so without a runner there is nothing to connect to. The relay
+	// binds each socket now (before StartAll) and waits for the in-container runner to
+	// dial in; the container launches lazily on the first message, and the runner
+	// retries its dial, so listening up front is correct. A relay failure for one
+	// channel is logged and skipped, never fatal.
+	var chanRelay *chanplugin.Relay
+	if cfg.LaunchRunner {
+		chanRelay, err = setupChannelPlugins(registry, channelSocketsHostDir(cfg), pluginsHostDir(cfg), log)
+		if err != nil {
+			return err
+		}
+		defer chanRelay.CloseAll()
+	}
+
 	if len(registry.All()) == 0 {
 		log.Warn("no channel tokens set (TELEGRAM_BOT_TOKEN / GOCLAW_DISCORD_TOKEN) - no channels registered")
 	}
@@ -263,8 +280,9 @@ func run(log *slog.Logger) error {
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir).
-			WithCredCA(proxyCAHostPath).     // empty when the proxy is off
-			WithPlugins(pluginsHostDir(cfg)) // <data>/plugins, mounted RO at /plugins
+			WithCredCA(proxyCAHostPath).                   // empty when the proxy is off
+			WithPlugins(pluginsHostDir(cfg)).              // <data>/plugins, mounted RO at /plugins
+			WithChannelSockets(channelSocketsHostDir(cfg)) // <data>/run/channels, mounted RW
 		ensurer = mgr
 		runners = mgr
 		log.Info("runner launch enabled", "image", cfg.RunnerImage,
@@ -443,6 +461,53 @@ func proxyCADir(cfg *config.Config) string {
 // the plugins. It lives under the data dir (runtime state), not the repo root.
 func pluginsHostDir(cfg *config.Config) string {
 	return filepath.Join(cfg.DataDir, "plugins")
+}
+
+// channelSocketsHostDir is the host dir holding per-channel Unix sockets, mounted RW
+// into the container at /run/goclaw/channels. The host relay binds a socket here per
+// channel plugin; the in-container runner dials it. Lives under the data dir.
+func channelSocketsHostDir(cfg *config.Config) string {
+	return filepath.Join(cfg.DataDir, "run", "channels")
+}
+
+// setupChannelPlugins discovers installed kind:channel plugins, binds a host relay
+// socket for each, and registers the resulting adapter so the router/agent treat it
+// like a built-in channel. The relay listens now and accepts the in-container runner's
+// dial in the background (the container launches lazily). A failure for one channel is
+// logged and skipped, never fatal; the returned relay is closed on host shutdown.
+func setupChannelPlugins(registry *channels.Registry, sockDir, pluginsDir string, log *slog.Logger) (*chanplugin.Relay, error) {
+	relay, err := chanplugin.NewRelay(sockDir, log)
+	if err != nil {
+		return nil, fmt.Errorf("channel relay: %w", err)
+	}
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return relay, nil // no plugins installed yet
+		}
+		return nil, fmt.Errorf("read plugins dir: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		man, err := plugin.LoadManifest(filepath.Join(pluginsDir, e.Name()))
+		if err != nil || man.Kind != "channel" {
+			continue // not a (valid) channel plugin
+		}
+		adapter, err := relay.Open(man.Name)
+		if err != nil {
+			log.Error("channel plugin: relay open failed", "channel", man.Name, "err", err)
+			continue
+		}
+		if err := registry.Register(adapter); err != nil {
+			log.Error("channel plugin: register failed", "channel", man.Name, "err", err)
+			relay.Close(man.Name)
+			continue
+		}
+		log.Info("registered channel plugin", "channel", man.Name)
+	}
+	return relay, nil
 }
 
 // credHostList returns the stored credential hosts for a startup log line, so the

@@ -42,7 +42,9 @@ func TestRelay_OpenAttachesAndRoutes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	adapter, err := r.Open(ctx, "irc", 5*time.Second)
+	// Open returns immediately (the plugin dials in the background); inbound flows once
+	// the fake runner connects and the handshake completes.
+	adapter, err := r.Open("irc")
 	if err != nil {
 		t.Fatalf("relay open: %v", err)
 	}
@@ -92,27 +94,38 @@ func TestRelay_OpenAttachesAndRoutes(t *testing.T) {
 
 func TestRelay_RejectsBadName(t *testing.T) {
 	r, _ := NewRelay(t.TempDir(), quietLog())
-	ctx := context.Background()
 	for _, bad := range []string{"", "../evil", "a/b", "x.sock"} {
-		if _, err := r.Open(ctx, bad, time.Second); err == nil {
+		if _, err := r.Open(bad); err == nil {
 			t.Errorf("Open(%q) succeeded, want rejection", bad)
 		}
 	}
 }
 
-func TestRelay_OpenTimesOutIfNoDialer(t *testing.T) {
+// Open returns immediately even with no dialer (the container launches lazily). Until a
+// plugin attaches, Send errors with "not connected", and Close cleans up the socket.
+func TestRelay_OpenReturnsBeforeDialAndSendErrorsUntilAttached(t *testing.T) {
 	r, _ := NewRelay(t.TempDir(), quietLog())
-	ctx := context.Background()
+	defer r.CloseAll()
+
 	start := time.Now()
-	if _, err := r.Open(ctx, "lonely", 200*time.Millisecond); err == nil {
-		t.Fatal("Open with no dialer should time out")
+	adapter, err := r.Open("lonely")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
-	if time.Since(start) > 3*time.Second {
-		t.Fatal("Open did not honor the timeout promptly")
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("Open blocked; it must return before any dial")
 	}
-	// The socket must be cleaned up after a failed open.
+
+	// No plugin attached yet: Send fails closed.
+	if err := adapter.Send(context.Background(), channels.OutboundMsg{ChatID: "#x", Text: "hi"}); err == nil {
+		t.Fatal("Send before any plugin attached should error")
+	}
+
+	if !r.Close("lonely") {
+		t.Fatal("Close reported not open")
+	}
 	if _, err := net.Dial("unix", filepath.Join(r.sockDir, "lonely.sock")); err == nil {
-		t.Fatal("socket left behind after a timed-out Open")
+		t.Fatal("socket left behind after Close")
 	}
 }
 
