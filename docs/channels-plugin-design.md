@@ -6,10 +6,12 @@ TLS, joins a channel, and messages flow both ways through goclaw's host-side
 `ChannelClient` (a real `#goclawtester` mention arrived as inbound and a reply posted
 back). What is built so far is the DIRECT (no-container) path: `internal/plugin.
 ChannelClient` (host half of `ServeChannel`), `kind: channel` accepted in the manifest,
-the env allowlist (`Manifest.InjectEnv` / `MinimalEnvBase`), and a dev harness
-(`cmd/chantest`). NOT yet built: the `channels.ChannelAdapter` wrapper that puts inbound
-through the real router/agent (next), the sandboxed relay-over-socket boundary, and
-hot-reload. See section 9 for the current position in the build order.
+the env allowlist (`Manifest.InjectEnv` / `MinimalEnvBase`), a dev harness
+(`cmd/chantest`), and the transport-agnostic `channels.ChannelAdapter` wrapper
+(`internal/channels/plugin`, with sender-id namespacing). NOT yet built: the sandboxed
+relay-over-socket boundary, which is a PREREQUISITE for daemon wiring (the host must not
+run the plugin; it connects to a sandboxed one), and hot-reload. The adapter is therefore
+built but NOT yet registered by `cmd/goclaw`. See section 9 for the build order.
 
 This doc covers how a third-party **channel** can be added to goclaw WITHOUT giving
 untrusted code a foothold on the host. The deciding constraint and the whole reason this
@@ -536,17 +538,24 @@ against a real server first means the boundary is the only unknown when we add i
    goclawkit IRC plugin: dialed Libera over TLS, joined `#goclawtester`, a real mention
    arrived as inbound and a reply posted back. This isolates the channel.* protocol with
    the boundary still absent, which is exactly the point.
-5. NEXT. `channels.ChannelAdapter` wrapper over `ChannelClient`: `Start()` returns the
-   inbound stream mapped to `channels.InboundMsg`; `Send()` calls `SendOutbound`. Register
-   it in `channels.Registry` so the real ROUTER and AGENT see IRC messages (today chantest
-   prints them; this routes them). Enforce identity namespacing (`irc:<network>/<nick>`,
-   section 7) at the mapping boundary. The two message types are field-for-field aligned,
-   so this is thin.
-6. THEN. The sandboxed boundary (sections 4.0, 5a): pre-mounted socket dir mounted once at
-   container start, the in-container relay glue that pipes a per-channel socket file <->
-   plugin stdio, so the SAME `ChannelClient` reaches a plugin running in the box instead of
-   on the host. Plus host-side `kind: channel` discovery and hot-reload (section 8);
-   `channels.Registry.Unregister` is already in place for hot-remove.
+5. DONE (the wrapper, not the daemon wiring). `internal/channels/plugin.Adapter` wraps a
+   `ChannelClient` as a `channels.ChannelAdapter`: `Start()` maps the inbound stream to
+   `channels.InboundMsg`, `Send()` calls `SendOutbound`, and the plugin-asserted SenderID
+   is NAMESPACED (`irc:<nick>`, section 7) so a spoofable plugin id cannot collide with
+   another channel's owner id at the gate. The adapter is TRANSPORT-AGNOSTIC (it takes a
+   ChannelClient, not a process), so it does not change when the boundary lands. It is NOT
+   yet registered by `cmd/goclaw`, and deliberately so: see the next step.
+6. NEXT, and a PREREQUISITE for any daemon wiring. The sandboxed boundary (sections 4.0,
+   5a). The host MUST NOT run the plugin: untrusted plugin code runs IN THE CONTAINER (the
+   runner launches it, as it does tool plugins), and the host CONNECTS to it across the
+   boundary. So `cmd/goclaw` never exec-s the plugin binary; today's `ChannelClient`
+   constructor (`LaunchChannel`, which spawns a host child) is for chantest/tests only.
+   This step: pre-mount one socket dir at container start, add the in-container relay glue
+   that pipes a per-channel socket file <-> plugin stdio, and SPLIT `ChannelClient` so it
+   can attach to that socket (an already-connected stream) instead of spawning a process.
+   The step-5 adapter then wraps the socket-backed client unchanged, and only THEN does
+   `cmd/goclaw` register it. Plus host-side `kind: channel` discovery and hot-reload
+   (section 8); `channels.Registry.Unregister` is already in place for hot-remove.
 7. (Only if a target platform forces it) Internet-inbound host ingress (section 4b): one
    always-on listener, `/channels/<name>/inbound` routes, host-side auth + identity. The
    fallback inbound webhook, a FIRST-PARTY feature; goclawkit's `cmd/webhook` is the SDK
