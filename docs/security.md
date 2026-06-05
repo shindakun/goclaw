@@ -223,6 +223,67 @@ before reaching the agent:
 - `.env.example` carries only blank values, safe defaults, and placeholders.
 - Vault credential notes record where a secret lives, never the secret itself.
 
+## Tradeoffs: what each control buys, and where it may be too much
+
+Security has a cost (complexity, bugs, friction), so it is worth being honest about
+which controls are load-bearing and which are belt-and-suspenders for a self-hosted,
+single-user deployment. Host compromise is explicitly OUT of scope here (if the host is
+owned, everything is); this section judges each control on what it buys ASSUMING a
+trusted host. The controls separate into two layers, and they are independent: you can
+keep one and drop the other.
+
+**Agent containment (load-bearing, keep it).** These defend against the defining risk of
+giving an LLM tools and a network: a PROMPT-INJECTED AGENT TURNED AGAINST YOU. A message,
+a cloned repo's README, or a web page can steer the agent into running commands you did
+not intend. This is a live, common risk, not paranoia, and it has nothing to do with
+machine compromise.
+
+- The **container** is the one boundary that contains an injected agent. The agent runs
+  arbitrary bash and clones arbitrary repos (prime injection vectors); without the
+  sandbox, a successful injection runs on the host as you. This is the single most
+  justified control in the system.
+- The **access gate** (fail-closed) is about the OPEN INTERNET reaching your bot. Anyone
+  can message a channel the bot is on; without the gate a stranger drives your agent (your
+  tokens, your tools, your money). Cheap and essential.
+- The **mount allowlist** keeps the agent from seeing arbitrary host paths. Cheap, fail
+  -closed, directly relevant.
+- **Identity namespacing** stops one channel spoofing another's owner at the gate. Tiny,
+  real.
+
+Dropping any of these would be a genuine mistake, even for a single user, because the
+threat they address (a hostile message turning your own agent against you) is exactly the
+threat a self-hosted agent faces every day.
+
+**Credential protection (optional, judge for your deployment).** This layer protects the
+KEY MATERIAL: the credential proxy, the plugin secret-read scan, and the sandboxed plugin
+build. The honest read: for a single user who chose their own plugins and trusts their
+host, this layer defends a NARROWER scenario at real cost.
+
+- The **credential proxy** (TLS-intercepting MITM, per-host CA, leaf minting) stops a
+  prompt-injected agent from reading the literal token (`echo $ANTHROPIC_API_KEY` returns
+  `placeholder`). But the agent can USE the credential regardless (it makes API calls on
+  your dime whether or not it can read the key), so the proxy's real win is narrow:
+  preventing EXFILTRATION of the raw token to a third party who then uses it elsewhere.
+  That is a real risk, but it is a lot of TLS-interception machinery (and a class of
+  subtle bugs, e.g. an occasional `bad record MAC`) for that one scenario. The simpler
+  fallback, a direct env key, is fully supported; with it the agent holds the real token.
+  Using the proxy is the more secure choice, but NOT using it (and accepting the agent
+  holds the key) is a defensible call for a personal deployment.
+- The **plugin secret-read scan** is best-effort and trivially evadable (see "Installing a
+  plugin"). The real protection is the env ALLOWLIST (the plugin never receives the
+  secret var). The scan is defense-in-depth bordering on ceremony when you vet what you
+  install.
+- The **sandboxed in-container plugin BUILD** prevents a malicious plugin's build-time
+  code (`go:generate`, cgo) from running on the host. Good engineering, but you install
+  plugins by a git URL you typed; for a vetted-input single-user tool it is belt-and
+  -suspenders.
+
+So a fair summary of the "is this too much?" critique: it lands on the CREDENTIAL layer
+(elaborate machinery for a narrow exfiltration win on a trusted single-user host), and it
+does NOT land on the CONTAINMENT layer (which protects against an agent turned against
+you, a real and constant risk). The two are separable: the credential proxy is a config
+choice (`GOCLAW_*` env / `goclaw auth`); the container, gate, and mounts are not optional.
+
 ## Residual risks (accepted)
 
 - **Host compromise.** The host holds the decrypted tokens in memory and the

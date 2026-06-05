@@ -20,10 +20,16 @@ import (
 // socket): a line the host writes should come back, having passed
 // conn -> plugin stdin -> (cat) -> plugin stdout -> conn.
 func TestLaunchChannel_BridgesStdioToEndpoint(t *testing.T) {
-	tmp := t.TempDir()
-
 	// Host side: listen on a unix socket the runner will dial via the .endpoint.
-	sockPath := filepath.Join(tmp, "echo.sock")
+	// The socket path must stay under the OS sun_path limit (104 on macOS, 108 on
+	// Linux); t.TempDir() bakes the long test name into the path and overflows it, so
+	// bind the socket in a SHORT dir directly under the OS temp root instead.
+	sockDir, err := os.MkdirTemp("", "chsock")
+	if err != nil {
+		t.Fatalf("sock dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(sockDir) }()
+	sockPath := filepath.Join(sockDir, "e.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatalf("host listen: %v", err)
