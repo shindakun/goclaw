@@ -41,9 +41,13 @@ metacharacters.
 
 ## Plugins run in the sandbox, never on the host
 
-Plugins are an extension mechanism: small compiled binaries that add tools (and,
-later, channels). Because a plugin is third-party code the operator downloaded and
-compiled, it is untrusted, and where it RUNS is the security decision.
+Plugins are an extension mechanism: small compiled binaries that add tools (and
+channels; the outbound-dialer channel path is in progress, see
+`docs/channels-plugin-design.md`). Because a plugin is third-party code the operator
+downloaded and compiled, it is untrusted, and where it RUNS is the security decision.
+The same sandbox rule governs channels: untrusted channel code runs in the container,
+never on the host, which is why the host CONNECTS to a sandboxed channel plugin rather
+than executing the binary itself.
 
 goclaw never executes a plugin on the host. The host stages plugin binaries into a
 `plugins/` directory and mounts that directory READ-ONLY into the agent container
@@ -54,6 +58,14 @@ each plugin there, so untrusted plugin code inherits exactly the agent's sandbox
   mounts, no host network namespace, and it dies with the container;
 - read-only `/plugins`, so a plugin cannot rewrite its own install or another
   plugin's binary;
+- a minimal, allowlisted environment. A plugin process is NOT handed the runner's
+  environment. It gets only the env var NAMES its own `plugin.yml` `env:` list
+  declares, on top of a secret-free PATH-only base (`Manifest.InjectEnv` /
+  `MinimalEnvBase`). This matters because in the direct-env credential mode the
+  container's own environment holds a real `ANTHROPIC_API_KEY` / `GH_TOKEN`; the
+  allowlist is what stops a hostile plugin from reading them out of the environment.
+  (With the credential proxy active those container vars are only placeholders, so
+  this is defense in depth on top of the proxy.)
 - no access to host credentials. The host's secrets never enter the container
   (the credential proxy injects tokens on the wire; see below), so a malicious
   plugin cannot read them.
@@ -213,3 +225,11 @@ before reaching the agent:
   stores (`goclaw auth add`) a credential whose target host is controlled by an
   attacker, that host could capture the injected token. Only add credentials for
   hosts you trust.
+- **Container capability posture.** The container is non-root (`--user 1000:1000`)
+  and rootless, but runs with Podman's DEFAULT capability set: goclaw does not add
+  `--cap-drop=ALL`, `--security-opt=no-new-privileges`, a custom seccomp profile, or
+  a read-only rootfs. The boundary is "rootless, non-root, explicit mounts", which is
+  strong, but it is not hardened to the minimum-capability floor a defense-in-depth
+  pass would add. Tightening this (drop-all-caps + no-new-privileges, then add back
+  only what the runner needs) is a known follow-up; a container escape is already out
+  of scope (see the note under the plugin install section).
