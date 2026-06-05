@@ -34,7 +34,7 @@ internal/channels/telegram/  Telegram adapter (the v0 channel)
 internal/channels/discord/   Discord adapter (gateway websocket)
 internal/router/      resolution + access gate + approval flow → inbound.db (REAL)
 internal/delivery/    outbound.db poll, delivery auth, adapter dispatch (REAL)
-internal/sweep/       runner recovery + idle-runner GC (REAL)
+internal/sweep/       runner recovery + idle-runner GC (REAL); pins channel-hosting groups
 internal/runtime/     Podman lifecycle (CLI shell-out) + mount builder + env
 internal/mounts/      allowlist load + path validation (REAL, unit-tested)
 internal/permissions/ roles, sender policy, access gate (REAL)
@@ -109,6 +109,26 @@ Session storage on disk:
 ```text
 data/sessions/<agentGroupID>/<sessionKey>/{inbound.db,outbound.db}
 ```
+
+### Runner launch modes
+
+How the per-agent-group container gets started depends on config:
+
+- **Host-launched, lazy (default with `GOCLAW_LAUNCH_RUNNER=1`).** The host starts
+  a group's container on the first message routed to it, and the sweep reaps it
+  after an idle TTL. The first reply per group is therefore slower (cold start);
+  later messages hit a warm container. This is the normal mode and keeps idle
+  groups from holding resources.
+- **Host-launched, eager + pinned (a group hosting a channel plugin).** A channel
+  plugin (`kind: channel`, e.g. an IRC bridge) runs INSIDE the container and must be
+  connected to its upstream whenever the host is up, not wait for a first message. So
+  when channel plugins are installed, the host eagerly launches that group's container
+  at startup AND pins it, so the sweep never reaps it as idle. The channel stays
+  always-on. (See [`docs/channels-plugin-design.md`](docs/channels-plugin-design.md).)
+- **Out of band (`GOCLAW_LAUNCH_RUNNER` unset).** The host does not manage
+  containers; you run a runner yourself (`cmd/claude-runner`, or the echo
+  `cmd/stub-runner`) against a session's mounts. Used for testing the host<->runner
+  boundary without Podman orchestration.
 
 ### Real Claude runner
 

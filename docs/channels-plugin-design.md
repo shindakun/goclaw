@@ -501,9 +501,15 @@ OUTBOUND-DIALER CHANNELS (4a), the real channel plugin:
   was present, idempotent, freed name re-registerable on reinstall). It only removes the
   entry: stopping the adapter's `Start` goroutine and unlinking its socket is the
   relay's job, since the registry does not own those.
-- ORDER/RACE: the relay tolerates the plugin not being connected yet (socket bound,
-  nothing dialed) and the plugin tolerates the socket not being ready (retry the dial).
-  Same "launch is lazy / first message is slower" posture the container already has.
+- ORDER/RACE: the relay tolerates the plugin not being connected yet (listener up,
+  nothing dialed) and the plugin tolerates the relay not being ready (retry the dial).
+- ALWAYS-ON, not lazy. Unlike a normal agent group (container launched lazily on the
+  first message, reaped when idle), a channel plugin must be connected to its upstream
+  whenever the host is up. So the host EAGERLY launches the channel-hosting group's
+  container at startup, and the sweep PINS that group so its container is never idle
+  -reaped (internal/sweep WithPinnedGroups). The relay's durable inbound stream + re
+  -accept loop still cover a deliberate container bounce, but in steady state the
+  container stays up so the channel stays joined.
 
 INTERNET-INBOUND CHANNELS (4b) and LOCAL-BRIDGE CHANNELS (4c), the first-party features:
 

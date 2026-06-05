@@ -330,7 +330,7 @@ internal/db/                  # central DB open (WAL, single-writer caps), sessi
 internal/db/migrations/       # ordered NNNN_*.sql, embedded; applied once each, tracked
 internal/router/              # entity resolution + access gate → inbound.db
 internal/delivery/            # outbound.db poll, adapter dispatch, delivery authorization
-internal/sweep/               # 60s ticker: stale, due-wake, recurrence
+internal/sweep/               # 60s ticker: stale, due-wake, recurrence, idle-runner GC (pins channel-hosting groups)
 internal/runtime/             # Podman lifecycle (CLI shell-out v0), mount builder, runtime select
 internal/mounts/              # allowlist load + path validation (security-critical, unit-tested)
 internal/permissions/         # roles, sender policy, approval flows
