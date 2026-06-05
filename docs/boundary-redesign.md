@@ -69,6 +69,28 @@ So the design question sharpens to: **is the durability (1,2) worth the cross-mo
 SQLite tax, given we now have a socket that provides neither the durability nor the
 tax?**
 
+### 3.1 The tax is not theoretical: a production incident (2026-06-04)
+
+While this RFC was being written, the tax bit for real. The delivery loop logged:
+
+```text
+ERROR drain session  session=telegram:6306189728
+      err="pragma \"PRAGMA journal_mode = DELETE;\": database is locked (5) (SQLITE_BUSY)"
+```
+
+Two HOST goroutines (the router enqueuing inbound, the delivery loop opening the same
+session to write the ledger) raced to open `inbound.db`, and the open failed because
+`journal_mode = DELETE` (a header write) ran before `busy_timeout` was in effect. The
+proximate cause was a pragma-ordering bug, now fixed (busy_timeout first, single
+connection first; see `internal/db/db.go` and its contention test). But step back: the
+ENTIRE failure mode, `journal_mode = DELETE` taking a write lock and a busy_timeout
+needed to wait it out, exists ONLY because we run SQLite across the mount with the
+rollback journal. None of it would exist on a socket boundary. There is no
+`journal_mode` to set, no header lock to contend, no `SQLITE_BUSY`, on a stream. This is
+a concrete instance of the §3 "tax": real complexity, a real production error, and a
+real fix, all in service of making SQLite survive the boundary rather than in service of
+delivering a message. It is data for the recommendation in §6, not a one-off curiosity.
+
 ## 4. The option space
 
 Four genuinely different shapes. For each: what it is, what it costs, what it kills.
@@ -178,7 +200,9 @@ The reasoning, plainly:
   the system: the `mode=ro` enforcement, `journal_mode=DELETE`, open-write-close-per-op,
   and the corruption-streak-detect-and-respawn loop ALL exist solely to make SQLite
   survive virtiofs. None of it is intrinsic to "deliver a message to an agent." A socket
-  deletes all of it.
+  deletes all of it. And it is not just complexity on paper: it has already produced a
+  production `SQLITE_BUSY` failure on the delivery path (§3.1), the kind of error a socket
+  boundary structurally cannot have.
 - We ALREADY built and proved the hard part: a framed, authenticated, durable-enough
   socket across the podman VM, with reconnect tolerance (the relay re-accepts on a
   container bounce). The agent boundary would reuse that machinery, not invent it.
