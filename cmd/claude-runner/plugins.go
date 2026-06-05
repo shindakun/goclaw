@@ -32,10 +32,11 @@ type pluginHost struct {
 	log    *slog.Logger
 	dir    string
 
-	mu      sync.Mutex
-	loaded  map[string]*loadedPlugin // by plugin name
-	cmds    map[string]boundCommand  // slash command (no slash) -> client+tool
-	watcher *fsnotify.Watcher
+	mu       sync.Mutex
+	loaded   map[string]*loadedPlugin  // tool plugins, by plugin name
+	channels map[string]*loadedChannel // channel plugins, by plugin name
+	cmds     map[string]boundCommand   // slash command (no slash) -> client+tool
+	watcher  *fsnotify.Watcher
 }
 
 // loadedPlugin is one running plugin and the dir it was loaded from.
@@ -55,11 +56,12 @@ type boundCommand struct {
 // host (so newly installed plugins can appear later) with a non-nil MCP server.
 func startPlugins(ctx context.Context, dir string, log *slog.Logger) *pluginHost {
 	ph := &pluginHost{
-		server: claude.NewSdkMcpServer("goclaw-plugins"),
-		log:    log,
-		dir:    dir,
-		loaded: map[string]*loadedPlugin{},
-		cmds:   map[string]boundCommand{},
+		server:   claude.NewSdkMcpServer("goclaw-plugins"),
+		log:      log,
+		dir:      dir,
+		loaded:   map[string]*loadedPlugin{},
+		channels: map[string]*loadedChannel{},
+		cmds:     map[string]boundCommand{},
 	}
 	ph.reconcile(ctx) // load what is already there
 	ph.startWatch(ctx)
@@ -92,9 +94,14 @@ func (ph *pluginHost) reconcile(ctx context.Context) {
 		present[man.Name] = true
 
 		ph.mu.Lock()
-		_, already := ph.loaded[man.Name]
+		_, alreadyTool := ph.loaded[man.Name]
+		_, alreadyChan := ph.channels[man.Name]
 		ph.mu.Unlock()
-		if already {
+		if alreadyTool || alreadyChan {
+			continue
+		}
+		if man.Kind == "channel" {
+			ph.launchChannel(ctx, man, pdir)
 			continue
 		}
 		ph.launch(ctx, man, pdir)
@@ -146,7 +153,19 @@ func (ph *pluginHost) dropMissing(present map[string]bool) {
 			}
 		}
 	}
+	var stopChans []*loadedChannel
+	for name, lc := range ph.channels {
+		if present[name] {
+			continue
+		}
+		stopChans = append(stopChans, lc)
+		delete(ph.channels, name)
+	}
 	ph.mu.Unlock()
+	for _, lc := range stopChans {
+		ph.log.Info("channel plugin unloaded", "dir", lc.dir)
+		lc.stop()
+	}
 	for _, lp := range stop {
 		ph.log.Info("plugin unloaded", "dir", lp.dir)
 		_ = lp.client.Close()
