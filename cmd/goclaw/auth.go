@@ -16,7 +16,8 @@ import (
 func runAuth(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage:\n" +
-			"  goclaw auth add <name> <target-api-url> <token>   store a credential\n" +
+			"  goclaw auth add <name> <target-api-url> <token>   store a static credential\n" +
+			"  goclaw auth add-oauth <flags>                     store an OAuth2 (refreshable) credential\n" +
 			"  goclaw auth list                                  list stored credentials\n" +
 			"  goclaw auth delete <id>                           delete by id (from list)")
 	}
@@ -30,12 +31,14 @@ func runAuth(args []string) error {
 	switch args[0] {
 	case "add":
 		return authAdd(store, args[1:])
+	case "add-oauth":
+		return authAddOAuth(store, args[1:])
 	case "list":
 		return authList(store)
 	case "delete", "rm":
 		return authDelete(store, args[1:])
 	default:
-		return fmt.Errorf("unknown auth subcommand %q (try: add, list, delete)", args[0])
+		return fmt.Errorf("unknown auth subcommand %q (try: add, add-oauth, list, delete)", args[0])
 	}
 }
 

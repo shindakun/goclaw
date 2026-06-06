@@ -1,6 +1,12 @@
 # Managed upstream credentials (API keys, OAuth2, DPoP, session/connection auth)
 
-Status: DESIGN. Adds support for credentials beyond a static string: OAuth2 Bearer
+Status: OAuth2-Bearer (Gmail) BUILT. The credstore engine (`AddOAuth2` / `AccessToken`
+with single-flight refresh + rotation persist), the proxy delivery path (proxy-inject,
+re-resolved per request), and the `goclaw auth add-oauth` consent command (refresh-token /
+loopback browser / headless paste) are implemented and tested. Forks A and B are DECIDED
+for Bearer (host-side authenticator + proxy-inject, sections 8/9). DPoP/atproto and the
+connection/session schemes remain DESIGN only; the schema and contract were kept open for
+them. Adds support for credentials beyond a static string: OAuth2 Bearer
 refreshed from a refresh token (Gmail), atproto/Bluesky DPoP (a per-session key that
 SIGNS each request with a rotating nonce), and connection/session schemes (Slack
 websocket tokens, WhatsApp session blobs, X browser cookies) that a plugin's own library
@@ -329,3 +335,42 @@ it). What actually remains open:
    Bearer; the open part is only fork B (whether to also support a file path so OAuth works
    with the proxy off). DPoP (1) is deferred; connection/session schemes are settled
    (in-plugin by necessity).
+
+## 10. What was built (OAuth2-Bearer / Gmail)
+
+Decisions taken (for the Bearer case only; DPoP and connection/session schemes unchanged):
+
+- **Fork A = host-side.** The authenticator lives on the host (credstore), not in the
+  plugin. The refresh token and minted access tokens never enter the container.
+- **Fork B = proxy-inject ONLY.** The credential reaches the request through the
+  TLS-intercepting proxy, which sets `Authorization: Bearer <access_token>` for the target
+  host, exactly as it already does for a static GitHub/Anthropic token. No token-file path
+  was built; Gmail therefore requires the credproxy to be ON (the opt-in cost is accepted,
+  in exchange for the secret never entering the container). A file path can be added later
+  if "OAuth with the proxy off" is ever wanted.
+
+The pieces, and where they live:
+
+- **credstore engine** (`internal/credstore/oauth.go`): `kind=oauth2-bearer` rows store an
+  opaque, encrypted `oauth2Bundle` (refresh token, client id/secret, token_url, scopes,
+  cached access token + expiry). `AccessToken(ctx, host)` returns a current access token,
+  refreshing within ~60s of expiry; refresh is single-flight per host (no stampede, no
+  burning a rotating refresh token N times); a rotated refresh token is persisted back.
+- **Kind-dispatching resolve** (`BearerForHost`, `UpstreamForHost`): the proxy asks
+  `UpstreamForHost` at CONNECT (cheap existence check, no mint) to decide
+  intercept-vs-blind-tunnel, then `BearerForHost` PER REQUEST in the Director, so a
+  keep-alive tunnel always injects a CURRENT token (an access token can expire mid-tunnel).
+  `BearerForHost` dispatches on kind: static -> stored token, oauth2-bearer -> a refreshed
+  access token. The proxy never knows about kinds.
+- **Refresh path stays host-side and direct.** credstore's refresh HTTP client talks to the
+  token endpoint directly (system roots), NOT back through the proxy, so there is no
+  recursion and the token endpoint needs no stored credential of its own.
+- **Consent** (`goclaw auth add-oauth`, `cmd/goclaw/auth_oauth.go`): three paths, in order
+  of preference: `--refresh-token <rt>` (store directly, no browser); default loopback
+  (open the browser to Google's consent screen with `access_type=offline&prompt=consent`,
+  catch the `?code=` on an ephemeral `127.0.0.1` server that lives ONLY for the command,
+  exchange it); `--no-browser` (print the URL, paste the code, no server). Google-only for
+  now (`--provider google`).
+
+Not built (still as designed above): DPoP/atproto (`AccessToken` and the bundle schema can
+hold its key+nonce, but no signer); a token-file delivery path; connection/session schemes.

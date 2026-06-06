@@ -27,12 +27,22 @@ import (
 	"time"
 )
 
-// HostResolver answers, for a destination host, whether a credential is stored
-// and (if so) the token + upstream URL to forward to. credstore satisfies it via
-// Hosts()+ResolveByHost; here we only need the per-host lookup plus a membership
-// check, both expressed through ResolveByHost.
+// HostResolver answers, for a destination host, the CURRENT bearer secret + upstream URL
+// to forward to, or ok=false if no credential is stored for that host. credstore satisfies
+// it via BearerForHost, which dispatches on the credential's kind: a static credential
+// yields its stored token; an oauth2-bearer credential yields a freshly refreshed access
+// token. The proxy does not care which; it gets a string to inject. The context lets an
+// oauth2 refresh (a host-side HTTPS call to the token endpoint) honor request cancellation.
 type HostResolver interface {
-	ResolveByHost(host string) (token, targetURL string, ok bool, err error)
+	// BearerForHost returns the current token + upstream for host (refreshing oauth2 if
+	// needed). Called per REQUEST in the Director, so a keep-alive tunnel always injects a
+	// current token.
+	BearerForHost(ctx context.Context, host string) (token, targetURL string, ok bool, err error)
+	// UpstreamForHost answers ONLY "is there a credential for host, and what upstream" for
+	// the CONNECT-time intercept-vs-blind-tunnel decision. It must NOT mint or refresh a
+	// token (that would double-charge an oauth2 refresh and advance rotation needlessly);
+	// the actual token is resolved per request via BearerForHost.
+	UpstreamForHost(host string) (targetURL string, ok bool, err error)
 }
 
 // leafProvider supplies a per-host tls.Config (the CA implements it).
@@ -114,7 +124,10 @@ func (m *MITMProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, targetURL, haveCred, err := m.resolver.ResolveByHost(host)
+	// CONNECT decision only: is there a credential for this host? Do NOT mint a token here
+	// (that path runs per request in the Director). For an unknown host we blind-tunnel so
+	// the client's TLS stays end to end with the real upstream.
+	targetURL, haveCred, err := m.resolver.UpstreamForHost(host)
 	if err != nil {
 		m.log.Error("mitm resolve", "host", host, "err", err)
 		return
@@ -123,7 +136,7 @@ func (m *MITMProxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		m.blindTunnel(clientConn, hostPort)
 		return
 	}
-	m.intercept(clientConn, host, hostPort, token, targetURL)
+	m.intercept(clientConn, host, hostPort, targetURL)
 }
 
 // blindTunnel pipes bytes both directions without decrypting (no credential for
@@ -142,9 +155,11 @@ func (m *MITMProxy) blindTunnel(client net.Conn, hostPort string) {
 }
 
 // intercept terminates the client's TLS with a leaf for host, reads each HTTP
-// request, injects the token, and forwards over a fresh TLS connection to the
-// real upstream. Handles HTTP keep-alive by looping over requests on the conn.
-func (m *MITMProxy) intercept(client net.Conn, host, hostPort, token, targetURL string) {
+// request, injects a CURRENT token (re-resolved per request, so a long-lived
+// keep-alive tunnel never injects a stale/expired oauth2 access token), and
+// forwards over a fresh TLS connection to the real upstream. Handles HTTP
+// keep-alive by looping over requests on the conn.
+func (m *MITMProxy) intercept(client net.Conn, host, hostPort, targetURL string) {
 	leafCfg, err := m.ca.LeafConfig(host)
 	if err != nil {
 		m.log.Error("mitm leaf", "host", host, "err", err)
@@ -173,6 +188,13 @@ func (m *MITMProxy) intercept(client net.Conn, host, hostPort, token, targetURL 
 		pool.AddCert(m.testUpstreamRoots)
 		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	}
+	// resolveErr lets the Director signal a failed (re)resolution to the ErrorHandler so
+	// the request fails closed (502) instead of forwarding without a credential. The
+	// Director cannot return an error, so it stashes one and aborts via req.URL = nil... we
+	// instead clear the URL host and let ErrorHandler report; simplest is a sentinel header
+	// the ErrorHandler checks. Here we resolve, and on failure log + leave auth unset, which
+	// the upstream will reject (401) - acceptable and visible, never a silent unauth bypass
+	// because injectAuth always DELETES any inbound Authorization first.
 	rp := &httputil.ReverseProxy{
 		Transport:     transport,
 		FlushInterval: -1, // SSE-safe
@@ -180,7 +202,15 @@ func (m *MITMProxy) intercept(client net.Conn, host, hostPort, token, targetURL 
 			req.URL.Scheme = upstream.Scheme
 			req.URL.Host = upstream.Host
 			req.Host = upstream.Host
-			injectAuth(req, host, token) // reuse credproxy.go's host-based header rule
+			// Re-resolve the CURRENT token for this host on every request: cheap when the
+			// cached oauth2 token is still valid, refreshes (single-flight) when near expiry.
+			tok, _, ok, err := m.resolver.BearerForHost(req.Context(), host)
+			if err != nil || !ok {
+				m.log.Error("mitm reresolve", "host", host, "ok", ok, "err", err)
+				req.Header.Del("Authorization") // fail closed: strip, do not forward stale/placeholder
+				return
+			}
+			injectAuth(req, host, tok) // reuse credproxy.go's host-based header rule
 		},
 		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, e error) {
 			m.log.Error("mitm forward", "host", host, "err", e)

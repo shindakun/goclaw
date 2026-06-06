@@ -1,6 +1,7 @@
 package credproxy
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"io"
@@ -9,19 +10,34 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
-// recordingResolver answers for one host and records nothing else.
+// recordingResolver answers for one host. token may be a fixed string; if tokenFn is set
+// it is called per resolve (so a test can prove the proxy re-resolves per REQUEST, the way
+// an oauth2 token refresh would hand back a new value mid-tunnel).
 type recordingResolver struct {
 	host, token, target string
+	tokenFn             func() string
 }
 
-func (r recordingResolver) ResolveByHost(host string) (string, string, bool, error) {
-	if host == r.host {
-		return r.token, r.target, true, nil
+func (r recordingResolver) BearerForHost(_ context.Context, host string) (string, string, bool, error) {
+	if host != r.host {
+		return "", "", false, nil
 	}
-	return "", "", false, nil
+	tok := r.token
+	if r.tokenFn != nil {
+		tok = r.tokenFn()
+	}
+	return tok, r.target, true, nil
+}
+
+func (r recordingResolver) UpstreamForHost(host string) (string, bool, error) {
+	if host != r.host {
+		return "", false, nil
+	}
+	return r.target, true, nil
 }
 
 // startMITM runs the proxy on a random port and returns its addr + a cleanup.
@@ -95,6 +111,65 @@ func TestMITM_InterceptInjectsAndForwards(t *testing.T) {
 	if !strings.HasPrefix(gotPath, "/info/refs") {
 		t.Fatalf("path not preserved: %q", gotPath)
 	}
+}
+
+// TestMITM_ReResolvesTokenPerRequest proves the proxy injects a CURRENT token on EACH
+// request over one keep-alive tunnel, not a single token captured at CONNECT time. This is
+// what lets an oauth2 access token refresh mid-tunnel: the resolver hands back a new token
+// on the second resolve and the upstream must see it.
+func TestMITM_ReResolvesTokenPerRequest(t *testing.T) {
+	var gotAuth []string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+	upHost := upstream.Listener.Addr().String()
+
+	ca, _ := LoadOrGenerateCA(t.TempDir(), "", "")
+	var n atomic.Int64
+	res := recordingResolver{
+		host:   "gmail.googleapis.com",
+		target: "https://" + upHost,
+		tokenFn: func() string {
+			// "access-1" on the first resolve, "access-2" on the next, like a refresh.
+			return "access-" + itoaTest(n.Add(1))
+		},
+	}
+	p := NewMITM(res, ca, quiet())
+	p.testUpstreamRoots = upstream.Certificate()
+	addr, stop := startMITM(t, p)
+	defer stop()
+
+	client := proxyClient(addr, ca.CertPEM())
+	// Two requests; the default transport reuses the tunnel (keep-alive), so both go over
+	// the SAME intercepted conn, exercising the per-request Director re-resolve.
+	for i := 0; i < 2; i++ {
+		resp, err := client.Get("https://gmail.googleapis.com/gmail/v1/users/me/messages")
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	if len(gotAuth) != 2 {
+		t.Fatalf("upstream saw %d requests, want 2", len(gotAuth))
+	}
+	if gotAuth[0] != "Bearer access-1" || gotAuth[1] != "Bearer access-2" {
+		t.Fatalf("per-request tokens = %v, want [Bearer access-1, Bearer access-2]", gotAuth)
+	}
+}
+
+func itoaTest(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
 }
 
 func TestMITM_StreamsSSEThroughIntercept(t *testing.T) {

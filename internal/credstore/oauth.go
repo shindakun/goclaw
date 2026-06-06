@@ -110,8 +110,8 @@ func (s *Store) AddOAuth2(p OAuth2Params) (string, error) {
 // credential for the host; an error is returned only for a credential that exists but
 // could not be resolved/refreshed.
 //
-// For a STATIC credential, callers use ResolveByHost; this is the oauth path. (A future
-// BearerForHost could dispatch on kind, but keeping them separate is clearer for now.)
+// This is the oauth-specific path. The proxy does not call it directly; it calls
+// BearerForHost, which dispatches on kind and uses AccessToken for oauth2-bearer rows.
 func (s *Store) AccessToken(ctx context.Context, host string) (token string, ok bool, err error) {
 	if !s.HasKey() {
 		return "", false, ErrNoKey
@@ -141,6 +141,59 @@ func (s *Store) AccessToken(ctx context.Context, host string) (token string, ok 
 		return "", true, ferr
 	}
 	return v.(string), true, nil
+}
+
+// BearerForHost returns the CURRENT bearer secret for host plus the upstream URL to
+// forward to, dispatching on the credential's kind: a static credential yields its stored
+// token verbatim; an oauth2-bearer credential yields a fresh access token (refreshed from
+// the stored refresh token if the cached one is missing or near expiry). ok is false when
+// there is no credential for host.
+//
+// This is the proxy's single resolve entry point so it does not have to know about kinds:
+// whatever the kind, it gets back a string to put in `Authorization: Bearer` (or the git
+// Basic form) and the upstream to dial. For oauth2 the returned targetURL is the stored
+// TargetURL (the API base), the same match host the credential was added under.
+func (s *Store) BearerForHost(ctx context.Context, host string) (token, targetURL string, ok bool, err error) {
+	if !s.HasKey() {
+		return "", "", false, ErrNoKey
+	}
+	var ct, kind, tURL string
+	row := s.db.QueryRow(`SELECT token_ciphertext, target_url, kind FROM credentials WHERE target_host = ?`, host)
+	if scanErr := row.Scan(&ct, &tURL, &kind); scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return "", "", false, nil
+		}
+		return "", "", false, fmt.Errorf("credstore: bearer resolve: %w", scanErr)
+	}
+	switch kind {
+	case KindOAuth2Bearer:
+		tok, found, aerr := s.AccessToken(ctx, host)
+		if aerr != nil || !found {
+			return "", "", found, aerr
+		}
+		return tok, tURL, true, nil
+	default: // KindStatic or legacy empty
+		tok, derr := s.decrypt(ct)
+		if derr != nil {
+			return "", "", false, derr
+		}
+		return tok, tURL, true, nil
+	}
+}
+
+// UpstreamForHost answers, cheaply, whether a credential exists for host and the upstream
+// URL to forward to, WITHOUT decrypting or minting a token. The proxy uses this for the
+// CONNECT-time intercept-vs-blind-tunnel decision; the actual token is resolved per request
+// via BearerForHost (so an oauth2 refresh is not double-charged at CONNECT).
+func (s *Store) UpstreamForHost(host string) (targetURL string, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT target_url FROM credentials WHERE target_host = ?`, host)
+	if scanErr := row.Scan(&targetURL); scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("credstore: upstream resolve: %w", scanErr)
+	}
+	return targetURL, true, nil
 }
 
 // refreshOAuth2 POSTs the refresh grant, persists the new access token (+ rotated refresh

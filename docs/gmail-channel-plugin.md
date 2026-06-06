@@ -131,12 +131,29 @@ That doc puts the refresh ENGINE in credstore (not the proxy), so OAuth lifecycl
 coupled to the opt-in proxy; how the minted token reaches the plugin (proxy inject vs a
 mounted file) is an open delivery decision tracked there.
 
-### Recommendation
+### Recommendation (NOW BUILT)
 
-Build 3b (host-side OAuth) as the target, because it keeps the refresh token out of the
-sandbox and the refresh engine generalizes. Within 3b, the DELIVERY of the minted access
-token to the plugin (proxy inject vs a mounted token file) is an open decision, see
-`docs/oauth-credentials.md` section 6; it is where the "proxy is opt-in" tension lives.
+3b (host-side OAuth) shipped. The refresh engine lives in credstore and delivery is
+proxy-inject; both decisions are recorded in `docs/oauth-credentials.md` section 10.
+Operator setup is now one command:
+
+```sh
+# Store the Gmail OAuth2 credential (refresh token stays host-side, never in the container).
+# Either paste an existing refresh token, or run the browser consent flow.
+goclaw auth add-oauth --name gmail --target-api-url https://gmail.googleapis.com \
+  --client-id <gcp-desktop-client-id> --client-secret <secret> \
+  --scopes https://www.googleapis.com/auth/gmail.readonly
+#   add --refresh-token <rt> to skip the browser, or --no-browser for a headless host.
+```
+
+With that stored and the credproxy enabled, the proxy refreshes and injects
+`Authorization: Bearer` for `gmail.googleapis.com` per request; the plugin just makes plain
+HTTPS calls to the Gmail API and never sees a token. Build 3b kept the refresh token out of
+the sandbox and the refresh engine generalizes.
+
+Within 3b, the DELIVERY of the minted access token was decided as proxy-inject ONLY (no
+mounted token file); see `docs/oauth-credentials.md` section 10. The original open framing
+is preserved below for context.
 3a (token in plugin env) is an acceptable bring-up shortcut to prove the
 channel/poll/dedup/threading mechanics WITHOUT blocking on the OAuth engine, then swap to
 3b. The channel code is identical across all of these (the plugin just makes HTTPS calls
