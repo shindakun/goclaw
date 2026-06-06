@@ -139,12 +139,12 @@ Operator setup is now one command:
 
 ```sh
 # Store the Gmail OAuth2 credential (refresh token stays host-side, never in the container).
-# Either paste an existing refresh token, or run the browser consent flow.
-goclaw auth add-oauth --name gmail --target-api-url https://gmail.googleapis.com \
-  --client-id <gcp-desktop-client-id> --client-secret <secret> \
-  --scopes https://www.googleapis.com/auth/gmail.modify
-#   gmail.modify = read + send + mark-read/archive, what the reply-by-email channel needs.
-#   (gmail.readonly is read-only and 403s on send; use it only for a digest/summary tool.)
+# The provider facts (URLs, scopes incl. gmail.modify, refresh params) come from the gmail
+# plugin's oauth block; you supply only the plugin name and your client id/secret.
+goclaw auth add-oauth --plugin gmail \
+  --client-id <gcp-desktop-client-id> --client-secret <secret>
+#   The plugin declares gmail.modify = read + send + mark-read/archive (what reply-by-email
+#   needs). The command prints the provider/URLs/scopes and asks to confirm first.
 #   add --refresh-token <rt> to skip the browser, or --no-browser for a headless host.
 ```
 

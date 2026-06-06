@@ -261,28 +261,34 @@ One-time Google setup (you need a client id + secret):
    (`...apps.googleusercontent.com`) and client secret. "Desktop app" is what
    makes the `http://127.0.0.1` loopback redirect the command uses acceptable.
 
-Then store it (needs `GOCLAW_SECRET_ENCRYPTION_KEY` set, as above):
+Then store it (needs `GOCLAW_SECRET_ENCRYPTION_KEY` set, as above). The provider
+data (auth/token URLs, scopes, the refresh-forcing params) comes from the named
+PLUGIN's `oauth:` block in its `plugin.yml`, so the command only needs the
+plugin and your client id/secret:
 
 ```sh
-# Opens the browser to Google's consent screen, catches the code on a throwaway
-# 127.0.0.1 server that lives only for this command, exchanges it, stores the
-# refresh token encrypted.
+# Opens the browser to the provider's consent screen, catches the code on a
+# throwaway 127.0.0.1 server that lives only for this command, exchanges it,
+# stores the refresh token encrypted. The provider facts come from the gmail
+# plugin's oauth block; the command prints them and asks you to confirm first.
 goclaw auth add-oauth \
-  --name gmail \
-  --target-api-url https://gmail.googleapis.com \
+  --plugin gmail \
   --client-id <id>.apps.googleusercontent.com \
-  --client-secret <secret> \
-  --scopes https://www.googleapis.com/auth/gmail.modify
+  --client-secret <secret>
 
 # Already have a refresh token (e.g. from the OAuth playground)? Skip the browser:
 #   ... --refresh-token <rt>
 # Headless host (no browser)? Print the URL and paste the code back:
 #   ... --no-browser
+# Override a provider field (self-hosted instance, extra scopes):
+#   ... --scopes "<s1> <s2>"   --token-url <url>   --auth-url <url>
 ```
 
 `goclaw auth list` then shows it as kind `oauth2-bearer` (the token is never
-displayed). Only `--provider google` is supported today. Gmail (and any OAuth2
-upstream) requires the credproxy to be ON, since delivery is proxy-inject only.
+displayed). Adding a NEW OAuth service is a plugin-authoring task (declare an
+`oauth:` block; see goclawkit's sdk-spec), with no change to goclaw. Gmail (and
+any OAuth2 upstream) requires the credproxy to be ON, since delivery is
+proxy-inject only.
 
 Notes and caveats:
 

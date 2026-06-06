@@ -365,12 +365,22 @@ The pieces, and where they live:
 - **Refresh path stays host-side and direct.** credstore's refresh HTTP client talks to the
   token endpoint directly (system roots), NOT back through the proxy, so there is no
   recursion and the token endpoint needs no stored credential of its own.
-- **Consent** (`goclaw auth add-oauth`, `cmd/goclaw/auth_oauth.go`): three paths, in order
-  of preference: `--refresh-token <rt>` (store directly, no browser); default loopback
-  (open the browser to Google's consent screen with `access_type=offline&prompt=consent`,
-  catch the `?code=` on an ephemeral `127.0.0.1` server that lives ONLY for the command,
-  exchange it); `--no-browser` (print the URL, paste the code, no server). Google-only for
-  now (`--provider google`).
+- **Consent** (`goclaw auth add-oauth --plugin <name>`, `cmd/goclaw/auth_oauth.go`): three
+  paths, in order of preference: `--refresh-token <rt>` (store directly, no browser);
+  default loopback (open the browser to the provider's consent screen, catch the `?code=`
+  on an ephemeral `127.0.0.1` server that lives ONLY for the command, exchange it);
+  `--no-browser` (print the URL, paste the code, no server).
+- **Provider data is PLUGIN-declared, goclaw is the engine.** The auth/token URLs, scopes,
+  refresh-forcing `auth_params`, scope separator, and client-auth style come from the named
+  plugin's `oauth:` block in its `plugin.yml` (parsed into `plugin.OAuthSpec`); flags
+  override per field. `buildAuthCodeURL` merges the provider's `auth_params` and joins
+  scopes with its separator; `exchangeCode` does body OR HTTP Basic client-auth per
+  `client_auth`. Nothing is Google-hardcoded, so a NEW OAuth service (Microsoft, Spotify,
+  ...) ships entirely as a plugin with no goclaw change. The command prints the
+  provider/URLs/target/scopes and requires a y/N confirm before the consent flow (a plugin
+  pointing `auth_url` at an attacker is visible), and `validateOAuthSpec` rejects a
+  non-https or malformed provider, storing nothing. Author-facing docs: goclawkit
+  `docs/sdk-spec.md` ("Optional `oauth:` block").
 
 Not built (still as designed above): DPoP/atproto (`AccessToken` and the bundle schema can
 hold its key+nonce, but no signer); a token-file delivery path; connection/session schemes.
