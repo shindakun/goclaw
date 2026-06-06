@@ -217,6 +217,7 @@ goclaw auth add github https://api.github.com  github_pat_...
 
 goclaw auth list                 # id, name, target, masked token
 goclaw auth delete <id>          # remove by the id from `list`
+# For refreshable OAuth2 credentials (Gmail etc.) use `add-oauth`, see below.
 ```
 
 When a credential is stored (and the encryption key is set), the host starts the
@@ -236,6 +237,50 @@ How it injects, per host:
 Hosts with no stored credential are blind-tunneled: the proxy pipes the bytes
 without decrypting, so that traffic stays end-to-end encrypted to its real
 destination.
+
+### OAuth2 credentials (Gmail and other "sign in with Google" APIs)
+
+The tokens above are STATIC. Some upstreams (Gmail, Calendar, Drive, anything
+behind "sign in with Google") use OAuth2: a long-lived **refresh token** held
+host-side, from which short-lived access tokens are minted and refreshed on
+demand. `goclaw auth add-oauth` stores the refresh token encrypted; the proxy
+refreshes and injects `Authorization: Bearer` per request, exactly like a static
+token. The refresh token and access tokens never enter the agent container.
+
+One-time Google setup (you need a client id + secret):
+
+1. console.cloud.google.com -> create or pick a project.
+2. APIs & Services -> Library -> enable the API you want (e.g. "Gmail API").
+3. APIs & Services -> OAuth consent screen: "External", add your own Google
+   account as a **test user**, add the scope you need (e.g.
+   `https://www.googleapis.com/auth/gmail.readonly`).
+4. APIs & Services -> Credentials -> Create credentials -> OAuth client ID ->
+   application type **Desktop app**. This yields the client id
+   (`...apps.googleusercontent.com`) and client secret. "Desktop app" is what
+   makes the `http://127.0.0.1` loopback redirect the command uses acceptable.
+
+Then store it (needs `GOCLAW_SECRET_ENCRYPTION_KEY` set, as above):
+
+```sh
+# Opens the browser to Google's consent screen, catches the code on a throwaway
+# 127.0.0.1 server that lives only for this command, exchanges it, stores the
+# refresh token encrypted.
+goclaw auth add-oauth \
+  --name gmail \
+  --target-api-url https://gmail.googleapis.com \
+  --client-id <id>.apps.googleusercontent.com \
+  --client-secret <secret> \
+  --scopes https://www.googleapis.com/auth/gmail.readonly
+
+# Already have a refresh token (e.g. from the OAuth playground)? Skip the browser:
+#   ... --refresh-token <rt>
+# Headless host (no browser)? Print the URL and paste the code back:
+#   ... --no-browser
+```
+
+`goclaw auth list` then shows it as kind `oauth2-bearer` (the token is never
+displayed). Only `--provider google` is supported today. Gmail (and any OAuth2
+upstream) requires the credproxy to be ON, since delivery is proxy-inject only.
 
 Notes and caveats:
 
