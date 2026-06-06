@@ -3,7 +3,7 @@
 Status: DESIGN, with the goclawkit SDK groundwork shipped. The two SDK pieces this needs,
 `plugin.HTTPClient()` (proxy-correct external HTTPS) and `plugin.ServePoll(Poller)` (the
 poll-loop runtime), are built in goclawkit (section 5d). What is left: the `cmd/gmail`
-plugin itself, and the credential-proxy OAuth-refresh extension (`docs/credproxy-oauth.md`).
+plugin itself, and the OAuth credential lifecycle in credstore (`docs/oauth-credentials.md`).
 This doc maps Gmail onto goclaw's channel-plugin model and identifies the one genuinely
 new thing it forces: OAuth token lifecycle in the credential proxy. Read
 `docs/channels-plugin-design.md` (the channel-plugin boundary) and `docs/security.md`
@@ -116,25 +116,32 @@ plugin stays a dumb Gmail-API client, and every OAuth concern (refresh, rotation
 single-flight, the refresh token itself) lives in goclaw, reusable by the next OAuth
 channel.
 
-This is strictly better and reuses machinery we have, EXCEPT for one thing the proxy
-does not do yet: **OAuth access tokens expire (~1h) and must be refreshed.** Today the
-proxy injects a STATIC token (`injectAuth(req, host, token)`, a fixed string). Gmail
-forces the proxy to hold a REFRESH token (host-side, in `credstore`) and mint short
--lived access tokens on demand, refreshing when they expire.
+This is strictly better and reuses machinery we have, EXCEPT for one thing goclaw does
+not do yet: **OAuth access tokens expire (~1h) and must be refreshed.** Today credentials
+are STATIC (`injectAuth(req, host, token)`, a fixed string). Gmail forces goclaw to hold a
+REFRESH token (host-side, in `credstore`) and mint short-lived access tokens on demand.
+That refresh ENGINE lives in credstore (not the proxy), so it is not coupled to the
+opt-in proxy; the proxy is just ONE way to deliver the minted token to the plugin.
 
 That is the architectural delta, and it is worth doing because it GENERALIZES: every
 OAuth upstream (Slack, Google Calendar/Drive, any "sign in with Google" API) needs the
 same thing. Gmail is just the first case that forces it. The extension is specified
-separately in `docs/credproxy-oauth.md` (next), because it has real weight of its own.
+separately in `docs/oauth-credentials.md` (next), because it has real weight of its own.
+That doc puts the refresh ENGINE in credstore (not the proxy), so OAuth lifecycle is not
+coupled to the opt-in proxy; how the minted token reaches the plugin (proxy inject vs a
+mounted file) is an open delivery decision tracked there.
 
 ### Recommendation
 
-Build 3b (proxy-injected OAuth) as the target, because it keeps the secret out of the
-sandbox and the refresh machinery generalizes. 3a is an acceptable bring-up shortcut to
-prove the channel/poll/dedup/threading mechanics WITHOUT blocking on the proxy work,
-then swap auth to 3b. The channel code is identical either way (the plugin just makes
-HTTPS calls to Gmail); only WHERE the token is injected differs, which is the whole
-point of the proxy design.
+Build 3b (host-side OAuth) as the target, because it keeps the refresh token out of the
+sandbox and the refresh engine generalizes. Within 3b, the DELIVERY of the minted access
+token to the plugin (proxy inject vs a mounted token file) is an open decision, see
+`docs/oauth-credentials.md` section 6; it is where the "proxy is opt-in" tension lives.
+3a (token in plugin env) is an acceptable bring-up shortcut to prove the
+channel/poll/dedup/threading mechanics WITHOUT blocking on the OAuth engine, then swap to
+3b. The channel code is identical across all of these (the plugin just makes HTTPS calls
+to Gmail and sets a bearer from env iff present, 5c); only WHERE the token comes from
+differs, which is the whole point of pushing OAuth host-side.
 
 ## 4. The channel + tool duality
 
@@ -259,7 +266,8 @@ LEFT (goclawkit):
 
 NOT in goclawkit, by design:
 
-- NO OAuth code. The refresh machinery is goclaw-side (`docs/credproxy-oauth.md`); the kit
+- NO OAuth code. The refresh machinery is goclaw-side (`docs/oauth-credentials.md`, in
+  credstore); the kit
   stays a thin client that sends no auth header (the proxy injects it). Keep the kit dumb,
   keep OAuth generic and host-side.
 
@@ -280,12 +288,15 @@ installs the compiled artifact. The ONLY goclaw-side work is the host OAuth refr
 2. **[goclaw]** Prove it end to end through the existing boundary (it is a 4a dialer, so
    this is the IRC path with a poll loop). Eager-launch + pin already apply. This is just
    running it, no new goclaw code.
-3. **[goclaw]** Credential-proxy OAuth refresh (`docs/credproxy-oauth.md`): hold the
-   refresh token in credstore, mint access tokens, inject per request. The swap from 3a
-   to 3b is then a DEPLOYMENT change, not a code change: the host stops setting
-   `GMAIL_BEARER` (so the plugin sends no header) and the proxy injects the bearer
-   instead. The plugin binary is untouched, the payoff of the 5c env-bearer contract.
-   THIS is the only genuinely goclaw-side build on the list.
+3. **[goclaw]** OAuth credential lifecycle in credstore (`docs/oauth-credentials.md`):
+   hold the refresh token, mint access tokens (single-flight, rotation-aware). This is
+   the only genuinely goclaw-side build, and it is delivery-agnostic, the engine serves
+   whichever delivery is chosen. The DELIVERY decision (proxy injects the bearer per
+   request vs a host-rewritten token file the plugin re-reads) is OPEN; it is where the
+   "proxy is opt-in" tension lives, since OAuth needs a live host-side refresher. Whether
+   the 3a->3b swap is "host stops setting `GMAIL_BEARER`, proxy injects" (proxy delivery)
+   or "host points `GMAIL_BEARER_FILE` at a refreshed file" (file delivery) follows from
+   that decision. Either way the plugin binary is untouched, the payoff of the 5c contract.
 4. **[goclawkit]** Optional: the companion `cmd/gmail-tools`, a `kind: tool` plugin,
    reusing the same auth.
 
