@@ -101,6 +101,53 @@ func TestIntercept_Guards(t *testing.T) {
 	}
 }
 
+// HH:MM is honored exactly: "07:30" stores hour 7, minute 30, and the confirmation reads
+// 07:30, never 07:00. This is the regression for the "7:30 silently became 7:00" bug.
+func TestIntercept_AddHHMM(t *testing.T) {
+	r, ownerID := scheduleRouter(t)
+
+	add, _ := r.Intercept("telegram", "555", "/schedule add inbox 07:30 Summarize my inbox.")
+	if !strings.Contains(add, "07:30") {
+		t.Fatalf("add reply should confirm 07:30, got %q", add)
+	}
+	tasks, err := r.central.ScheduledTasksByOwner(ownerID)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("ScheduledTasksByOwner = %+v err=%v", tasks, err)
+	}
+	if tasks[0].AtHour != 7 || tasks[0].AtMinute != 30 {
+		t.Fatalf("stored time = %02d:%02d, want 07:30", tasks[0].AtHour, tasks[0].AtMinute)
+	}
+}
+
+// A malformed or out-of-range time is REJECTED with a message and stores NOTHING; it is
+// never rounded to a representable value. "bare hour" still works (8 -> 08:00).
+func TestIntercept_TimeParsingAndRejection(t *testing.T) {
+	r, ownerID := scheduleRouter(t)
+
+	// A bare hour is accepted as HH:00 (back-compat).
+	bare, _ := r.Intercept("telegram", "555", "/schedule add a 8 do it")
+	if !strings.Contains(bare, "08:00") {
+		t.Fatalf("bare hour reply = %q", bare)
+	}
+
+	// Out-of-range minute is rejected, not rounded.
+	badMin, _ := r.Intercept("telegram", "555", "/schedule add b 7:75 do it")
+	if !strings.Contains(badMin, "00-59") {
+		t.Fatalf("bad-minute reply = %q (want a 00-59 rejection, never a stored 08:15)", badMin)
+	}
+	// Non-numeric time is rejected.
+	garbage, _ := r.Intercept("telegram", "555", "/schedule add c noon do it")
+	if !strings.Contains(garbage, "0-23") {
+		t.Fatalf("garbage-time reply = %q", garbage)
+	}
+
+	// Only the valid one was stored; the two rejects created nothing.
+	tasks, _ := r.central.ScheduledTasksByOwner(ownerID)
+	if len(tasks) != 1 || tasks[0].Name != "a" {
+		t.Fatalf("rejected times must not be stored; tasks = %+v", tasks)
+	}
+}
+
 // The /schedule COMMAND path (user-typed) goes through the same logic, owner-scoped by
 // req.UserID.
 func TestCmdSchedule_UserTyped(t *testing.T) {

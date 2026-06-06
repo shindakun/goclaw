@@ -23,6 +23,7 @@ type ScheduledTask struct {
 	ChatID       string
 	PeriodDays   int
 	AtHour       int   // 0-23, or <0 to use EverySeconds
+	AtMinute     int   // 0-59, minute of AtHour (ignored when AtHour < 0)
 	EverySeconds int64 // used only when AtHour < 0
 	Prompt       string
 	Enabled      bool
@@ -38,10 +39,10 @@ func (d *DB) CreateScheduledTask(t ScheduledTask) (string, error) {
 	_, err := d.Exec(`
 		INSERT INTO scheduled_tasks
 			(id, name, owner_user_id, agent_group_id, session_key, channel, chat_id,
-			 period_days, at_hour, every_seconds, prompt, enabled)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 period_days, at_hour, at_minute, every_seconds, prompt, enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, t.Name, t.OwnerUserID, t.AgentGroupID, t.SessionKey, t.Channel, t.ChatID,
-		t.PeriodDays, t.AtHour, t.EverySeconds, t.Prompt, boolToInt(t.Enabled))
+		t.PeriodDays, t.AtHour, t.AtMinute, t.EverySeconds, t.Prompt, boolToInt(t.Enabled))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return "", ErrTaskExists
@@ -64,7 +65,7 @@ func (d *DB) ScheduledTasksByOwner(ownerUserID int64) ([]ScheduledTask, error) {
 func (d *DB) queryScheduledTasks(where string, args ...any) ([]ScheduledTask, error) {
 	rows, err := d.Query(`
 		SELECT id, name, owner_user_id, agent_group_id, session_key, channel, chat_id,
-			   period_days, at_hour, every_seconds, prompt, enabled
+			   period_days, at_hour, at_minute, every_seconds, prompt, enabled
 		FROM scheduled_tasks `+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("db: query scheduled tasks: %w", err)
@@ -76,7 +77,7 @@ func (d *DB) queryScheduledTasks(where string, args ...any) ([]ScheduledTask, er
 		var t ScheduledTask
 		var enabled int
 		if err := rows.Scan(&t.ID, &t.Name, &t.OwnerUserID, &t.AgentGroupID, &t.SessionKey,
-			&t.Channel, &t.ChatID, &t.PeriodDays, &t.AtHour, &t.EverySeconds, &t.Prompt, &enabled); err != nil {
+			&t.Channel, &t.ChatID, &t.PeriodDays, &t.AtHour, &t.AtMinute, &t.EverySeconds, &t.Prompt, &enabled); err != nil {
 			return nil, err
 		}
 		t.Enabled = enabled != 0

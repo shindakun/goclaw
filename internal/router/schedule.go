@@ -24,7 +24,7 @@ func (r *Router) registerScheduleCommand() {
 	}
 	r.commands.Register(command.Command{
 		Name:        "schedule",
-		Description: "Recurring tasks: /schedule add <name> <hour> <prompt> | list | remove <name> | pause <name> | resume <name>",
+		Description: "Recurring tasks: /schedule add <name> <time> <prompt> | list | remove <name> | pause <name> | resume <name>  (<time> = HH:MM or a bare hour)",
 		MinRole:     permissions.RoleOwner,
 		Source:      "builtin",
 		Handler:     r.cmdSchedule,
@@ -58,7 +58,7 @@ func (r *Router) runSchedule(ownerID int64, channel, chatID, args string) (strin
 	case "resume", "enable":
 		return r.scheduleSetOrRemove(ownerID, rest, "resume")
 	default:
-		return "Usage: /schedule add <name> <hour 0-23> <prompt> | list | remove <name> | pause <name> | resume <name>", nil
+		return "Usage: /schedule add <name> <time> <prompt> | list | remove <name> | pause <name> | resume <name>  (<time> = HH:MM or a bare hour 0-23)", nil
 	}
 }
 
@@ -96,22 +96,26 @@ func (r *Router) Intercept(channel, chatID, text string) (string, bool) {
 	return reply, true
 }
 
-// scheduleAdd parses "<name> <hour> <prompt...>" and creates a daily task targeting the
-// given conversation. Hour is a local 0-23 wall-clock hour.
+// scheduleAdd parses "<name> <time> <prompt...>" and creates a daily task targeting the
+// given conversation. <time> is a local wall-clock time: either "HH:MM" (e.g. 07:30) or a
+// bare hour "H" (e.g. 7, meaning 07:00). A malformed time is REJECTED with a clear message,
+// never silently rounded (the "7:30 became 7:00" bug).
+const scheduleTimeUsage = "Usage: /schedule add <name> <time> <prompt>  where <time> is HH:MM (e.g. 07:30) or a bare hour 0-23"
+
 func (r *Router) scheduleAdd(ownerID int64, channel, chatID, rest string) (string, error) {
 	name, r2, ok := strings.Cut(rest, " ")
 	if !ok {
-		return "Usage: /schedule add <name> <hour 0-23> <prompt>", nil
+		return scheduleTimeUsage, nil
 	}
-	hourStr, prompt, ok := strings.Cut(strings.TrimSpace(r2), " ")
+	timeStr, prompt, ok := strings.Cut(strings.TrimSpace(r2), " ")
 	prompt = strings.TrimSpace(prompt)
 	if !ok || prompt == "" {
-		return "Usage: /schedule add <name> <hour 0-23> <prompt>", nil
+		return scheduleTimeUsage, nil
 	}
 	name = strings.TrimSpace(name)
-	hour, err := strconv.Atoi(strings.TrimSpace(hourStr))
-	if err != nil || hour < 0 || hour > 23 {
-		return "The hour must be 0-23 (local). Usage: /schedule add <name> <hour> <prompt>", nil
+	hour, minute, perr := parseScheduleTime(strings.TrimSpace(timeStr))
+	if perr != nil {
+		return perr.Error() + " " + scheduleTimeUsage, nil
 	}
 
 	// Per-owner cap (fail closed on too many).
@@ -141,6 +145,7 @@ func (r *Router) scheduleAdd(ownerID int64, channel, chatID, rest string) (strin
 		ChatID:       chatID,
 		PeriodDays:   1,
 		AtHour:       hour,
+		AtMinute:     minute,
 		Prompt:       prompt,
 		Enabled:      true,
 	})
@@ -150,7 +155,28 @@ func (r *Router) scheduleAdd(ownerID int64, channel, chatID, rest string) (strin
 		}
 		return "", err
 	}
-	return fmt.Sprintf("Scheduled %q daily at %02d:00. I'll run it and reply here.", name, hour), nil
+	return fmt.Sprintf("Scheduled %q daily at %02d:%02d. I'll run it and reply here.", name, hour, minute), nil
+}
+
+// parseScheduleTime parses a local wall-clock time for a daily task. It accepts "HH:MM"
+// (e.g. "07:30", "7:5") or a bare hour "H" (e.g. "7" -> 07:00). It REJECTS anything out of
+// range or malformed with a user-facing error rather than rounding, so a request the
+// scheduler cannot represent is never silently changed (the "7:30 -> 7:00" bug). The error
+// message is a complete sentence; the caller appends the usage line.
+func parseScheduleTime(s string) (hour, minute int, err error) {
+	hourStr, minStr, hasColon := strings.Cut(s, ":")
+	hour, herr := strconv.Atoi(strings.TrimSpace(hourStr))
+	if herr != nil || hour < 0 || hour > 23 {
+		return 0, 0, fmt.Errorf("The hour must be 0-23 (local).")
+	}
+	if hasColon {
+		minute, merr := strconv.Atoi(strings.TrimSpace(minStr))
+		if merr != nil || minute < 0 || minute > 59 {
+			return 0, 0, fmt.Errorf("The minute must be 00-59 (local).")
+		}
+		return hour, minute, nil
+	}
+	return hour, 0, nil
 }
 
 func (r *Router) scheduleList(ownerID int64) (string, error) {
@@ -159,13 +185,13 @@ func (r *Router) scheduleList(ownerID int64) (string, error) {
 		return "", err
 	}
 	if len(tasks) == 0 {
-		return "No scheduled tasks. Add one: /schedule add <name> <hour> <prompt>", nil
+		return "No scheduled tasks. Add one: /schedule add <name> <time> <prompt>  (<time> = HH:MM or a bare hour)", nil
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].Name < tasks[j].Name })
 	var b strings.Builder
 	b.WriteString("Scheduled tasks:\n")
 	for _, t := range tasks {
-		when := fmt.Sprintf("daily %02d:00", t.AtHour)
+		when := fmt.Sprintf("daily %02d:%02d", t.AtHour, t.AtMinute)
 		if t.AtHour < 0 {
 			when = fmt.Sprintf("every %ds", t.EverySeconds)
 		}

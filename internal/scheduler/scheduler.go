@@ -92,7 +92,7 @@ func (s *Scheduler) due(t db.ScheduledTask, now time.Time) (bool, error) {
 			lastRun = parsed
 		}
 	}
-	return IsDue(t.PeriodDays, t.AtHour, time.Duration(t.EverySeconds)*time.Second, lastRun, ok, now), nil
+	return IsDue(t.PeriodDays, t.AtHour, t.AtMinute, time.Duration(t.EverySeconds)*time.Second, lastRun, ok, now), nil
 }
 
 // fire enqueues the task's prompt into its target session, ensures the runner, and
