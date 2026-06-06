@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -152,7 +153,7 @@ func TestIntercept_TimeParsingAndRejection(t *testing.T) {
 // req.UserID.
 func TestCmdSchedule_UserTyped(t *testing.T) {
 	r, ownerID := scheduleRouter(t)
-	reply, err := r.cmdSchedule(nil, command.Request{
+	reply, err := r.cmdSchedule(context.Background(), command.Request{
 		UserID: ownerID, Channel: "telegram", ChatID: "555",
 		Args: "add daily 9 Do the thing.",
 	})
@@ -166,7 +167,7 @@ func TestCmdSchedule_UserTyped(t *testing.T) {
 		t.Fatalf("task not created via command: %+v", tasks)
 	}
 	// Unknown user is refused.
-	if reply, _ := r.cmdSchedule(nil, command.Request{UserID: 0, Args: "list"}); !strings.Contains(reply, "known user") {
+	if reply, _ := r.cmdSchedule(context.Background(), command.Request{UserID: 0, Args: "list"}); !strings.Contains(reply, "known user") {
 		t.Fatalf("unknown-user reply = %q", reply)
 	}
 }

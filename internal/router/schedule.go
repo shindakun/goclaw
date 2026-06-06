@@ -167,12 +167,12 @@ func parseScheduleTime(s string) (hour, minute int, err error) {
 	hourStr, minStr, hasColon := strings.Cut(s, ":")
 	hour, herr := strconv.Atoi(strings.TrimSpace(hourStr))
 	if herr != nil || hour < 0 || hour > 23 {
-		return 0, 0, fmt.Errorf("The hour must be 0-23 (local).")
+		return 0, 0, fmt.Errorf("the hour must be 0-23 (local)")
 	}
 	if hasColon {
 		minute, merr := strconv.Atoi(strings.TrimSpace(minStr))
 		if merr != nil || minute < 0 || minute > 59 {
-			return 0, 0, fmt.Errorf("The minute must be 00-59 (local).")
+			return 0, 0, fmt.Errorf("the minute must be 00-59 (local)")
 		}
 		return hour, minute, nil
 	}
