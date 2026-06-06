@@ -102,6 +102,16 @@ and GitHub today. The plugin never sees the token. The HTTPS to Gmail is interce
 same two-session-splice way the proxy already does (see security.md "How interception
 works").
 
+The load-bearing simplification for the PLUGIN AUTHOR: in this mode the plugin sends NO
+auth header at all. It makes a plain `GET https://gmail.googleapis.com/...` with no
+`Authorization`, and the proxy adds the bearer on the way out. The plugin does not hold,
+refresh, or even know the token. All it must do is make its HTTP requests through a
+client that honors the container's `HTTPS_PROXY` and trusts the proxy CA, which is the
+container default (see section 5a). This is exactly why we push OAuth host-side: the
+plugin stays a dumb Gmail-API client, and every OAuth concern (refresh, rotation,
+single-flight, the refresh token itself) lives in goclaw, reusable by the next OAuth
+channel.
+
 This is strictly better and reuses machinery we have, EXCEPT for one thing the proxy
 does not do yet: **OAuth access tokens expire (~1h) and must be refreshed.** Today the
 proxy injects a STATIC token (`injectAuth(req, host, token)`, a fixed string). Gmail
@@ -137,19 +147,122 @@ single plugin is one kind today. Two clean ways:
 Start with two plugins. They share the auth story (section 3) and the upstream
 (`gmail.googleapis.com`), so the proxy work serves both.
 
-## 5. Build order
+## 5. The goclawkit side: what the plugin author actually writes (and what the SDK owes them)
 
-1. `kind: channel` gmail plugin in goclawkit: `Start` poll loop (query, emit inbound,
-   mark-read for dedup), `Send` (threaded reply). Auth via 3a (token file) to unblock.
-   Worked example + tests like the IRC plugin.
+The sections above are host-first. From the plugin-author (goclawkit) view, a Gmail poll
+channel needs things the channel SDK does NOT provide yet. The IRC plugin got away
+without them because it holds a socket and has no auth; a poll-and-OAuth channel exposes
+the gaps. Three buckets: what the author writes, what the SDK should provide so every
+poll/HTTP channel does not reinvent it, and the auth contract.
+
+### 5a. The HTTP-client contract (the most important, least obvious thing)
+
+Under 3b (proxy-injected OAuth, the target), the plugin sends NO auth header: it makes
+plain HTTPS calls to `gmail.googleapis.com` and the proxy adds the bearer. For that to
+work the plugin's `http.Client` MUST:
+
+- honor the container's `HTTPS_PROXY` env (Go's `http.DefaultTransport` does this via
+  `ProxyFromEnvironment`, so a default client already works, but a plugin that builds a
+  custom `Transport` and forgets `Proxy: http.ProxyFromEnvironment` will bypass the proxy
+  and the request will go out with NO auth and fail);
+- trust the proxy CA. The container sets `SSL_CERT_FILE` / `NODE_EXTRA_CA_CERTS` to the
+  mounted CA, and Go's TLS honors `SSL_CERT_FILE` for the system pool, so again a default
+  client works, but a plugin that sets its own `tls.Config{RootCAs: ...}` will reject the
+  proxy's leaf.
+
+So the SDK should give authors a `plugin.HTTPClient()` (or document the rule loudly): use
+the default-derived, proxy-and-CA-aware client; do NOT hand-roll a Transport unless you
+replicate `ProxyFromEnvironment` and the system cert pool. This is a footgun worth a
+helper, because "my requests bypass the proxy and fail with 401" is an opaque way to
+learn it. Under 3a (token in plugin) the same client is used; the plugin just also sets
+its own `Authorization` header. The HTTP CLIENT is identical between modes; only whether
+the plugin adds a header differs (see 5c).
+
+### 5b. Poll-channel scaffolding the SDK should provide
+
+IRC's `Start` is a bespoke read loop. A poll channel's `Start` is a different but equally
+generic shape that every poll-based channel (Gmail, an RSS feed, a status API) repeats:
+tick on an interval, fetch, dedup, emit. The SDK should offer a `ServePoll`-style helper
+so authors implement only the fetch, not the loop:
+
+```go
+// sketch, goclawkit
+type Poller interface {
+    Info() Info
+    // Poll is called on each tick; it returns the new inbound messages since the last
+    // call. The SDK handles the ticker, ctx cancellation, backoff on error, and feeding
+    // the returned Inbounds up the channel.* protocol.
+    Poll(ctx context.Context) ([]Inbound, error)
+    // Send delivers a reply (same as Channel.Send).
+    Send(ctx context.Context, out Outbound) error
+}
+```
+
+What the SDK owns in `ServePoll`: the ticker (interval from env/Info), ctx-cancel on
+shutdown, error backoff (do not hammer on a 500/quota error), and bridging to
+`ServeChannel` underneath (it IS a channel, just with a built-in loop). What the AUTHOR
+owns: one `Poll` that queries Gmail and returns new `Inbound`s, and `Send`. This turns
+the Gmail plugin's interesting code into "map a Gmail message to an Inbound" and "map an
+Outbound to a Gmail send", which is the actual domain work.
+
+DEDUP is the subtlety the SDK should help with but cannot fully own. "New since last
+call" requires state: Gmail does it by mutating the inbox (mark-read) so the next query
+excludes seen mail, which is domain-specific and the author's job. But a channel that
+CANNOT mutate the source (an RSS feed) needs a "seen ids" set the SDK could offer as an
+optional helper (a bounded set persisted in the plugin dir). For Gmail specifically,
+mark-read is the dedup and the SDK helper is not needed; the doc notes it so the
+`ServePoll` design does not pretend dedup is free.
+
+### 5c. The auth contract, from the plugin's side
+
+The plugin should NOT branch on "am I in mode 3a or 3b." That is a deployment choice, not
+plugin logic. The clean contract:
+
+- The plugin ALWAYS makes Gmail requests through the proxy-aware client (5a).
+- In 3b, it adds no `Authorization`; the proxy injects it. In 3a, it reads a token from
+  its allowlisted env/file and sets the header itself.
+- To keep the plugin from branching, define ONE behavior: the plugin sets
+  `Authorization` from an env var (e.g. `GMAIL_BEARER`) IF AND ONLY IF that var is set,
+  and otherwise sends none. In 3b the host leaves it unset (the proxy injects); in 3a the
+  host sets it to the token. The plugin code is identical; the deployment decides.
+
+This is the goclawkit-friendly framing of "OAuth lives host-side": the plugin's entire
+auth surface is "set a bearer from env if present." Everything hard (refresh, rotation,
+the refresh token) is in goclaw, and the plugin cannot leak what it never holds.
+
+### 5d. What goclawkit must add, concretely
+
+- `plugin.HTTPClient()`: the proxy-and-CA-aware default client (or a documented rule +
+  lint note). Small, prevents the most likely footgun.
+- `ServePoll(Poller)`: the poll-loop runtime (ticker, backoff, ctx, bridge to
+  ServeChannel). Generic; serves Gmail and any future poll channel.
+- A worked `cmd/gmail` example exercising both, like `cmd/irc` and `cmd/webhook` do for
+  their shapes, with a `-selftest` that runs the poll/dedup/Send round trip against an
+  in-process fake Gmail API (no real network, no OAuth), the same hermetic-demo discipline
+  the IRC and webhook examples follow.
+- NO OAuth code in goclawkit. The refresh machinery is goclaw-side
+  (`docs/credproxy-oauth.md`); the kit stays a thin client. This is the whole point of
+  your steer: keep the kit dumb, keep OAuth generic and host-side.
+
+## 6. Build order
+
+0. goclawkit SDK additions (section 5d): `plugin.HTTPClient()` and `ServePoll(Poller)`,
+   so the Gmail plugin (and every future poll channel) implements only `Poll` + `Send`.
+   Small, generic, no OAuth code.
+1. `kind: channel` gmail plugin in goclawkit on top of `ServePoll`: `Poll` (query, map to
+   inbound, mark-read for dedup), `Send` (threaded reply). Auth via the env-bearer
+   contract (5c); set `GMAIL_BEARER` from a token file for 3a bring-up. Worked example
+   with a `-selftest` against a fake Gmail API, like the IRC plugin.
 2. Prove it end to end through the existing boundary (it is a 4a dialer, so this is the
    IRC path with a poll loop). Eager-launch + pin already apply.
 3. Credential-proxy OAuth refresh (`docs/credproxy-oauth.md`): hold the refresh token in
-   credstore, mint access tokens, inject per request. Swap the plugin's auth from 3a to
-   3b (placeholder in the container, real token injected by the proxy).
+   credstore, mint access tokens, inject per request. The swap from 3a to 3b is now a
+   DEPLOYMENT change, not a code change: the host stops setting `GMAIL_BEARER` (so the
+   plugin sends no header) and the proxy injects the bearer instead. The plugin binary is
+   untouched, the payoff of the 5c env-bearer contract.
 4. Optional: the companion `kind: tool` gmail-tools plugin, reusing the same auth.
 
-## 6. Open questions
+## 7. Open questions
 
 - Body rendering: Gmail messages are MIME multipart (HTML + text + attachments). The
   plugin must extract a sane plain-text body for the agent and decide what to do with
