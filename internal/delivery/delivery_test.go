@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -134,5 +135,61 @@ func TestDrain_DeniesNonOriginWithoutDestination(t *testing.T) {
 	}
 	if len(fake.sent) != 0 {
 		t.Fatalf("expected nothing delivered, got %+v", fake.sent)
+	}
+}
+
+// fakeInterceptor rewrites a "REWRITE:<x>" marker to "<x>", and swallows "SWALLOW".
+type fakeInterceptor struct{}
+
+func (fakeInterceptor) Intercept(channel, chatID, text string) (string, bool) {
+	if rest, ok := strings.CutPrefix(text, "REWRITE:"); ok {
+		return rest, true
+	}
+	if text == "SWALLOW" {
+		return "", true
+	}
+	return "", false
+}
+
+func enqueueAndDrain(t *testing.T, d *Deliverer, central *db.DB, agID int64, dataDir, key, text string) {
+	t.Helper()
+	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := db.OpenSessionDir(db.SessionDir(dataDir, agID, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliver to the session's OWN origin chat (origin-chat is always authorized).
+	_, chat, _ := strings.Cut(key, ":")
+	if _, err := runner.EnqueueOutbound("telegram", chat, text); err != nil {
+		t.Fatal(err)
+	}
+	_ = runner.Close()
+	if err := d.drain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDrain_InterceptRewritesText(t *testing.T) {
+	d, central, agID, dataDir, fake := setup(t)
+	d = d.WithInterceptor(fakeInterceptor{})
+	enqueueAndDrain(t, d, central, agID, dataDir, "telegram:555", "REWRITE:scheduled ok")
+	if len(fake.sent) != 1 || fake.sent[0].Text != "scheduled ok" {
+		t.Fatalf("intercept should have rewritten the text, got %+v", fake.sent)
+	}
+}
+
+func TestDrain_InterceptSwallows(t *testing.T) {
+	d, central, agID, dataDir, fake := setup(t)
+	d = d.WithInterceptor(fakeInterceptor{})
+	enqueueAndDrain(t, d, central, agID, dataDir, "telegram:555", "SWALLOW")
+	if len(fake.sent) != 0 {
+		t.Fatalf("a swallowed message should not be sent, got %+v", fake.sent)
+	}
+	// A non-marker message passes through unchanged.
+	enqueueAndDrain(t, d, central, agID, dataDir, "telegram:777", "plain reply")
+	if len(fake.sent) != 1 || fake.sent[0].Text != "plain reply" {
+		t.Fatalf("non-marker should pass through, got %+v", fake.sent)
 	}
 }

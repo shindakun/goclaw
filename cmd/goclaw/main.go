@@ -33,6 +33,7 @@ import (
 	"github.com/shindakun/goclaw/internal/plugin"
 	"github.com/shindakun/goclaw/internal/router"
 	"github.com/shindakun/goclaw/internal/runtime"
+	"github.com/shindakun/goclaw/internal/scheduler"
 	"github.com/shindakun/goclaw/internal/sweep"
 	"github.com/shindakun/goclaw/internal/typing"
 )
@@ -330,7 +331,9 @@ func run(log *slog.Logger) error {
 	// the /reset & /compact pass-throughs). Passing nil lets it create one; the
 	// plugin manager will register plugin commands into rtr.Commands() later.
 	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, nil, log)
-	del := delivery.New(central, registry, cfg.DataDir, typer, log)
+	// The router intercepts an agent reply that IS a "/schedule ..." directive, so the
+	// agent can manage scheduled tasks by emitting one (natural-language scheduling).
+	del := delivery.New(central, registry, cfg.DataDir, typer, log).WithInterceptor(rtr)
 	swp := sweep.New(central, cfg.DataDir, runners, log)
 	// Pin the channel-hosting agent group so the sweep never reaps its container as
 	// idle: an always-on channel plugin (e.g. IRC) must keep its container running to
@@ -388,6 +391,16 @@ func run(log *slog.Logger) error {
 			g.Go(func() error { return sched.Run(gctx) })
 			log.Info("vault maintenance enabled", "channel", target.Channel, "chat", target.ChatID)
 		}
+	}
+
+	// User-definable scheduled tasks (docs/scheduled-tasks.md): a daily/weekly/interval
+	// task enqueues its prompt into its own target session and ensures the runner. Runs
+	// whenever the runner is enabled (it needs to wake the container). Owner-gated via
+	// the /schedule command and the schedule_* agent tools.
+	if ensurer != nil {
+		tsk := scheduler.New(central, cfg.DataDir, ensurer, log)
+		g.Go(func() error { return tsk.Run(gctx) })
+		log.Info("task scheduler enabled")
 	}
 
 	log.Info("goclaw host started")

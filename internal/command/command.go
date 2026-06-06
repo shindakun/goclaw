@@ -23,6 +23,7 @@ type Request struct {
 	ChatID   string
 	SenderID string
 	Sender   string // display name, best-effort
+	UserID   int64  // resolved user id (0 if unknown); for owner-scoped commands
 	Role     permissions.Role
 	IsKnown  bool   // whether the sender resolved to a known user
 	Args     string // the command line after the command word, trimmed

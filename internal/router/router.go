@@ -237,6 +237,7 @@ func (r *Router) registerBuiltinCommands() {
 		Source:      "builtin",
 		Handler:     r.cmdDeny,
 	})
+	r.registerScheduleCommand()
 }
 
 // Commands exposes the registry so the host (e.g. the plugin manager) can register
@@ -411,6 +412,9 @@ func (r *Router) handleCommand(ctx context.Context, msg channels.InboundMsg, use
 		Role:     role,
 		IsKnown:  known,
 		Args:     args,
+	}
+	if user != nil {
+		req.UserID = user.ID
 	}
 	reply, err := cmd.Handler(ctx, req)
 	if err != nil {

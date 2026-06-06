@@ -26,19 +26,35 @@ type Typer interface {
 	Stop(channel, chatID string)
 }
 
+// OutboundInterceptor lets the host act on an agent reply BEFORE it is delivered, e.g.
+// run an agent-emitted "/schedule ..." directive against the DB instead of sending the
+// raw command text to the user. Intercept returns (replacement, handled): when handled,
+// the original text is NOT sent; replacement (if non-empty) is sent instead.
+type OutboundInterceptor interface {
+	Intercept(channel, chatID, text string) (replacement string, handled bool)
+}
+
 // Deliverer drains outbound messages and dispatches them.
 type Deliverer struct {
-	central  *db.DB
-	registry *channels.Registry
-	dataDir  string
-	typer    Typer
-	log      *slog.Logger
+	central     *db.DB
+	registry    *channels.Registry
+	dataDir     string
+	typer       Typer
+	interceptor OutboundInterceptor // optional; nil = no interception
+	log         *slog.Logger
 }
 
 // New constructs a Deliverer. typer may be nil to disable typing-indicator
 // teardown.
 func New(central *db.DB, registry *channels.Registry, dataDir string, typer Typer, log *slog.Logger) *Deliverer {
 	return &Deliverer{central: central, registry: registry, dataDir: dataDir, typer: typer, log: log}
+}
+
+// WithInterceptor sets an outbound interceptor (e.g. the router, to handle agent-emitted
+// /schedule directives). Returns d for chaining.
+func (d *Deliverer) WithInterceptor(i OutboundInterceptor) *Deliverer {
+	d.interceptor = i
+	return d
 }
 
 // Run polls outbound queues on a ticker until ctx is cancelled.
@@ -119,7 +135,23 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 			d.typer.Stop(m.Channel, m.ChatID)
 		}
 
-		out := channels.OutboundMsg{Channel: m.Channel, ChatID: m.ChatID, Text: m.Text}
+		// Intercept an agent-emitted directive (e.g. "/schedule ...") before sending:
+		// the host runs it against the DB and sends its result, not the raw command.
+		text := m.Text
+		if d.interceptor != nil {
+			if replacement, handled := d.interceptor.Intercept(m.Channel, m.ChatID, text); handled {
+				if replacement == "" {
+					// Nothing to send; just mark this outbound delivered so it is not retried.
+					if err := sess.MarkDelivered(m.ID); err != nil {
+						return err
+					}
+					continue
+				}
+				text = replacement
+			}
+		}
+
+		out := channels.OutboundMsg{Channel: m.Channel, ChatID: m.ChatID, Text: text}
 		if err := d.dispatch(ctx, out); err != nil {
 			// Transient send failure: do NOT record it as terminally failed, so
 			// the next drain retries. Dedup still protects us because the ledger

@@ -114,6 +114,20 @@ type Identity struct {
 	SenderID string
 }
 
+// OwnerUserID returns the id of an owner user (v0: any owner; agent-group-scoped owners
+// later). found=false if there is no owner. Used to attribute an agent-emitted action
+// (e.g. a /schedule directive in the agent's reply) to the conversation's owner.
+func (d *DB) OwnerUserID() (id int64, found bool, err error) {
+	err = d.QueryRow(`SELECT id FROM users WHERE role = 'owner' ORDER BY id LIMIT 1`).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("owner user id: %w", err)
+	}
+	return id, true, nil
+}
+
 // OwnerIdentity returns a channel identity for an owner user, so the host can
 // send them the approval card (brief §3.4). v0 picks any owner's first identity;
 // agent-group-scoped owners can be added later. Returns (nil, nil) if no owner
