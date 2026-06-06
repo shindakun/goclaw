@@ -252,8 +252,10 @@ One-time Google setup (you need a client id + secret):
 1. console.cloud.google.com -> create or pick a project.
 2. APIs & Services -> Library -> enable the API you want (e.g. "Gmail API").
 3. APIs & Services -> OAuth consent screen: "External", add your own Google
-   account as a **test user**, add the scope you need (e.g.
-   `https://www.googleapis.com/auth/gmail.readonly`).
+   account as a **test user**, add the scope you need. For the reply-by-email
+   Gmail channel use `https://www.googleapis.com/auth/gmail.modify` (read +
+   send + mark-read/archive in one scope). `gmail.readonly` is read-ONLY and
+   will 403 on send, so it suits only a digest/summary tool, not replies.
 4. APIs & Services -> Credentials -> Create credentials -> OAuth client ID ->
    application type **Desktop app**. This yields the client id
    (`...apps.googleusercontent.com`) and client secret. "Desktop app" is what
@@ -270,7 +272,7 @@ goclaw auth add-oauth \
   --target-api-url https://gmail.googleapis.com \
   --client-id <id>.apps.googleusercontent.com \
   --client-secret <secret> \
-  --scopes https://www.googleapis.com/auth/gmail.readonly
+  --scopes https://www.googleapis.com/auth/gmail.modify
 
 # Already have a refresh token (e.g. from the OAuth playground)? Skip the browser:
 #   ... --refresh-token <rt>

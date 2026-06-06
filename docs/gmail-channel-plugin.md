@@ -142,7 +142,9 @@ Operator setup is now one command:
 # Either paste an existing refresh token, or run the browser consent flow.
 goclaw auth add-oauth --name gmail --target-api-url https://gmail.googleapis.com \
   --client-id <gcp-desktop-client-id> --client-secret <secret> \
-  --scopes https://www.googleapis.com/auth/gmail.readonly
+  --scopes https://www.googleapis.com/auth/gmail.modify
+#   gmail.modify = read + send + mark-read/archive, what the reply-by-email channel needs.
+#   (gmail.readonly is read-only and 403s on send; use it only for a digest/summary tool.)
 #   add --refresh-token <rt> to skip the browser, or --no-browser for a headless host.
 ```
 
