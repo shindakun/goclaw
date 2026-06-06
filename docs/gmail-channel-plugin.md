@@ -265,21 +265,29 @@ NOT in goclawkit, by design:
 
 ## 6. Build order
 
-0. goclawkit SDK additions (section 5d): `plugin.HTTPClient()` and `ServePoll(Poller)`.
-   DONE, both shipped. The Gmail plugin (and every future poll channel) implements only
-   `Poll` + `Send`.
-1. `kind: channel` gmail plugin in goclawkit on top of `ServePoll`: `Poll` (query, map to
-   inbound, mark-read for dedup), `Send` (threaded reply). Auth via the env-bearer
-   contract (5c); set `GMAIL_BEARER` from a token file for 3a bring-up. Worked example
-   with a `-selftest` against a fake Gmail API, like the IRC plugin.
-2. Prove it end to end through the existing boundary (it is a 4a dialer, so this is the
-   IRC path with a poll loop). Eager-launch + pin already apply.
-3. Credential-proxy OAuth refresh (`docs/credproxy-oauth.md`): hold the refresh token in
-   credstore, mint access tokens, inject per request. The swap from 3a to 3b is now a
-   DEPLOYMENT change, not a code change: the host stops setting `GMAIL_BEARER` (so the
-   plugin sends no header) and the proxy injects the bearer instead. The plugin binary is
-   untouched, the payoff of the 5c env-bearer contract.
-4. Optional: the companion `kind: tool` gmail-tools plugin, reusing the same auth.
+Each step is tagged with the repo that owns it. NOTE: the gmail PLUGIN (cmd/gmail) is a
+goclawkit binary, built and tested in the kit like cmd/irc; goclaw never builds it, it
+installs the compiled artifact. The ONLY goclaw-side work is the host OAuth refresh
+(step 3).
+
+0. **[goclawkit]** SDK additions (section 5d): `plugin.HTTPClient()` and
+   `ServePoll(Poller)`. DONE, both shipped. The Gmail plugin (and every future poll
+   channel) implements only `Poll` + `Send`.
+1. **[goclawkit]** `cmd/gmail`, a `kind: channel` plugin on top of `ServePoll`: `Poll`
+   (query, map to inbound, mark-read for dedup), `Send` (threaded reply). Auth via the
+   env-bearer contract (5c); set `GMAIL_BEARER` from a token file for 3a bring-up. Worked
+   example with a `-selftest` against a fake Gmail API, like `cmd/irc`.
+2. **[goclaw]** Prove it end to end through the existing boundary (it is a 4a dialer, so
+   this is the IRC path with a poll loop). Eager-launch + pin already apply. This is just
+   running it, no new goclaw code.
+3. **[goclaw]** Credential-proxy OAuth refresh (`docs/credproxy-oauth.md`): hold the
+   refresh token in credstore, mint access tokens, inject per request. The swap from 3a
+   to 3b is then a DEPLOYMENT change, not a code change: the host stops setting
+   `GMAIL_BEARER` (so the plugin sends no header) and the proxy injects the bearer
+   instead. The plugin binary is untouched, the payoff of the 5c env-bearer contract.
+   THIS is the only genuinely goclaw-side build on the list.
+4. **[goclawkit]** Optional: the companion `cmd/gmail-tools`, a `kind: tool` plugin,
+   reusing the same auth.
 
 ## 7. Open questions
 
