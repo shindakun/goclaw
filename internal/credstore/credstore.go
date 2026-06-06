@@ -43,9 +43,19 @@ type Credential struct {
 	Name       string
 	TargetURL  string
 	TargetHost string
+	// Kind is the credential scheme: "static" (the blob is the token) or
+	// "oauth2-bearer" (the blob is a JSON OAuth2 bundle, refreshed host-side). Empty
+	// is treated as "static" for rows from before the kind column existed.
+	Kind string
 	// Preview is a masked form of the token for display (e.g. "sk-a…9999").
 	Preview string
 }
+
+// Credential kinds. See docs/oauth-credentials.md.
+const (
+	KindStatic       = "static"        // the encrypted blob IS the token (default)
+	KindOAuth2Bearer = "oauth2-bearer" // the blob is a JSON oauth2Bundle, refreshed
+)
 
 // New builds a Store. encKeyB64 is the base64-encoded 32-byte key from
 // GOCLAW_SECRET_ENCRYPTION_KEY; an empty or malformed key yields a Store that
@@ -89,13 +99,13 @@ func (s *Store) Add(name, targetURL, token string) (string, error) {
 	id := uuid.NewString()
 	// Replace any existing credential for this host (unique index on target_host).
 	_, err = s.db.Exec(`
-		INSERT INTO credentials (id, name, target_url, target_host, token_ciphertext)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO credentials (id, name, target_url, target_host, token_ciphertext, kind)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(target_host) DO UPDATE SET
 			id = excluded.id, name = excluded.name,
 			target_url = excluded.target_url, token_ciphertext = excluded.token_ciphertext,
-			created_at = datetime('now')`,
-		id, name, targetURL, host, ct)
+			kind = excluded.kind, created_at = datetime('now')`,
+		id, name, targetURL, host, ct, KindStatic)
 	if err != nil {
 		return "", fmt.Errorf("credstore: add: %w", err)
 	}
@@ -106,7 +116,7 @@ func (s *Store) Add(name, targetURL, token string) (string, error) {
 // name. Does not decrypt full tokens for display beyond the preview.
 func (s *Store) List() ([]Credential, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, target_url, target_host, token_ciphertext
+		SELECT id, name, target_url, target_host, token_ciphertext, kind
 		FROM credentials ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("credstore: list: %w", err)
@@ -117,15 +127,21 @@ func (s *Store) List() ([]Credential, error) {
 	for rows.Next() {
 		var c Credential
 		var ct string
-		if err := rows.Scan(&c.ID, &c.Name, &c.TargetURL, &c.TargetHost, &ct); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.TargetURL, &c.TargetHost, &ct, &c.Kind); err != nil {
 			return nil, err
 		}
 		// Best-effort preview; if decryption fails (wrong key), show a marker
-		// rather than failing the whole listing.
-		if tok, derr := s.decrypt(ct); derr == nil {
-			c.Preview = preview(tok)
-		} else {
-			c.Preview = "<undecryptable: wrong key?>"
+		// rather than failing the whole listing. For an oauth2 credential the blob is a
+		// JSON bundle, not a token, so do not preview it as a token; show the kind.
+		switch c.Kind {
+		case KindOAuth2Bearer:
+			c.Preview = "<oauth2>"
+		default:
+			if tok, derr := s.decrypt(ct); derr == nil {
+				c.Preview = preview(tok)
+			} else {
+				c.Preview = "<undecryptable: wrong key?>"
+			}
 		}
 		out = append(out, c)
 	}
