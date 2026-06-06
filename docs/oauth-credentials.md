@@ -1,9 +1,11 @@
-# Authenticated upstream credentials (OAuth2, DPoP, and beyond)
+# Managed upstream credentials (API keys, OAuth2, DPoP, session/connection auth)
 
-Status: DESIGN. Adds support for credentials that are not a static string: an OAuth2
-Bearer refreshed from a refresh token (Gmail), and atproto/Bluesky DPoP (a per-session
-key that SIGNS each request, with a rotating nonce). Read `docs/security.md` ("Credential
-proxy") first.
+Status: DESIGN. Adds support for credentials beyond a static string: OAuth2 Bearer
+refreshed from a refresh token (Gmail), atproto/Bluesky DPoP (a per-session key that
+SIGNS each request with a rotating nonce), and connection/session schemes (Slack
+websocket tokens, WhatsApp session blobs, X browser cookies) that a plugin's own library
+consumes. Read `docs/security.md` ("Credential proxy") first. A survey of real schemes is
+in section 1.5; it reshaped this doc.
 
 This doc was rewritten after Bluesky was used to stress-test an earlier Google-shaped
 draft. That draft abstracted at "resolution returns a token string", which Bluesky
@@ -36,11 +38,54 @@ not universal:
    room for a key, and no notion that auth requires SIGNING, not presenting.
 
 So the line was drawn one level too low. The thing that varies per provider is not "what
-token string do I return", it is "HOW DO I AUTHENTICATE AN OUTBOUND REQUEST to this
-upstream", which spans credential shape, refresh mechanics, header(s), signing, and
-endpoint discovery. The abstraction must sit there.
+token string do I return", it is "HOW DO I AUTHENTICATE to this upstream", which spans
+credential shape, refresh mechanics, header(s), signing, endpoint discovery, AND, as the
+survey below shows, whether auth is even per-request at all.
 
-## 2. The corrected abstraction: authenticate a request
+## 1.5 A survey of real auth schemes (so we abstract over the real spread)
+
+Before fixing the abstraction, look at what real channel/tool plugins actually use (from
+the NanoClaw skills + the sibling `bskyoauth`). The spread is wider than "OAuth refresh",
+and it splits along a line that turns out to decide fork A (section 5):
+
+| Scheme | Examples | Credential is | How it is USED | Lifecycle |
+|---|---|---|---|---|
+| Static API key | Telegram, Discord, OpenAI, Parallel, GitHub PAT | one string | a header / API param | none |
+| OAuth2 Bearer | Gmail (Google) | refresh token + client creds + cached access token | `Authorization: Bearer` per request | timed refresh |
+| DPoP (signed) | Bluesky (atproto) | token + private KEY + live nonce | per-request SIGNATURE | refresh + per-request nonce |
+| Multi-token | Slack Socket Mode | two tokens (`xapp-` opens a websocket, `xoxb-` for API) | one authenticates a CONNECTION, one authenticates requests | static |
+| Session blob | WhatsApp (Baileys) | a persisted multi-device SESSION from a QR/pairing handshake | a library reattaches the session; no header at all | re-auth (re-scan) on expiry |
+| Browser/cookie | X via Playwright | a browser profile + cookie jar from an interactive login | a real browser carries the session | manual re-login |
+
+The load-bearing distinction is the "How it is USED" column, and it has TWO families:
+
+- **Request-level auth** (static key, OAuth2 Bearer, DPoP): the credential is applied to
+  each outbound HTTP request, as a header or a signature. The host CAN do this on the
+  plugin's behalf (the proxy injects a Bearer today; it could sign DPoP), so the secret
+  can stay out of the container.
+- **Connection/session-level auth** (Slack websocket, WhatsApp session, X browser): the
+  credential is consumed by a LIBRARY inside the plugin to establish a long-lived
+  connection or session; there is no per-request header for the host to inject. The host
+  CANNOT be the authenticator here, the plugin's library (Baileys, the Slack SDK,
+  Playwright) holds and uses the credential directly.
+
+This is the insight the survey adds: fork A ("host vs plugin auth") is NOT a free choice
+we make, it is DETERMINED by the scheme. Request-level schemes permit host-side auth (and
+thus secret-out-of-container); connection/session schemes require the credential to live
+in the plugin. So goclaw must support BOTH, and the security posture (secret in container
+or not) is a function of which scheme, documented per scheme, not a global toggle.
+
+## 2. The corrected abstraction: store + manage + deliver a provider-shaped credential
+
+The job of goclaw is therefore NOT "authenticate a request" (too narrow, misses the
+connection/session family). It is: **securely STORE a provider-typed credential, MANAGE
+its lifecycle (refresh/rotation for the ones that need it), and DELIVER it to wherever it
+is consumed, keeping it out of the container WHEN the scheme allows.** The request-level
+"authenticate a request" contract below is one consumer of that, the right one for
+Bearer/DPoP; the connection/session schemes consume the stored credential differently (it
+is handed to the plugin's library).
+
+The request-level contract, for the schemes that have it:
 
 The generic contract is not `Token(host) -> string`. It is closer to:
 
@@ -117,30 +162,33 @@ Authenticator over it) must handle all three:
   silently. The nonce case makes this acute: it is not a once-an-hour event, it is
   every request, so the write-back path must be cheap and correct.
 
-## 5. OPEN FORK A: where does the provider logic live (host vs plugin)?
+## 5. FORK A: where the provider logic lives (mostly DECIDED by the scheme)
 
-The Authenticator (refresh, signing, nonce, discovery) is provider-specific code. Two
-homes, and Bluesky/DPoP makes the choice consequential because DPoP needs a SIGNING KEY
-used PER REQUEST:
+The survey (1.5) mostly settles this: where auth logic can live is DETERMINED by whether
+the scheme is request-level or connection/session-level, not a free choice.
 
-- **A1. Host-side Authenticator.** The Authenticator lives in goclaw; the credential
-  (incl. the DPoP key) stays host-side, encrypted; the host authenticates outbound
-  requests on the plugin's behalf. PRO: the most sensitive secret (refresh token, DPoP
-  private key) never enters the container; consistent with goclaw's model; one place per
-  provider. CON: the credential proxy / delivery layer gains a per-provider hook, and for
-  DPoP that means per-request SIGNING happening host-side at the proxy, real
-  provider-specific logic in the proxy path, not just "inject a string".
-- **A2. In the plugin via a kit helper.** goclawkit ships the provider auth (for atproto,
-  literally `bskyoauth`'s RoundTripper); the plugin holds the credential and signs. PRO:
-  the host stays provider-agnostic (it just delivers a credential blob in); matches how
-  `bskyoauth` already works (a transport the client wraps); no DPoP logic in the proxy.
-  CON: the credential (DPoP key, tokens) lives IN the container, the weaker posture, and
-  it re-couples to "secret in the sandbox", the thing the proxy exists to avoid.
+- **Connection/session schemes (Slack WS, WhatsApp, X): MUST be in the plugin (A2).**
+  There is no per-request header for the host to inject; a library inside the plugin
+  (Baileys, the Slack SDK, Playwright) consumes the credential to open a connection. The
+  host's job for these is only to STORE the credential and DELIVER it into the plugin; the
+  secret necessarily lives in the container while in use. No choice.
+- **Static key + OAuth2 Bearer (Telegram, Gmail, ...): CAN be host-side (A1).** The proxy
+  already injects a header per request, so the secret can stay out of the container. This
+  is the existing, preferred model. No real tension.
+- **DPoP (Bluesky): the ONLY genuine judgment call.** It is request-level (so the host
+  COULD sign), but signing needs the private key per request, so host-side means real
+  per-request signing logic in the proxy path:
+  - **A1 (host signs):** the DPoP key stays host-side, never in the container; cost is
+    per-request DPoP signing at the proxy, real provider logic in the proxy, not "inject a
+    string".
+  - **A2 (plugin signs):** goclawkit ships the signer (literally `bskyoauth`'s
+    RoundTripper); the host just delivers the credential blob; cost is the DPoP key lives
+    in the container (weaker), re-coupling to "secret in the sandbox".
 
-This is the real architectural fork and it interacts with section 6. Note it is NOT
-all-or-nothing per provider: one could put OAuth2-Bearer host-side (A1, since the proxy
-can already inject a Bearer) and atproto-DPoP in the plugin (A2, since per-request signing
-in the proxy is heavy). A hybrid is legitimate and may be the honest answer.
+So fork A is not one global decision; it is per-scheme, and only DPoP is actually open.
+The shape goclaw must support is therefore HYBRID by necessity: host-side auth for the
+request-level schemes that allow it, in-plugin auth for the connection/session schemes
+that require it. The only thing to decide is which side DPoP lands on (section 9).
 
 ## 6. OPEN FORK B: how the credential reaches the request (delivery)
 
@@ -215,10 +263,18 @@ abstraction line goes, and do not over-abstract beyond the two cases in hand.
 
 ## 9. Decision needed
 
-1. **Fork A (auth-logic home):** host Authenticator (secrets stay host-side, proxy gains
-   per-provider hooks) vs plugin helper (host stays dumb, secret in container) vs hybrid
-   (host for Bearer, plugin for DPoP).
-2. **Fork B (delivery):** proxy-inject vs credential-to-plugin vs both. Entangled with A.
-3. For Gmail right now, the low-risk default is host Authenticator + proxy-inject for
-   Bearer; the open part is whether to commit to that being the ONLY model or to design
-   for the hybrid that atproto-DPoP probably wants.
+The survey (1.5) resolved most of fork A: goclaw must support HYBRID auth (host-side for
+request-level schemes that allow it, in-plugin for connection/session schemes that require
+it). What actually remains open:
+
+1. **DPoP's side (the only real fork-A question):** A1 host-signs (DPoP key out of the
+   container, per-request signing in the proxy) vs A2 plugin-signs (`bskyoauth`'s
+   RoundTripper in the plugin, key in the container). Not needed until we build Bluesky;
+   the schema (section 3) just must be able to hold the DPoP bundle either way.
+2. **Fork B (delivery) for the host-side schemes:** for Bearer, proxy-inject vs a
+   credential-to-plugin file. This is the live "proxy is opt-in" tension and the one that
+   affects Gmail NOW.
+3. **Gmail right now:** low-risk default is host-side Authenticator + proxy-inject for the
+   Bearer; the open part is only fork B (whether to also support a file path so OAuth works
+   with the proxy off). DPoP (1) is deferred; connection/session schemes are settled
+   (in-plugin by necessity).
