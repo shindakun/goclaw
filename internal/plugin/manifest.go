@@ -26,8 +26,41 @@ type Manifest struct {
 	Command     string   `yaml:"command"`     // slash command to register; "" = none
 	Env         []string `yaml:"env"`         // env var NAMES the plugin needs (values from host)
 
+	// OAuth, when present, declares how `goclaw auth add-oauth --plugin <name>` should
+	// obtain and store an OAuth2 credential for this plugin's upstream. goclaw owns the
+	// MECHANISM (consent flow, code exchange, encrypted storage, refresh/rotation, proxy
+	// injection); the plugin owns the per-provider FACTS here. This is what lets a new
+	// OAuth service ship entirely as a plugin, with no change to goclaw. It is provider
+	// CONFIG, not a secret (the client id/secret are still supplied by the operator at
+	// `add-oauth` time, never stored in the manifest).
+	OAuth *OAuthSpec `yaml:"oauth,omitempty"`
+
 	// dir is the plugin's directory, filled by LoadManifest (not from the file).
 	dir string
+}
+
+// OAuthSpec is a plugin's declared OAuth2 provider data (see Manifest.OAuth). Every field
+// is a provider FACT, never a secret. goclaw reads it to run a generic Authorization Code
+// flow and store an oauth2-bearer credential keyed by TargetHost.
+type OAuthSpec struct {
+	Provider string `yaml:"provider"`  // label for messages, e.g. "google" (free-form)
+	AuthURL  string `yaml:"auth_url"`  // consent endpoint (Authorization Code)
+	TokenURL string `yaml:"token_url"` // token endpoint (code exchange + refresh)
+	// TargetHost is the API host this credential authenticates (the proxy match key), e.g.
+	// "gmail.googleapis.com". The credential is stored under https://<TargetHost>.
+	TargetHost string `yaml:"target_host"`
+	// Scopes the plugin needs. The operator may override at add-oauth time.
+	Scopes []string `yaml:"scopes"`
+	// AuthParams are provider-specific query params added to the consent URL to force a
+	// refresh token (Google: access_type=offline, prompt=consent). Empty for providers
+	// that always issue one or use a scope (e.g. Microsoft's offline_access) instead.
+	AuthParams map[string]string `yaml:"auth_params"`
+	// ScopeSeparator joins scopes in the request (" " for most, "," for some). Defaults
+	// to a single space when empty.
+	ScopeSeparator string `yaml:"scope_separator"`
+	// ClientAuth is where the client id/secret go at the token endpoint: "body" (default,
+	// form fields, like Google) or "basic" (HTTP Basic header, like Spotify/Reddit).
+	ClientAuth string `yaml:"client_auth"`
 }
 
 // ExecPath returns the absolute path to the plugin binary (Exec resolved against
