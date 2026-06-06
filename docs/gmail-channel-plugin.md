@@ -1,9 +1,13 @@
 # Gmail channel plugin: design
 
-Status: DESIGN. This maps a Gmail integration onto goclaw's channel-plugin model and
-identifies the one genuinely new thing it forces: OAuth token lifecycle in the
-credential proxy. Read `docs/channels-plugin-design.md` (the channel-plugin boundary)
-and `docs/security.md` (the credential proxy) first.
+Status: DESIGN, with the goclawkit SDK groundwork shipped. The two SDK pieces this needs,
+`plugin.HTTPClient()` (proxy-correct external HTTPS) and `plugin.ServePoll(Poller)` (the
+poll-loop runtime), are built in goclawkit (section 5d). What is left: the `cmd/gmail`
+plugin itself, and the credential-proxy OAuth-refresh extension (`docs/credproxy-oauth.md`).
+This doc maps Gmail onto goclaw's channel-plugin model and identifies the one genuinely
+new thing it forces: OAuth token lifecycle in the credential proxy. Read
+`docs/channels-plugin-design.md` (the channel-plugin boundary) and `docs/security.md`
+(the credential proxy) first.
 
 The reference is NanoClaw's `add-gmail` skill, a poll-based channel: it queries the
 Gmail API for unread Primary mail every ~minute, an unread email triggers the agent,
@@ -170,48 +174,56 @@ work the plugin's `http.Client` MUST:
   client works, but a plugin that sets its own `tls.Config{RootCAs: ...}` will reject the
   proxy's leaf.
 
-So the SDK should give authors a `plugin.HTTPClient()` (or document the rule loudly): use
-the default-derived, proxy-and-CA-aware client; do NOT hand-roll a Transport unless you
-replicate `ProxyFromEnvironment` and the system cert pool. This is a footgun worth a
-helper, because "my requests bypass the proxy and fail with 401" is an opaque way to
-learn it. Under 3a (token in plugin) the same client is used; the plugin just also sets
-its own `Authorization` header. The HTTP CLIENT is identical between modes; only whether
-the plugin adds a header differs (see 5c).
+The SDK now ships this as `plugin.HTTPClient()` (no-arg, 30s timeout) and
+`plugin.HTTPClientTimeout(d)` for a custom timeout (goclawkit `pkg/plugin/http.go`). It
+returns a client whose Transport uses `http.ProxyFromEnvironment` and trusts the
+SYSTEM roots PLUS the proxy CA from `SSL_CERT_FILE` (it appends, never replaces, so a
+blind-tunneled host with no stored credential still validates against the real public
+roots). It works unchanged in both modes: proxy on (env set, routes through the proxy)
+and proxy off / dev (env absent, system roots, direct). The rule for authors: use this
+for any external HTTPS call; do NOT hand-roll a `Transport` unless you replicate
+`ProxyFromEnvironment` and the cert pool, or requests silently bypass the proxy and fail
+with opaque 401/TLS errors. Under 3a (token in plugin) the same client is used; the
+plugin just also sets its own `Authorization` header. The HTTP CLIENT is identical
+between modes; only whether the plugin adds a header differs (see 5c).
 
-### 5b. Poll-channel scaffolding the SDK should provide
+### 5b. Poll-channel scaffolding the SDK provides
 
 IRC's `Start` is a bespoke read loop. A poll channel's `Start` is a different but equally
 generic shape that every poll-based channel (Gmail, an RSS feed, a status API) repeats:
-tick on an interval, fetch, dedup, emit. The SDK should offer a `ServePoll`-style helper
-so authors implement only the fetch, not the loop:
+tick on an interval, fetch, dedup, emit. The SDK ships this as `plugin.ServePoll(Poller)`
+(goclawkit `pkg/plugin/serve_poll.go`), so authors implement only the fetch, not the loop:
 
 ```go
-// sketch, goclawkit
 type Poller interface {
     Info() Info
-    // Poll is called on each tick; it returns the new inbound messages since the last
-    // call. The SDK handles the ticker, ctx cancellation, backoff on error, and feeding
-    // the returned Inbounds up the channel.* protocol.
+    // Interval between polls, asked once at start; non-positive uses 60s. Read from env
+    // in your constructor (e.g. GMAIL_POLL_INTERVAL) to keep config out of the SDK.
+    Interval() time.Duration
+    // Poll runs once per tick and returns the inbound messages NEW since the previous
+    // successful Poll, in agent order (slice order preserved). (nil, nil) = nothing new;
+    // an error triggers backoff and a later retry. DEDUP is the author's job.
     Poll(ctx context.Context) ([]Inbound, error)
-    // Send delivers a reply (same as Channel.Send).
+    // Send delivers a reply (same as Channel.Send); called concurrently with Poll.
     Send(ctx context.Context, out Outbound) error
 }
 ```
 
-What the SDK owns in `ServePoll`: the ticker (interval from env/Info), ctx-cancel on
-shutdown, error backoff (do not hammer on a 500/quota error), and bridging to
-`ServeChannel` underneath (it IS a channel, just with a built-in loop). What the AUTHOR
-owns: one `Poll` that queries Gmail and returns new `Inbound`s, and `Send`. This turns
-the Gmail plugin's interesting code into "map a Gmail message to an Inbound" and "map an
-Outbound to a Gmail send", which is the actual domain work.
+`ServePoll` is a thin adapter over `ServeChannel` (it wraps the `Poller` as a `Channel`,
+so the handshake still announces `Kind=channel` and the host cannot tell a poll channel
+from a hand-written one). It owns: an IMMEDIATE first poll (so a fresh plugin is live at
+once, not after a full interval), spacing by interval measured from each poll's start,
+capped exponential backoff on a `Poll` error (so a failing upstream is not hammered) with
+reset after any clean poll, and ctx-cancel unwind on shutdown. The AUTHOR owns one `Poll`
+that queries Gmail and returns new `Inbound`s, and `Send`. So the Gmail plugin's
+interesting code is just "map a Gmail message to an Inbound" and "map an Outbound to a
+Gmail send".
 
-DEDUP is the subtlety the SDK should help with but cannot fully own. "New since last
-call" requires state: Gmail does it by mutating the inbox (mark-read) so the next query
-excludes seen mail, which is domain-specific and the author's job. But a channel that
-CANNOT mutate the source (an RSS feed) needs a "seen ids" set the SDK could offer as an
-optional helper (a bounded set persisted in the plugin dir). For Gmail specifically,
-mark-read is the dedup and the SDK helper is not needed; the doc notes it so the
-`ServePoll` design does not pretend dedup is free.
+DEDUP is the author's job and the shipped `Poller` doc says so: `ServePoll` keeps NO
+memory of what it emitted, so `Poll` must return only genuinely-new items. Gmail does it
+by mutating the inbox (mark-read, so `is:unread` excludes seen mail next poll). A channel
+that CANNOT mutate the source (RSS) must track seen ids itself; no SDK helper for that yet
+(a bounded persisted seen-set is a possible future add, deliberately not built).
 
 ### 5c. The auth contract, from the plugin's side
 
@@ -230,25 +242,32 @@ This is the goclawkit-friendly framing of "OAuth lives host-side": the plugin's 
 auth surface is "set a bearer from env if present." Everything hard (refresh, rotation,
 the refresh token) is in goclaw, and the plugin cannot leak what it never holds.
 
-### 5d. What goclawkit must add, concretely
+### 5d. goclawkit status: what is shipped, what is left
 
-- `plugin.HTTPClient()`: the proxy-and-CA-aware default client (or a documented rule +
-  lint note). Small, prevents the most likely footgun.
-- `ServePoll(Poller)`: the poll-loop runtime (ticker, backoff, ctx, bridge to
-  ServeChannel). Generic; serves Gmail and any future poll channel.
-- A worked `cmd/gmail` example exercising both, like `cmd/irc` and `cmd/webhook` do for
-  their shapes, with a `-selftest` that runs the poll/dedup/Send round trip against an
-  in-process fake Gmail API (no real network, no OAuth), the same hermetic-demo discipline
-  the IRC and webhook examples follow.
-- NO OAuth code in goclawkit. The refresh machinery is goclaw-side
-  (`docs/credproxy-oauth.md`); the kit stays a thin client. This is the whole point of
-  your steer: keep the kit dumb, keep OAuth generic and host-side.
+SHIPPED (goclawkit):
+
+- `plugin.HTTPClient()` / `plugin.HTTPClientTimeout(d)`: the proxy-and-CA-aware client
+  (`pkg/plugin/http.go`). Done.
+- `plugin.ServePoll(Poller)`: the poll-loop runtime, a thin adapter over `ServeChannel`
+  (`pkg/plugin/serve_poll.go`). Done.
+
+LEFT (goclawkit):
+
+- A worked `cmd/gmail` example built on `ServePoll` + `HTTPClient`, with a `-selftest`
+  that runs the poll/dedup/Send round trip against an in-process fake Gmail API (no real
+  network, no OAuth), the same hermetic-demo discipline `cmd/irc` and `cmd/webhook` follow.
+
+NOT in goclawkit, by design:
+
+- NO OAuth code. The refresh machinery is goclaw-side (`docs/credproxy-oauth.md`); the kit
+  stays a thin client that sends no auth header (the proxy injects it). Keep the kit dumb,
+  keep OAuth generic and host-side.
 
 ## 6. Build order
 
-0. goclawkit SDK additions (section 5d): `plugin.HTTPClient()` and `ServePoll(Poller)`,
-   so the Gmail plugin (and every future poll channel) implements only `Poll` + `Send`.
-   Small, generic, no OAuth code.
+0. goclawkit SDK additions (section 5d): `plugin.HTTPClient()` and `ServePoll(Poller)`.
+   DONE, both shipped. The Gmail plugin (and every future poll channel) implements only
+   `Poll` + `Send`.
 1. `kind: channel` gmail plugin in goclawkit on top of `ServePoll`: `Poll` (query, map to
    inbound, mark-read for dedup), `Send` (threaded reply). Auth via the env-bearer
    contract (5c); set `GMAIL_BEARER` from a token file for 3a bring-up. Worked example
