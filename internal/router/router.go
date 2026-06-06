@@ -272,7 +272,7 @@ func (r *Router) cmdPlugin(ctx context.Context, req command.Request) (string, er
 		return r.pluginList()
 	case "add":
 		if arg == "" {
-			return "Usage: /plugin add <git-url>", nil
+			return "Usage: /plugin add <git-url>[#<subdir>]  (subdir selects one plugin in a monorepo, e.g. ...#cmd/gmail)", nil
 		}
 		return r.pluginAdd(ctx, arg)
 	case "remove", "rm":
@@ -281,7 +281,7 @@ func (r *Router) cmdPlugin(ctx context.Context, req command.Request) (string, er
 		}
 		return r.pluginRemove(arg)
 	default:
-		return "Unknown subcommand. Use: /plugin add <git-url> | list | remove <name>", nil
+		return "Unknown subcommand. Use: /plugin add <git-url>[#<subdir>] | list | remove <name>", nil
 	}
 }
 

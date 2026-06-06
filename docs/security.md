@@ -103,7 +103,12 @@ non-root container (the runner image, which carries git and the Go toolchain):
    path: plugin installation and the agent's runtime API auth are separate concerns,
    and a public clone needs no secret. Private-repo support is intentionally out of
    scope for now (a documented follow-up would inject a stored token into the
-   in-container clone).
+   in-container clone). The install spec is `<git-url>` (one plugin at the repo root)
+   or `<git-url>#<subdir>` to select ONE plugin inside a monorepo (e.g.
+   `...goclaw-gmail#cmd/gmail`). The subdir is validated HOST-SIDE before launch (no
+   absolute path, no `.`/`..` component, no shell metacharacters) and passed to the
+   container only as an env var (never interpolated into the build script); the
+   in-container script additionally confirms the resolved path stays inside the clone.
 2. **Red-flag scan, before building.** The source is rejected if it uses cgo
    (`import "C"`, which compiles/links arbitrary C), `//go:generate` (runs arbitrary
    commands at build time), or a `go.mod` `replace` directive (pulls code from
@@ -122,7 +127,10 @@ non-root container (the runner image, which carries git and the Go toolchain):
    protections that do not depend on the scan are (a) the env allowlist, a plugin is
    never handed these vars in the first place (see "Plugins run in the sandbox"), and
    (b) the credential proxy, the container holds only placeholders. The scan is a
-   third, softer layer on top of those two.
+   third, softer layer on top of those two. For a monorepo install (`#<subdir>`), the
+   scan covers the WHOLE cloned repo, not just the chosen subdir, so a malicious file
+   in a shared dir (e.g. `internal/`) is caught even when only one `cmd/<name>` is
+   built. Only the manifest read and the `go build` are scoped to the subdir.
 3. **Pure-Go, pinned build.** `CGO_ENABLED=0 GOOS=linux go build` produces a static
    Linux binary; CGO-off both enforces purity and matches how the plugin must run.
    The exact source commit is recorded so an install is reproducible and an update

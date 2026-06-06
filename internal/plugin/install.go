@@ -52,8 +52,16 @@ type InstallResult struct {
 // container, then stages the verified artifact into the host plugins dir. It does
 // NOT involve the credential proxy: a bare public clone needs no auth. Private
 // repos are out of scope for now and fail with a clear message (see installScript).
-func (in *Installer) Add(ctx context.Context, gitURL string) (*InstallResult, error) {
+// The spec is "<git-url>" for a one-plugin repo (plugin.yml at the root, the goclaw-roll
+// layout), or "<git-url>#<subdir>" to select ONE plugin inside a monorepo (e.g.
+// "...goclaw-gmail#cmd/gmail"), where <subdir> holds that plugin's plugin.yml. The whole
+// repo is still scanned for red flags; only the manifest read + build come from <subdir>.
+func (in *Installer) Add(ctx context.Context, spec string) (*InstallResult, error) {
+	gitURL, subdir, _ := strings.Cut(spec, "#")
 	if err := validateGitURL(gitURL); err != nil {
+		return nil, err
+	}
+	if err := validateSubdir(subdir); err != nil {
 		return nil, err
 	}
 
@@ -89,6 +97,7 @@ func (in *Installer) Add(ctx context.Context, gitURL string) (*InstallResult, er
 		"--user", "1000:1000",
 		"-v", outAbs + ":/out:Z",
 		"-e", "PLUGIN_GIT_URL=" + gitURL,
+		"-e", "PLUGIN_SUBDIR=" + subdir,
 		"--entrypoint", "sh",
 		in.image, "-c", installScript,
 	}
@@ -276,8 +285,26 @@ if grep -rEn '` + secretEnvScanPattern + `' --include='*.go' . >/dev/null 2>&1; 
   echo "rejected: plugin source references a host secret env var (e.g. ANTHROPIC_API_KEY / GH_TOKEN). A plugin has no reason to read goclaw's credentials." >&2; exit 2
 fi
 
+# --- Locate the plugin dir. PLUGIN_SUBDIR selects ONE plugin inside a monorepo
+# (e.g. cmd/gmail); empty means the plugin lives at the repo root (the one-plugin
+# layout). The scan above intentionally covered the WHOLE repo ($SRC), so a malicious
+# file in a shared dir (e.g. internal/) is caught even when we build only a subdir.
+# PLUGIN_SUBDIR is validated host-side (no .. , no absolute, no metacharacters) and the
+# resolved path must stay inside $SRC. ---
+PLUGIN_DIR="$SRC"
+if [ -n "${PLUGIN_SUBDIR:-}" ]; then
+  PLUGIN_DIR="$SRC/$PLUGIN_SUBDIR"
+  # Defense in depth: confirm the resolved dir is really inside the clone.
+  case "$(cd "$PLUGIN_DIR" 2>/dev/null && pwd -P)" in
+    "$SRC"|"$SRC"/*) : ;;
+    *) echo "rejected: plugin subdir $PLUGIN_SUBDIR escapes the repo" >&2; exit 2 ;;
+  esac
+fi
+[ -f "$PLUGIN_DIR/plugin.yml" ] || { echo "rejected: no plugin.yml in ${PLUGIN_SUBDIR:-<repo root>}" >&2; exit 2; }
+cd "$PLUGIN_DIR"
+
 # --- Build: pure-Go, Linux, the container's arch. CGO off both enforces purity
-# and matches how the plugin must run. ---
+# and matches how the plugin must run. Build the plugin dir's package (.). ---
 EXEC=$(sed -n 's/^exec:[[:space:]]*//p' plugin.yml | head -n1 | tr -d '"' | tr -d "'" | awk '{print $1}')
 [ -n "$EXEC" ] || { echo "rejected: plugin.yml has no exec field" >&2; exit 2; }
 CGO_ENABLED=0 GOOS=linux GOFLAGS=-mod=mod go build -trimpath -o "/out/$EXEC" . 2>/tmp/build.err || {
@@ -302,6 +329,31 @@ func validateGitURL(u string) error {
 	}
 	if !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "git://") {
 		return fmt.Errorf("install: git url must be http(s) or git (got %q)", u)
+	}
+	return nil
+}
+
+// validateSubdir checks the optional in-repo plugin subdir (the part after '#' in a
+// "<url>#<subdir>" spec). Empty is fine (the plugin is at the repo root). A non-empty
+// subdir must be a CLEAN, relative, forward-slash path that cannot escape the repo: no
+// absolute path, no "." or ".." component, no leading/trailing slash, no shell
+// metacharacters or backslashes. The value reaches the build container only as an env
+// var (PLUGIN_SUBDIR), never interpolated into the script, and the script also verifies
+// the resolved path stays inside the clone, this is the host-side first line.
+func validateSubdir(sub string) error {
+	if sub == "" {
+		return nil
+	}
+	if strings.ContainsAny(sub, " \t\n;|&$`\\\"'*?~") {
+		return fmt.Errorf("install: plugin subdir contains illegal characters")
+	}
+	if strings.HasPrefix(sub, "/") || strings.HasSuffix(sub, "/") {
+		return fmt.Errorf("install: plugin subdir must be relative without a trailing slash (got %q)", sub)
+	}
+	for _, seg := range strings.Split(sub, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("install: plugin subdir has an empty or traversal segment (got %q)", sub)
+		}
 	}
 	return nil
 }
