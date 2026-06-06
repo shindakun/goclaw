@@ -109,6 +109,12 @@ RUN mkdir -p /etc/goclaw
 # has a parent (and an absent mount is harmless).
 RUN mkdir -p /plugins
 
+# /run/goclaw/channels is the mount point for the host's per-channel Unix sockets
+# (read-write). For a kind:channel plugin, the in-container runner dials <name>.sock
+# here to bridge the plugin's stdio to the host relay. Pre-create it (owned by uid 1000
+# so the runner can dial) so the bind mount has a parent; an absent mount is harmless.
+RUN mkdir -p /run/goclaw/channels && chown -R 1000:1000 /run/goclaw
+
 # Run as a non-root uid that matches the host's --user 1000:1000 (brief §9). The
 # node:22-slim base names uid 1000 "node" with home /home/node, but that name is
 # incidental - it's the base image's user, nothing Node-related, and the runner is
