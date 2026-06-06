@@ -75,6 +75,57 @@ thus secret-out-of-container); connection/session schemes require the credential
 in the plugin. So goclaw must support BOTH, and the security posture (secret in container
 or not) is a function of which scheme, documented per scheme, not a global toggle.
 
+## 1.6 Forward map: future services and the scheme they land in
+
+Which services we might add later, grouped by the scheme they would use, to confirm the
+taxonomy covers the future and to show how much one engine buys. The headline: the
+OAuth2-Bearer bucket alone is dozens of services and is EXACTLY the Gmail engine, so
+building Gmail well unlocks a huge swath of the future for free, the strongest argument
+for getting the credstore engine right.
+
+- **OAuth2 Bearer (refresh-token), the big bucket:** the rest of Google (Calendar, Drive,
+  Docs, Tasks, YouTube, the MCP servers in play this session are these), Microsoft 365 /
+  Graph (Outlook, Teams, OneDrive, a whole second ecosystem), Notion, Linear, Asana,
+  Trello, Todoist, ClickUp, Spotify, Reddit, Twitch, GitLab, Dropbox, Zoom, Calendly. All
+  are "sign in, get a refresh token, mint Bearer access tokens." They need NOTHING new
+  beyond Gmail's engine; the only variation is scopes and (fixed) endpoints.
+- **DPoP / signed, currently a bucket of one:** Bluesky / atproto. DPoP is an IETF
+  standard (RFC 9449) some OAuth providers are adding as a security upgrade, so this bucket
+  may grow, but no other mainstream chat service requires it today.
+- **Multi-token / websocket (connection-level):** Slack (have it), Microsoft Teams (bot
+  framework), Mattermost / Rocket.Chat / Zulip (self-hosted Slack-likes: a static bot
+  token plus an RTM/websocket connection).
+- **Session blob (library holds a session):** WhatsApp (have it), Signal (signal-cli /
+  libsignal: a device-linked session, very like WhatsApp).
+- **Browser / cookie (drive a real browser):** X (have it), LinkedIn, Instagram, Facebook,
+  any hostile-API/usable-UI service. Inherently fragile (anti-bot), but a real pattern.
+
+### Three wrinkles that do NOT cleanly fit (so the schema must not preclude them)
+
+The vast majority above fit the six schemes. Three plausible future shapes do not, and
+naming them now keeps the schema from being over-fit to "outbound bearer/signature":
+
+1. **Inbound signature verification (the 4b webhook twin).** GitHub / Stripe / Linear
+   webhooks, SendGrid inbound: they POST to US, and "auth" is VERIFYING an HMAC signature
+   on the INCOMING request (a shared signing secret + timestamp), the mirror of every
+   outbound scheme here. This maps onto the channels-design internet-inbound (4b) shape;
+   the "credential" is a verification secret, used to validate, not to present. The
+   credstore may hold the secret, but the usage is inbound, not request-injection.
+2. **Sync-loop / long-poll auth (Matrix, IMAP IDLE).** Matrix uses a static-ish access
+   token but the channel is a continuous `/sync` long-poll (not request-response, not a
+   websocket); IMAP IDLE is similar. One credential, streaming consumption, a third
+   sub-shape between request-level and connection-level. Almost certainly "plugin holds
+   it" (connection family), but the consumption model differs.
+3. **Local capability, not a credential (iMessage).** iMessage via the macOS Messages DB +
+   AppleScript has NO stored secret; it is "this plugin can read chat.db and run AppleScript
+   on the host", a host CAPABILITY grant, a mounts/permissions question, not a credstore
+   one. It would be a first-party host channel (like the emacs bridge), outside this whole
+   design. Good to know it sits outside credstore entirely.
+
+None of these forces a redesign now. They are reasons to keep `kind` open-ended and the
+payload opaque-per-kind (sections 3), and to remember that inbound-HMAC and
+local-capability may not be credstore's job at all.
+
 ## 2. The corrected abstraction: store + manage + deliver a provider-shaped credential
 
 The job of goclaw is therefore NOT "authenticate a request" (too narrow, misses the
