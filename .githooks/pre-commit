@@ -18,6 +18,21 @@ set -e
 # Run from the repo root regardless of where git invoked us.
 cd "$(git rev-parse --show-toplevel)"
 
+# Stray cmd binaries at the repo root: a bare `go build ./cmd/<name>` (no -o) drops the
+# binary in cwd (the repo root). They are gitignored so they never commit, but they are
+# litter that keeps reappearing. Fail the commit so whoever dropped one cleans it up (and
+# learns to use `go build ./...` which discards, or `-o /tmp/<name>`).
+echo "pre-commit: stray root binaries"
+strays=""
+for b in goclaw claude-runner stub-runner chantest; do
+	[ -f "$b" ] && strays="$strays $b"
+done
+if [ -n "$strays" ]; then
+	echo "  stray binary(ies) at repo root:$strays"
+	echo "  remove them (rm$strays) and build with 'go build ./...' (discards) or -o /tmp/<name>"
+	exit 1
+fi
+
 echo "pre-commit: gofmt"
 unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^internal/vaultinit/template/') 2>/dev/null || true)
 if [ -n "$unformatted" ]; then
