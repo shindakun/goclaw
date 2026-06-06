@@ -3,6 +3,7 @@ package plugin
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +84,47 @@ func TestManifest_InjectEnv(t *testing.T) {
 	}
 	if len(got) != len(base)+2 {
 		t.Fatalf("expected base+2 entries, got %d: %v", len(got), got)
+	}
+}
+
+// MinimalEnvBase must carry the proxy-routing vars (so a target-mode plugin can reach the
+// credential proxy) but NOT arbitrary host env, least of all secrets. This is the fix for
+// the live bug where the gmail plugin connected directly to Gmail (no proxy) and got 401s
+// because HTTPS_PROXY/SSL_CERT_FILE were filtered out of its environment.
+func TestMinimalEnvBase_CarriesProxyRoutingNotSecrets(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://host.docker.internal:18080")
+	t.Setenv("https_proxy", "http://host.docker.internal:18080")
+	t.Setenv("NO_PROXY", "host.docker.internal,localhost")
+	t.Setenv("SSL_CERT_FILE", "/etc/goclaw/proxy-ca.pem")
+	// A host secret that must NEVER appear in a plugin's base env.
+	t.Setenv("GOCLAW_ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "telegram-should-not-leak")
+
+	base := MinimalEnvBase()
+	has := func(prefix string) bool {
+		for _, e := range base {
+			if strings.HasPrefix(e, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Proxy-routing vars are present (these MAKE the proxy injection work).
+	for _, want := range []string{"HTTPS_PROXY=", "https_proxy=", "NO_PROXY=", "SSL_CERT_FILE="} {
+		if !has(want) {
+			t.Errorf("MinimalEnvBase missing proxy-routing var %q: %v", want, base)
+		}
+	}
+	// PATH is still carried.
+	if !has("PATH=") {
+		t.Errorf("MinimalEnvBase dropped PATH: %v", base)
+	}
+	// Secrets must NOT be carried (the whole point of not using os.Environ()).
+	for _, secret := range []string{"GOCLAW_ANTHROPIC_API_KEY", "TELEGRAM_BOT_TOKEN", "sk-ant-should-not-leak", "telegram-should-not-leak"} {
+		if has(secret) {
+			t.Fatalf("MinimalEnvBase LEAKED a secret %q into the plugin base env: %v", secret, base)
+		}
 	}
 }
 

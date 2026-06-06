@@ -39,15 +39,39 @@ func (m Manifest) ExecPath() string {
 	return filepath.Join(m.dir, m.Exec)
 }
 
+// proxyRoutingEnv are the env vars a plugin needs to reach external APIs THROUGH the
+// credential proxy: the proxy address and the proxy-CA path. They are NOT secrets (the
+// proxy is a localhost address; the CA is a public cert), so passing them does not violate
+// the "no host secrets to plugins" rule. They are in fact REQUIRED for the proxy design to
+// work: a target-mode plugin (e.g. gmail) holds no token and relies on the proxy injecting
+// one, but Go's http.ProxyFromEnvironment and TLS trust only consult these vars. Without
+// them the plugin connects DIRECTLY to the upstream, sends no auth, and gets a 401 (the
+// proxy never sees the request). Both letter cases are included because Go reads the
+// lowercase forms for proxy selection and some libraries read the uppercase.
+var proxyRoutingEnv = []string{
+	"HTTPS_PROXY", "https_proxy",
+	"HTTP_PROXY", "http_proxy",
+	"NO_PROXY", "no_proxy",
+	"SSL_CERT_FILE", // the proxy CA, so the plugin trusts the proxy's intercept leaf
+}
+
 // MinimalEnvBase is the secret-free base environment a plugin process starts from,
-// before the manifest's allowlisted names are added (see InjectEnv). It is PATH only:
-// a plugin binary may need PATH to resolve shared libs or sub-tools, but nothing in the
-// host environment beyond it should ever reach a plugin. Deliberately NOT os.Environ().
+// before the manifest's allowlisted names are added (see InjectEnv). It carries PATH (a
+// plugin binary may need it to resolve shared libs or sub-tools) plus the proxy-routing
+// vars (so the plugin can reach the credential proxy; see proxyRoutingEnv). Nothing else
+// from the host environment, and never a secret, should reach a plugin. Deliberately NOT
+// os.Environ().
 func MinimalEnvBase() []string {
+	var base []string
 	if p, ok := os.LookupEnv("PATH"); ok {
-		return []string{"PATH=" + p}
+		base = append(base, "PATH="+p)
 	}
-	return nil
+	for _, name := range proxyRoutingEnv {
+		if v, ok := os.LookupEnv(name); ok {
+			base = append(base, name+"="+v)
+		}
+	}
+	return base
 }
 
 // InjectEnv builds the environment for a plugin process as base PLUS only the
