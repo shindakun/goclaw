@@ -42,44 +42,49 @@ if we want richer history.
 This provenance record is independently useful (audit: "what is installed, from where, at
 what commit"), so it is worth doing even before the update check.
 
-## 2. What "an update is available" can MEAN (three signals, increasing trust)
+## 2. What "an update is available" can MEAN (two signals)
 
-There is no single "is there an update" question; it depends on what upstream exposes.
+There is no single "is there an update" question; it depends on what upstream exposes. We use
+the two DELIBERATE signals (an author had to do something to publish them) and reject the
+implicit one.
 
-### 2a. Commit drift (weakest, always available)
-
-Compare the installed `commit` against the current tip of the source repo's default branch
-(`git ls-remote <url> HEAD`). If they differ, "upstream has moved." This needs no
-cooperation from the plugin author (any git repo has a HEAD), but it is NOISY: every README
-typo or unrelated commit in a monorepo reads as "update available," even when the plugin's
-own code did not change. For a monorepo (`#subdir`), tip-of-HEAD drift is especially weak
-because most commits do not touch the subdir.
-
-### 2b. Manifest version change (medium)
+### 2a. Manifest version change (the fallback)
 
 Compare the installed `plugin.yml` `version` against the `version` in the upstream
-`plugin.yml` at HEAD (fetch just that one file, or shallow-clone). If the author bumped
-`version`, that is a deliberate "this is a new release" signal, much less noisy than commit
-drift. Cost: the author must actually bump `version` on meaningful changes (a discipline,
-not enforced). This reuses the manifest field that already exists.
+`plugin.yml` at the checked ref (fetch just that one file, or shallow-clone). If the author
+bumped `version`, that is a deliberate "this is a new release" signal. Cost: the author must
+actually bump `version` on meaningful changes (a discipline; goclawkit's handoff proposes a
+CI lint to enforce it). This reuses the manifest field that already exists, and is the
+fallback for a plugin that is not tag-released.
 
-### 2c. Release tags (strongest, RECOMMENDED to require)
+### 2b. Release tags (strongest, the primary signal)
 
 Compare the installed version against the latest semver RELEASE TAG on the repo
-(`git ls-remote --tags <url>`, pick the highest semver). A tag like `v1.2.0` is an explicit,
-deliberate, immutable "this is a released version" marker, the clearest possible signal, and
-it pins what an update would install (a tag, not a moving branch). This is the GitHub-release
-/ semver-tag model. It asks the most of plugin authors (cut a tagged release) but gives the
-cleanest operator experience and the safest update target.
+(`git ls-remote --tags <url>`, pick the highest semver for this plugin). A tag like `v1.2.0`
+is an explicit, deliberate, immutable "this is a released version" marker, the clearest
+possible signal, and it pins what an update would install (a tag, not a moving branch). This
+is the GitHub-release / semver-tag model. It asks the most of plugin authors (cut a tagged
+release) but gives the cleanest operator experience and the safest update target.
+
+### Rejected: commit drift
+
+Comparing the installed commit against the tip of the default branch (`git ls-remote <url>
+HEAD`) was considered and REJECTED. It needs no author cooperation, but it is too noisy to be
+useful: every README typo or unrelated commit reads as "update available," and for a monorepo
+(`#subdir`) most commits do not even touch the plugin's subdir. We rely on the deliberate
+signals (2a, 2b) instead; an author who wants their plugin to advertise updates publishes a
+version bump or a tag.
 
 **The "should we require releases + version tags?" question (your prompt):** yes, lean
 toward REQUIRING a semver tag for a plugin to participate in update checks, but degrade
 gracefully:
 
 - A plugin installed from a tag (`...#cmd/gmail@v1.2.0`, a tag spec we would add) gets
-  proper tag-based update checks (2c): "v1.2.0 installed, v1.3.0 available."
+  proper tag-based update checks (2b): "v1.2.0 installed, v1.3.0 available."
 - A plugin installed from a bare URL / branch still works, but its update check falls back to
-  the weaker 2b (version-in-manifest) or 2a (commit drift), clearly labeled as less precise.
+  2a (version-in-manifest), clearly labeled as less precise. There is NO commit-drift
+  fallback: a plugin whose author publishes neither a tag nor a version bump simply reports
+  "no update signal" rather than crying wolf on every upstream commit.
 
 So tags are the BLESSED path (and what the docs should steer authors toward), not a hard gate
 that breaks the existing bare-URL installs. This also means the install spec grows an
@@ -120,8 +125,8 @@ must be re-vetted exactly like a first install.
   path; it is a full sandboxed re-install of the new ref. The red-flag scan, the
   host-secret-read scan, the build-in-a-throwaway-container, all run again. A plugin that was
   safe at v1.2.0 can be hostile at v1.3.0; the operator is consenting to the NEW code.
-- **Pin what you check and what you install.** Checking against a moving branch (2a) then
-  installing "latest" is a TOCTOU-ish window. Tag-based (2c) closes it: you are told
+- **Pin what you check and what you install.** Checking against a moving branch then
+  installing "latest" is a TOCTOU-ish window. Tag-based (2b) closes it: you are told
   "v1.3.0 available," and `update` installs exactly v1.3.0, the thing you were told about.
 - **Provenance integrity.** The `.source.json` sidecar lives in the host-owned plugin dir
   (mounted read-only into the container), so the container cannot rewrite it to spoof its own
@@ -137,7 +142,8 @@ must be re-vetted exactly like a first install.
    per plugin at install time (sidecar `.source.json`). Surface it in `goclaw plugin list`.
    Independently useful as an audit record. NO update logic yet.
 2. **On-demand check:** `goclaw plugin check` / `outdated` using the strongest signal the
-   provenance supports (tag > manifest-version > commit-drift), printing the update command.
+   provenance supports (tag > manifest-version; no commit-drift fallback), printing the
+   update command.
    Add the optional `@<tag>`/`@<commit>` pin to the install spec and a `goclaw plugin update
    <name>` that re-installs at the newer ref through the full sandbox.
 3. **Author guidance (tags as the blessed path):** document that plugins SHOULD ship semver
@@ -167,7 +173,7 @@ should cover:
   when code changed, to make the discipline enforceable rather than aspirational.
 
 The per-plugin-tag-in-a-monorepo question is the one thing to settle with goclawkit before
-committing to tag-based checks (2c) as the primary signal, because `goclaw-gmail` (two
+committing to tag-based checks (2b) as the primary signal, because `goclaw-gmail` (two
 plugins, one repo) is already a case a repo-wide tag cannot describe.
 
 ## 7. Recommendation in one line
