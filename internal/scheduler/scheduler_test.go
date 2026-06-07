@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -9,7 +10,23 @@ import (
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/mounts"
 )
+
+// flakyEnsurer fails EnsureRunner until healthy is set true (models a network outage that
+// later recovers). Records how many times it was called.
+type flakyEnsurer struct {
+	healthy bool
+	calls   int
+}
+
+func (e *flakyEnsurer) EnsureRunner(_ context.Context, _ int64, _ string, _ ...mounts.Request) error {
+	e.calls++
+	if !e.healthy {
+		return fmt.Errorf("ensure failed (outage)")
+	}
+	return nil
+}
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -85,6 +102,45 @@ func TestScheduler_FiresDueTaskIntoItsTarget(t *testing.T) {
 	pend2, _ := sess.PendingInbound()
 	if len(pend2) != 1 {
 		t.Fatalf("task double-fired: %d pending, want 1", len(pend2))
+	}
+}
+
+// TestScheduler_DefersWhenRunnerCannotStart is the regression for "the morning routine
+// fired during a network outage and was marked done despite doing nothing." When the runner
+// cannot be ensured, fire must NOT enqueue the prompt and NOT stamp last-run, so the task
+// RE-FIRES on a later tick once the outage clears.
+func TestScheduler_DefersWhenRunnerCannotStart(t *testing.T) {
+	d, owner := testDB(t)
+	dir := t.TempDir()
+	id := seedTask(t, d, owner, "inbox", 8, "summarize my inbox")
+
+	en := &flakyEnsurer{healthy: false} // outage
+	s := New(d, dir, en, quiet())
+	now := atLocal(8)
+
+	// During the outage: fires, ensure fails, so nothing is enqueued and last-run is unset.
+	s.Tick(context.Background(), now)
+
+	sess, err := db.OpenSession(dir, 1, "telegram:42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	if pend, _ := sess.PendingInbound(); len(pend) != 0 {
+		t.Fatalf("a deferred task must not enqueue its prompt; got %+v", pend)
+	}
+	if _, ok, _ := d.GetKV(kvPrefix + id); ok {
+		t.Fatal("a deferred task must NOT stamp last-run (it would never re-fire)")
+	}
+
+	// Outage clears. A later tick (still past the boundary) must now actually fire.
+	en.healthy = true
+	s.Tick(context.Background(), now.Add(time.Minute))
+	if pend, _ := sess.PendingInbound(); len(pend) != 1 || pend[0].Text != "summarize my inbox" {
+		t.Fatalf("task did not re-fire after recovery; pending = %+v", pend)
+	}
+	if _, ok, _ := d.GetKV(kvPrefix + id); !ok {
+		t.Fatal("last-run should be stamped once the task actually fired")
 	}
 }
 

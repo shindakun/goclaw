@@ -177,9 +177,19 @@ const metaSessionID = "claude_session_id"
 // hard limit.
 const autoCompactInputTokens = 150_000
 
+// msgHandler processes one message, returning its reply and a non-nil transient error if
+// the turn could not complete for an infrastructure reason (see handle). r.handle is the
+// production implementation; a test can substitute one.
+type msgHandler func(ctx context.Context, sess *db.SessionDBs, tag, text string) (string, error)
+
 // processSession opens one session fresh and answers each pending inbound
 // message with Claude, threading multi-turn context via a stored session id.
 func (r *runner) processSession(ctx context.Context, dir string) (int, error) {
+	return r.processSessionWith(ctx, dir, r.handle)
+}
+
+// processSessionWith is processSession with an injectable per-message handler (for tests).
+func (r *runner) processSessionWith(ctx context.Context, dir string, handle msgHandler) (int, error) {
 	sess, err := db.OpenSessionDir(dir)
 	if err != nil {
 		return 0, err
@@ -190,38 +200,58 @@ func (r *runner) processSession(ctx context.Context, dir string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	answered := 0
 	for _, m := range pending {
-		reply := r.handle(ctx, sess, filepath.Base(dir), m.Text)
+		reply, transient := handle(ctx, sess, filepath.Base(dir), m.Text)
+		if transient != nil {
+			// Infrastructure failure (network/API/CLI). Do NOT consume this message or
+			// deliver a reply: leave it (and the rest of this session's pending, processed
+			// in order) queued so it is retried on the next pass once the cause clears. A
+			// transient failure must never look like a completed turn (a scheduled task
+			// that fired during an outage must re-run, not be marked done).
+			r.log.Warn("deferring message for retry (transient failure)",
+				"session", filepath.Base(dir), "in_id", m.ID, "err", transient)
+			break
+		}
 		if _, err := sess.EnqueueOutbound(m.Channel, m.ChatID, reply); err != nil {
-			return 0, err
+			return answered, err
 		}
 		// Advance the processed high-water mark in outbound.db (the runner's own
 		// DB). The runner never writes inbound.db, so the host's inbound inserts
 		// can't be clobbered (brief §5.1, single-writer per DB).
 		if err := sess.SetInboundHWM(m.ID); err != nil {
-			return 0, err
+			return answered, err
 		}
+		answered++
 		r.log.Info("answered", "session", filepath.Base(dir), "in_id", m.ID)
 	}
-	return len(pending), nil
+	return answered, nil
 }
 
 // handle processes one message: intercepts /reset and /compact commands,
-// otherwise asks Claude with conversation continuity. Always returns a
-// user-facing reply (errors are surfaced, not swallowed).
-func (r *runner) handle(ctx context.Context, sess *db.SessionDBs, tag, text string) string {
+// otherwise asks Claude with conversation continuity.
+//
+// It returns (reply, transient). A nil transient means the message is DONE (the reply, even
+// an unhappy one, is the real outcome and the message should be consumed). A non-nil
+// transient means the turn could not complete for an INFRASTRUCTURE reason (the claude CLI
+// failed: network/API unreachable, a crashed subprocess). In that case the caller must NOT
+// consume the message and NOT deliver a reply: the inbound stays queued and is retried when
+// the runner next processes the session (e.g. after the network recovers). This is the fix
+// for "a scheduled morning task fired during a network outage, errored, and was lost": a
+// transient failure must not look like a completed turn.
+func (r *runner) handle(ctx context.Context, sess *db.SessionDBs, tag, text string) (string, error) {
 	switch strings.TrimSpace(text) {
 	case "/reset":
 		if err := sess.DeleteMeta(metaSessionID); err != nil {
-			return "⚠️ reset failed: " + err.Error()
+			return "⚠️ reset failed: " + err.Error(), nil
 		}
 		r.log.Info("session reset", "session", tag)
-		return "🧹 Conversation reset. Starting fresh."
+		return "🧹 Conversation reset. Starting fresh.", nil
 	case "/compact":
 		if err := r.compact(ctx, sess, tag); err != nil {
-			return "⚠️ compact failed: " + err.Error()
+			return "⚠️ compact failed: " + err.Error(), nil
 		}
-		return "🗜️ Conversation compacted; context preserved."
+		return "🗜️ Conversation compacted; context preserved.", nil
 	}
 
 	// A slash command matching a loaded plugin tool is dispatched DIRECTLY to that
@@ -229,15 +259,17 @@ func (r *runner) handle(ctx context.Context, sess *db.SessionDBs, tag, text stri
 	// in this container, so this is a local invoke. Unrecognized slashes fall
 	// through to the agent (which may treat them as instructions).
 	if reply, ok := r.plugins.command(ctx, text); ok {
-		return reply
+		return reply, nil
 	}
 
 	reply, err := r.ask(ctx, sess, tag, text)
 	if err != nil {
+		// Infrastructure failure: surface it as a TRANSIENT error so the caller leaves the
+		// message queued for retry instead of consuming it and delivering an error string.
 		r.log.Error("claude query", "session", tag, "err", err)
-		return "⚠️ agent error: " + err.Error()
+		return "", fmt.Errorf("transient agent failure: %w", err)
 	}
-	return reply
+	return reply, nil
 }
 
 // ask runs Claude on one prompt, resuming the stored session id for continuity,

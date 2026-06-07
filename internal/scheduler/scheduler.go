@@ -95,13 +95,36 @@ func (s *Scheduler) due(t db.ScheduledTask, now time.Time) (bool, error) {
 	return IsDue(t.PeriodDays, t.AtHour, t.AtMinute, time.Duration(t.EverySeconds)*time.Second, lastRun, ok, now), nil
 }
 
-// fire enqueues the task's prompt into its target session, ensures the runner, and
-// records the run (BEFORE the agent processes it, so a transient agent failure does not
-// re-fire: the prompt is durably queued and consumed when the agent recovers).
+// fire hands the task's prompt to its target session and records the run. The order is
+// deliberate so a task is marked fired ONLY once the work is durably handed off:
+//
+//  1. ensure the runner is up FIRST. If it cannot be started (e.g. a network outage at
+//     07:00), abort WITHOUT enqueuing or stamping last-run, so the task re-fires on the next
+//     tick instead of being marked done while nothing ran. (This is the "morning routine
+//     fired during a network outage and was lost" bug: firing must not count as completing.)
+//  2. only then enqueue the prompt into inbound.db (durable), and
+//  3. stamp last-run.
+//
+// Note the runner being UP is the bar for "handed off", not the agent COMPLETING the turn:
+// the scheduler cannot see across the boundary whether the agent finished (that is the
+// runner's job, which now leaves a failed turn's message queued for retry rather than
+// consuming it). Together: the scheduler won't mark a task done if it could not even hand
+// the work off, and the runner won't drop the work if the agent turn then fails transiently.
 func (s *Scheduler) fire(ctx context.Context, t db.ScheduledTask, now time.Time) error {
 	if _, err := s.central.ResolveOrCreateSession(t.AgentGroupID, t.SessionKey); err != nil {
 		return err
 	}
+
+	// Ensure the runner BEFORE enqueuing/stamping. A failure here means we could not hand
+	// the work off at all, so do not enqueue (avoids a stranded prompt) and do not stamp
+	// (so it re-fires next tick).
+	if s.ensurer != nil {
+		groupDir := db.AgentGroupDir(s.dataDir, t.AgentGroupID)
+		if err := s.ensurer.EnsureRunner(ctx, t.AgentGroupID, groupDir); err != nil {
+			return fmt.Errorf("scheduler: ensure runner (will re-fire next tick): %w", err)
+		}
+	}
+
 	sess, err := db.OpenSession(s.dataDir, t.AgentGroupID, t.SessionKey)
 	if err != nil {
 		return err
@@ -110,14 +133,6 @@ func (s *Scheduler) fire(ctx context.Context, t db.ScheduledTask, now time.Time)
 
 	if _, err := sess.EnqueueInbound(t.Channel, t.ChatID, "system", "scheduler", t.Prompt); err != nil {
 		return err
-	}
-
-	if s.ensurer != nil {
-		groupDir := db.AgentGroupDir(s.dataDir, t.AgentGroupID)
-		if err := s.ensurer.EnsureRunner(ctx, t.AgentGroupID, groupDir); err != nil {
-			// The prompt is queued; a later tick or message brings the runner up.
-			s.log.Error("scheduler: ensure runner", "task", t.Name, "err", err)
-		}
 	}
 
 	if err := s.central.SetKV(kvPrefix+t.ID, now.Format(time.RFC3339)); err != nil {
