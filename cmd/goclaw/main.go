@@ -204,16 +204,26 @@ func run(log *slog.Logger) error {
 		}
 		claudeEnv := map[string]string{}
 		if useProxy {
-			// Build the proxy CA once and persist its cert so it can be mounted
-			// into the container trust store. The goroutine below reuses it.
-			ca, err := credproxy.LoadOrGenerateCA(proxyCADir(cfg), cfg.ProxyCAKey, cfg.ProxyCACert)
+			// Load the proxy CA (or generate one only if none exists). LoadOrGenerateCA
+			// persists the cert itself when it has to (re-derive or generate), and is
+			// designed to keep the CA IDENTITY stable across restarts. We deliberately do
+			// NOT rewrite ca.pem here on every start: the CA is mounted into running
+			// containers as a single-file bind mount, and a gratuitous rewrite can change
+			// the file inode under that live mount, leaving containers trusting a stale cert
+			// (the "tls: bad certificate" flood). Stable key -> stable cert -> stable mount.
+			ca, generated, err := credproxy.LoadOrGenerateCA(proxyCADir(cfg), cfg.ProxyCAKey, cfg.ProxyCACert)
 			if err != nil {
 				return fmt.Errorf("credential proxy CA: %w", err)
 			}
-			caPath := filepath.Join(proxyCADir(cfg), "ca.pem")
-			if werr := os.WriteFile(caPath, ca.CertPEM(), 0o644); werr != nil {
-				return fmt.Errorf("write proxy CA cert: %w", werr)
+			if generated {
+				// A NEW CA identity was minted (no usable key existed). This invalidates the
+				// CA any already-running container trusts; surface it loudly and actionably
+				// rather than letting the proxy silently flood bad-certificate warnings.
+				log.Warn("credential proxy: generated a NEW CA identity",
+					"impact", "any already-running runner container trusts a stale CA; recreate runners so they remount the new cert",
+					"dir", proxyCADir(cfg))
 			}
+			caPath := filepath.Join(proxyCADir(cfg), "ca.pem") // mount source (NOT rewritten here)
 			proxyCA = ca
 			proxyURL := "http://host.docker.internal:" + cfg.CredProxyPort
 			caCont := runtime.CACertContainerPath()

@@ -45,31 +45,66 @@ const (
 	caCommonName    = "goclaw credential proxy CA"
 )
 
-// LoadOrGenerateCA returns the proxy CA. Resolution order:
-//  1. keyPEM + certPEM (from env GOCLAW_PROXY_CA_KEY / _CERT) when both non-empty;
-//  2. files {dir}/ca.key + {dir}/ca.pem when both exist;
-//  3. generate a new CA, persist it to those files (key at 0600).
+// LoadOrGenerateCA returns the proxy CA and whether it MINTED A NEW IDENTITY (a fresh key).
+// Resolution order, designed so the CA identity is STABLE for the life of `ca.key`, because
+// a CA identity change invalidates the cert mounted into every running container and breaks
+// all intercepted TLS until those containers see the new cert:
 //
-// dir is created if needed. Keeping the env path first lets an operator hold the
-// CA outside the data dir.
-func LoadOrGenerateCA(dir, keyPEM, certPEM string) (*CA, error) {
+//  1. keyPEM + certPEM (env GOCLAW_PROXY_CA_KEY / _CERT) when both non-empty;
+//  2. both files exist and parse -> load them (no change, no rewrite);
+//  3. ca.key exists but ca.pem is MISSING or unparseable -> RE-DERIVE the cert from the
+//     existing key (SAME identity) and persist just the cert. We do NOT throw away a good
+//     key and mint a new CA, that was the bug that silently changed the CA out from under
+//     live containers;
+//  4. no usable key -> generate a brand-new CA (new key + cert). This is the ONLY path that
+//     changes identity; it returns generated=true so the caller can log it LOUDLY (it means
+//     every running container now trusts a stale CA until it sees the new one).
+//
+// dir is created if needed. The env path stays first so an operator can pin the CA outside
+// the data dir.
+func LoadOrGenerateCA(dir, keyPEM, certPEM string) (ca *CA, generated bool, err error) {
 	if keyPEM != "" && certPEM != "" {
-		return caFromPEM([]byte(keyPEM), []byte(certPEM))
+		c, e := caFromPEM([]byte(keyPEM), []byte(certPEM))
+		return c, false, e
 	}
 	keyPath := filepath.Join(dir, "ca.key")
 	certPath := filepath.Join(dir, "ca.pem")
+
+	// Both present and parseable: load as-is, no rewrite (a gratuitous rewrite can change
+	// the file inode under a live single-file bind mount).
 	if fileExists(keyPath) && fileExists(certPath) {
-		kb, err := os.ReadFile(keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("ca: read key: %w", err)
+		kb, e := os.ReadFile(keyPath)
+		if e != nil {
+			return nil, false, fmt.Errorf("ca: read key: %w", e)
 		}
-		cb, err := os.ReadFile(certPath)
-		if err != nil {
-			return nil, fmt.Errorf("ca: read cert: %w", err)
+		cb, e := os.ReadFile(certPath)
+		if e != nil {
+			return nil, false, fmt.Errorf("ca: read cert: %w", e)
 		}
-		return caFromPEM(kb, cb)
+		if c, e := caFromPEM(kb, cb); e == nil {
+			return c, false, nil
+		}
+		// Cert unparseable but key present: fall through to re-derive from the key below
+		// rather than mint a new identity.
 	}
-	return generateAndPersistCA(dir, keyPath, certPath)
+
+	// Key present (cert missing or unparseable): re-derive the cert from the EXISTING key,
+	// preserving the CA identity. No new key is generated.
+	if fileExists(keyPath) {
+		kb, e := os.ReadFile(keyPath)
+		if e != nil {
+			return nil, false, fmt.Errorf("ca: read key: %w", e)
+		}
+		c, e := caFromExistingKey(kb, certPath)
+		if e != nil {
+			return nil, false, e
+		}
+		return c, false, nil
+	}
+
+	// Nothing usable: this is the only identity-minting path.
+	c, e := generateAndPersistCA(dir, keyPath, certPath)
+	return c, true, e
 }
 
 // CertPEM returns the CA certificate in PEM form, to be mounted into the
@@ -199,6 +234,49 @@ func generateAndPersistCA(dir, keyPath, certPath string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	// Persist the key first (0600, sensitive): the key IS the CA identity. If cert minting
+	// or its write fails after this, a later start re-derives the cert from this key rather
+	// than minting a new identity (see LoadOrGenerateCA).
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return nil, fmt.Errorf("ca: write key: %w", err)
+	}
+	return mintAndPersistCert(key, certPath)
+}
+
+// caFromExistingKey parses an existing CA key and re-derives a self-signed CA cert from it,
+// persisting the cert to certPath. Because the cert is signed by (and carries the public key
+// of) the SAME key, the CA identity is unchanged: leaves the proxy already minted, and any
+// container trusting a prior cert from this key, still validate. Used when the key survives
+// but the cert is gone/corrupt, so we never mint a new identity just because the cert file
+// was lost.
+func caFromExistingKey(keyPEM []byte, certPath string) (*CA, error) {
+	kBlock, _ := pem.Decode(keyPEM)
+	if kBlock == nil {
+		return nil, fmt.Errorf("ca: no PEM block in CA key")
+	}
+	key, err := x509.ParseECPrivateKey(kBlock.Bytes)
+	if err != nil {
+		if k8, e8 := x509.ParsePKCS8PrivateKey(kBlock.Bytes); e8 == nil {
+			if ek, ok := k8.(*ecdsa.PrivateKey); ok {
+				key = ek
+			} else {
+				return nil, fmt.Errorf("ca: CA key is not ECDSA")
+			}
+		} else {
+			return nil, fmt.Errorf("ca: parse CA key: %w", err)
+		}
+	}
+	return mintAndPersistCert(key, certPath)
+}
+
+// mintAndPersistCert self-signs a CA cert with key, writes it to certPath, and returns the
+// CA. Shared by generate (new key) and re-derive (existing key).
+func mintAndPersistCert(key *ecdsa.PrivateKey, certPath string) (*CA, error) {
 	serial, err := randSerial()
 	if err != nil {
 		return nil, err
@@ -223,17 +301,6 @@ func generateAndPersistCA(dir, keyPath, certPath string) (*CA, error) {
 		return nil, err
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, err
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	// Persist: key 0600 (sensitive), cert 0644.
-	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
-		return nil, fmt.Errorf("ca: write key: %w", err)
-	}
 	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
 		return nil, fmt.Errorf("ca: write cert: %w", err)
 	}

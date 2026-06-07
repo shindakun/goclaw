@@ -12,7 +12,7 @@ import (
 
 func TestCA_GeneratePersistReload(t *testing.T) {
 	dir := t.TempDir()
-	ca1, err := LoadOrGenerateCA(dir, "", "")
+	ca1, _, err := LoadOrGenerateCA(dir, "", "")
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestCA_GeneratePersistReload(t *testing.T) {
 		t.Fatal("ca.pem missing")
 	}
 	// Reload from disk yields the same cert.
-	ca2, err := LoadOrGenerateCA(dir, "", "")
+	ca2, _, err := LoadOrGenerateCA(dir, "", "")
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
@@ -36,16 +36,76 @@ func TestCA_GeneratePersistReload(t *testing.T) {
 	}
 }
 
+// TestCA_StableIdentityWhenCertLost is the regression guard for the "tls: bad certificate"
+// flood: if ca.pem is lost (deleted/corrupt) but ca.key SURVIVES, LoadOrGenerateCA must
+// RE-DERIVE the cert from the existing key (same identity, generated=false), NOT mint a new
+// CA. A new CA would invalidate the cert every running container trusts and break all
+// intercepted TLS.
+func TestCA_StableIdentityWhenCertLost(t *testing.T) {
+	dir := t.TempDir()
+	orig, gen1, err := LoadOrGenerateCA(dir, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gen1 {
+		t.Fatal("first call should report generated=true (no prior CA)")
+	}
+
+	// A container is mounted the ORIGINAL cert; capture it as the trust root.
+	origCertPEM := append([]byte(nil), orig.CertPEM()...)
+
+	// Lose the cert but keep the key (the real failure: a partial data/proxy state).
+	if err := os.Remove(filepath.Join(dir, "ca.pem")); err != nil {
+		t.Fatal(err)
+	}
+
+	rederived, gen2, err := LoadOrGenerateCA(dir, "", "")
+	if err != nil {
+		t.Fatalf("re-derive: %v", err)
+	}
+	if gen2 {
+		t.Fatal("re-deriving from an existing key must NOT report a new identity (generated=false)")
+	}
+
+	// The decisive check: a leaf minted by the RE-DERIVED CA must validate against a client
+	// that trusts the ORIGINAL cert. Same key -> same identity -> the old mounted cert still
+	// works, which is exactly what keeps running containers happy.
+	leaf, err := rederived.leafFor("api.anthropic.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(origCertPEM) {
+		t.Fatal("could not load original cert into pool")
+	}
+	leafCert, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leafCert.Verify(x509.VerifyOptions{
+		DNSName: "api.anthropic.com",
+		Roots:   roots,
+	}); err != nil {
+		t.Fatalf("leaf from re-derived CA does NOT validate against the original cert: %v "+
+			"(identity changed; this is the bad-certificate flood)", err)
+	}
+
+	// And ca.pem was rewritten so a fresh mount also gets a working cert.
+	if !fileExists(filepath.Join(dir, "ca.pem")) {
+		t.Fatal("ca.pem not re-persisted after re-derive")
+	}
+}
+
 func TestCA_FromEnvPEM(t *testing.T) {
 	// Generate + persist a CA, then reload it purely from its PEM (the env path).
 	dir := t.TempDir()
-	gen, err := LoadOrGenerateCA(dir, "", "")
+	gen, _, err := LoadOrGenerateCA(dir, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	kb, _ := os.ReadFile(filepath.Join(dir, "ca.key"))
 	cb, _ := os.ReadFile(filepath.Join(dir, "ca.pem"))
-	fromEnv, err := LoadOrGenerateCA(t.TempDir(), string(kb), string(cb))
+	fromEnv, _, err := LoadOrGenerateCA(t.TempDir(), string(kb), string(cb))
 	if err != nil {
 		t.Fatalf("from env PEM: %v", err)
 	}
@@ -57,7 +117,7 @@ func TestCA_FromEnvPEM(t *testing.T) {
 // TestCA_LeafChainsAndValidates is the load-bearing test: a leaf minted for a
 // host must verify against the CA for that exact host, and fail for others.
 func TestCA_LeafChainsAndValidates(t *testing.T) {
-	ca, err := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, err := LoadOrGenerateCA(t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +153,7 @@ func TestCA_LeafChainsAndValidates(t *testing.T) {
 }
 
 func TestCA_LeafCacheAndRefresh(t *testing.T) {
-	ca, err := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, err := LoadOrGenerateCA(t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +177,7 @@ func TestCA_LeafCacheAndRefresh(t *testing.T) {
 }
 
 func TestCA_LeafForIP(t *testing.T) {
-	ca, err := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, err := LoadOrGenerateCA(t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +194,7 @@ func TestCA_LeafForIP(t *testing.T) {
 // TestCA_ServesRealTLS spins up a real TLS server using a minted leaf and
 // connects with a client that trusts only our CA, end to end.
 func TestCA_ServesRealTLS(t *testing.T) {
-	ca, err := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, err := LoadOrGenerateCA(t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

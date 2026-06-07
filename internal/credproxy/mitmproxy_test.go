@@ -76,7 +76,7 @@ func TestMITM_InterceptInjectsAndForwards(t *testing.T) {
 	defer upstream.Close()
 	upHost := upstream.Listener.Addr().String() // 127.0.0.1:port
 
-	ca, err := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, err := LoadOrGenerateCA(t.TempDir(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestMITM_ReResolvesTokenPerRequest(t *testing.T) {
 	defer upstream.Close()
 	upHost := upstream.Listener.Addr().String()
 
-	ca, _ := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, _ := LoadOrGenerateCA(t.TempDir(), "", "")
 	var n atomic.Int64
 	res := recordingResolver{
 		host:   "gmail.googleapis.com",
@@ -185,7 +185,7 @@ func TestMITM_StreamsSSEThroughIntercept(t *testing.T) {
 	defer upstream.Close()
 	upHost := upstream.Listener.Addr().String()
 
-	ca, _ := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, _ := LoadOrGenerateCA(t.TempDir(), "", "")
 	res := recordingResolver{host: "api.anthropic.com", token: "sk-ant-x", target: "https://" + upHost}
 	p := NewMITM(res, ca, quiet())
 	p.testUpstreamRoots = upstream.Certificate()
@@ -214,7 +214,7 @@ func TestMITM_BlindTunnelNoCredential(t *testing.T) {
 	defer upstream.Close()
 	upHost := upstream.Listener.Addr().String()
 
-	ca, _ := LoadOrGenerateCA(t.TempDir(), "", "")
+	ca, _, _ := LoadOrGenerateCA(t.TempDir(), "", "")
 	res := recordingResolver{host: "has-no-cred.test"} // resolver only knows that host
 	p := NewMITM(res, ca, quiet())
 	addr, stop := startMITM(t, p)
