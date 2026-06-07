@@ -320,8 +320,13 @@ func consentLoopback(spec plugin.OAuthSpec, clientID, clientSecret string, port 
 		return "", fmt.Errorf("loopback listen on 127.0.0.1:%d (in use? pick another with --redirect-port): %w", port, err)
 	}
 	defer func() { _ = ln.Close() }()
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/", port)
-	fmt.Printf("Using redirect URI %s (register this EXACTLY in the provider's OAuth app).\n", redirectURI)
+	// No trailing slash: the canonical loopback redirect form (http://127.0.0.1:<port>).
+	// Strict providers (Spotify) compare the DECODED redirect_uri to what is registered, and
+	// "...:8888" vs "...:8888/" are different values; the slash-less form is the one the
+	// provider docs use and the one least likely to be mis-registered. The local callback
+	// server serves whatever path the browser hits, so the slash is not needed locally.
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d", port)
+	fmt.Printf("Using redirect URI %s (register this EXACTLY in the provider's OAuth app, no trailing slash).\n", redirectURI)
 
 	type result struct {
 		code string
@@ -378,7 +383,7 @@ func consentNoBrowser(spec plugin.OAuthSpec, clientID, clientSecret string, port
 	// redirect_uri the user can read the ?code= out of the address bar after the redirect
 	// fails to connect. Use the SAME fixed port as the loopback flow so the redirect_uri is
 	// stable and matches what is registered (strict providers like Spotify require this).
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d", port)
 	authURL := buildAuthCodeURL(spec, clientID, redirectURI)
 	fmt.Println("Headless consent. On any machine with a browser, open:")
 	fmt.Println("  " + authURL)
