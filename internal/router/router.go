@@ -301,6 +301,10 @@ func (r *Router) pluginList() (string, error) {
 		if m.Command != "" {
 			fmt.Fprintf(&b, " (/%s)", m.Command)
 		}
+		// Provenance from the sidecar (absent for plugins installed before tracking).
+		if src, err := plugin.ReadSource(m.Dir()); err == nil && src.Commit != "" {
+			fmt.Fprintf(&b, " @%s", shortCommit(src.Commit))
+		}
 		if m.Author != "" {
 			fmt.Fprintf(&b, " by %s", m.Author)
 		}
@@ -315,8 +319,12 @@ func (r *Router) pluginList() (string, error) {
 func (r *Router) pluginAdd(ctx context.Context, gitURL string) (string, error) {
 	res, err := r.installer.Add(ctx, gitURL)
 	if err != nil {
+		r.log.Error("plugin install failed", "spec", gitURL, "err", err)
 		return "Install failed: " + err.Error(), nil
 	}
+	r.log.Info("plugin installed",
+		"name", res.Name, "version", res.Version,
+		"git_url", res.Source.GitURL, "subdir", res.Source.Subdir, "commit", res.Source.Commit)
 	// Refresh the host's /commands listing so the new plugin's command shows up.
 	r.RegisterPluginCommands(r.pluginDir)
 	msg := fmt.Sprintf("Installed %s v%s", res.Name, res.Version)
@@ -333,11 +341,13 @@ func (r *Router) pluginAdd(ctx context.Context, gitURL string) (string, error) {
 func (r *Router) pluginRemove(name string) (string, error) {
 	removed, err := r.installer.Remove(name)
 	if err != nil {
+		r.log.Error("plugin remove failed", "name", name, "err", err)
 		return "Remove failed: " + err.Error(), nil
 	}
 	if !removed {
 		return fmt.Sprintf("No plugin named %q is installed.", name), nil
 	}
+	r.log.Info("plugin removed", "name", name)
 	r.commands.UnregisterSource(name) // drop its /commands listing
 	return fmt.Sprintf("Removed plugin %q.", name), nil
 }

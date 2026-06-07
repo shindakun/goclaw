@@ -2,12 +2,49 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// sourceFileName is the per-plugin provenance sidecar, written into the plugin's installed
+// dir. Dot-prefixed so the runner's plugin watch (which skips hidden dirs/files) ignores it.
+// It is the SINGLE source of truth for "where did this plugin come from" (no DB); it travels
+// with the plugin dir and is host-owned + read-only in the container, so the container
+// cannot rewrite it. See docs/plugin-updates.md.
+const sourceFileName = ".source.json"
+
+// Source is the provenance of an installed plugin: the git origin and the exact commit the
+// installed binary was built from, plus the manifest version and when it was installed. It
+// is the input an update check compares against upstream.
+type Source struct {
+	GitURL      string `json:"git_url"`
+	Subdir      string `json:"subdir,omitempty"` // monorepo subdir, or "" for a root plugin
+	Commit      string `json:"commit"`           // the pinned source commit the build came from
+	Version     string `json:"version"`          // plugin.yml version at install time
+	InstalledAt string `json:"installed_at"`     // RFC3339, host local time
+}
+
+// installLogName is the append-only audit log of install/update/remove events, one JSON
+// line per event, in the plugins dir. Dot-prefixed so the runner's watch ignores it. This
+// is the HISTORY store (the sidecar holds only current state); keeping it as a log, not DB
+// rows, preserves the single-source-of-truth property. See docs/plugin-updates.md.
+const installLogName = ".install-log.jsonl"
+
+// installEvent is one line in the install log.
+type installEvent struct {
+	At     string `json:"at"`     // RFC3339
+	Action string `json:"action"` // "install" | "remove"
+	Name   string `json:"name"`
+	GitURL string `json:"git_url,omitempty"`
+	Subdir string `json:"subdir,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	Vers   string `json:"version,omitempty"`
+}
 
 // Installer installs plugins by building them INSIDE a throwaway container, so
 // untrusted plugin source is cloned, scanned, and compiled in the sandbox and
@@ -46,6 +83,7 @@ type InstallResult struct {
 	Version string
 	Commit  string // pinned source commit the build came from
 	Dir     string // host dir the plugin was staged into (data/plugins/<name>)
+	Source  Source // the provenance written to the sidecar
 }
 
 // Add clones a PUBLIC git repo, scans it, and builds it, all inside a throwaway
@@ -113,16 +151,22 @@ func (in *Installer) Add(ctx context.Context, spec string) (*InstallResult, erro
 	}
 
 	// The build container wrote the artifact to /out. Read what it staged.
-	res, err := in.acceptArtifact(out)
+	res, err := in.acceptArtifact(out, gitURL, subdir)
 	if err != nil {
 		return nil, err
 	}
+	in.appendLog(installEvent{
+		At: nowRFC3339(), Action: "install", Name: res.Name,
+		GitURL: res.Source.GitURL, Subdir: res.Source.Subdir,
+		Commit: res.Source.Commit, Vers: res.Version,
+	})
 	return res, nil
 }
 
-// acceptArtifact validates the build container's output and moves it into the
-// host plugins dir atomically.
-func (in *Installer) acceptArtifact(out string) (*InstallResult, error) {
+// acceptArtifact validates the build container's output and moves it into the host plugins
+// dir atomically, writing the provenance sidecar (gitURL/subdir/commit/version/installed_at)
+// alongside the binary + plugin.yml so all three land together on the rename.
+func (in *Installer) acceptArtifact(out, gitURL, subdir string) (*InstallResult, error) {
 	man, err := LoadManifest(out) // the build wrote plugin.yml here
 	if err != nil {
 		return nil, fmt.Errorf("install: built artifact has no valid plugin.yml: %w", err)
@@ -133,6 +177,18 @@ func (in *Installer) acceptArtifact(out string) (*InstallResult, error) {
 	}
 	commit := strings.TrimSpace(readFileOr(filepath.Join(out, ".commit"), ""))
 
+	src := Source{
+		GitURL:      gitURL,
+		Subdir:      subdir,
+		Commit:      commit,
+		Version:     man.Version,
+		InstalledAt: nowRFC3339(),
+	}
+	srcJSON, err := json.MarshalIndent(src, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("install: marshal source: %w", err)
+	}
+
 	dest := filepath.Join(in.pluginsDir, man.Name)
 	if err := os.MkdirAll(in.pluginsDir, 0o755); err != nil {
 		return nil, fmt.Errorf("install: create plugins dir: %w", err)
@@ -140,7 +196,8 @@ func (in *Installer) acceptArtifact(out string) (*InstallResult, error) {
 	// Stage atomically: write to a HIDDEN sibling dir, then rename it onto the dest.
 	// The dir is dot-prefixed so the runner's watch (which skips hidden dirs) never
 	// loads a half-staged plugin; only the final rename (a complete, non-hidden dir
-	// appearing) triggers a load.
+	// appearing) triggers a load. The sidecar is written INTO the staging dir so it is
+	// part of the same atomic rename, never a separate write that could be seen alone.
 	staging := filepath.Join(in.pluginsDir, "."+man.Name+".installing")
 	_ = os.RemoveAll(staging)
 	if err := os.MkdirAll(staging, 0o755); err != nil {
@@ -151,6 +208,9 @@ func (in *Installer) acceptArtifact(out string) (*InstallResult, error) {
 	}
 	if err := copyFile(filepath.Join(out, "plugin.yml"), filepath.Join(staging, "plugin.yml"), 0o644); err != nil {
 		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(staging, sourceFileName), srcJSON, 0o644); err != nil {
+		return nil, fmt.Errorf("install: write source sidecar: %w", err)
 	}
 	_ = os.RemoveAll(dest)
 	if err := os.Rename(staging, dest); err != nil {
@@ -163,11 +223,12 @@ func (in *Installer) acceptArtifact(out string) (*InstallResult, error) {
 		Version: man.Version,
 		Commit:  commit,
 		Dir:     dest,
+		Source:  src,
 	}, nil
 }
 
-// Remove deletes an installed plugin's directory. The runner's fsnotify watch
-// reacts to the removal and stops the plugin. Returns whether anything was removed.
+// Remove deletes an installed plugin's directory. The runner's plugin reconcile (watch +
+// poll) reacts to the removal and stops the plugin. Returns whether anything was removed.
 func (in *Installer) Remove(name string) (bool, error) {
 	name = sanitizeName(name)
 	if name == "" {
@@ -177,11 +238,55 @@ func (in *Installer) Remove(name string) (bool, error) {
 	if _, err := os.Stat(dir); err != nil {
 		return false, nil // not installed
 	}
+	// Read provenance before deleting, so the remove event can record what was removed.
+	src, _ := ReadSource(dir)
 	if err := os.RemoveAll(dir); err != nil {
 		return false, fmt.Errorf("install: remove %q: %w", dir, err)
 	}
+	in.appendLog(installEvent{
+		At: nowRFC3339(), Action: "remove", Name: name,
+		GitURL: src.GitURL, Subdir: src.Subdir, Commit: src.Commit, Vers: src.Version,
+	})
 	return true, nil
 }
+
+// ReadSource reads the provenance sidecar from an installed plugin's dir. Returns a zero
+// Source and an error if the sidecar is absent (e.g. a plugin installed before provenance
+// tracking) or unreadable; callers treat that as "provenance unknown", not fatal.
+func ReadSource(pluginDir string) (Source, error) {
+	b, err := os.ReadFile(filepath.Join(pluginDir, sourceFileName))
+	if err != nil {
+		return Source{}, err
+	}
+	var s Source
+	if err := json.Unmarshal(b, &s); err != nil {
+		return Source{}, fmt.Errorf("install: parse source sidecar: %w", err)
+	}
+	return s, nil
+}
+
+// appendLog appends one event to the install log (.install-log.jsonl in the plugins dir).
+// Best-effort: a logging failure must never fail an install/remove, so errors are swallowed
+// (the structured host log line from the router is the primary signal; this is the durable
+// audit trail).
+func (in *Installer) appendLog(ev installEvent) {
+	line, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(in.pluginsDir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(in.pluginsDir, installLogName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	_, _ = f.Write(append(line, '\n'))
+}
+
+// nowRFC3339 is the install timestamp source, overridable in tests.
+var nowRFC3339 = func() string { return time.Now().Format(time.RFC3339) }
 
 // List returns the installed plugins' manifests, sorted by name.
 func (in *Installer) List() ([]Manifest, error) {
