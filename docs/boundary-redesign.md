@@ -1,14 +1,17 @@
 # Host <-> container boundary: a redesign exploration
 
-Status: EXPLORATION / RFC. Nothing here is built. This document asks whether the
-host<->container boundary, currently "two SQLite files per session over the podman
-mount", is still the right shape now that a socket boundary also exists (the channel
-relay), and lays out the design space honestly so we can decide rather than drift.
+Status: DECIDED. This document asked whether the host<->container message boundary,
+currently "one SQLite pair per conversation over the podman mount", should move to a socket
+now that a socket boundary also exists (the channel relay). **The decision (section 6/9):
+KEEP the file boundary on the agent path, for security reasons, and freeze it.** The
+analysis and the rejected socket option are retained below.
 
 The framing constraint the author was given: **goclaw does not have to look like any
-other system.** The two-DB design was inherited as a port of NanoClaw. That was a fine
-starting point, but "NanoClaw does it this way" is not a reason to keep it. This doc
-treats the boundary as an open design question.
+other system.** The two-DB design was inherited as a port of NanoClaw, and "NanoClaw does
+it this way" is not by itself a reason to keep it. But after weighing it, the file boundary
+is kept on its own merits (containment), not by inheritance. The deciding constraint that
+emerged: the agent is untrusted, and the file boundary is the one that gives it NO live
+channel to the host ("no escape, file or network").
 
 ## 1. What changed, and why it forces the question
 
@@ -177,51 +180,86 @@ A redesign that ignores these is hand-waving. Each option above has to satisfy:
   host.docker.internal (the channel path already proved this); a mounted Unix socket does
   NOT work there. So a socket-based agent boundary inherits the channel path's transport
   choice and its per-connection auth token need.
-- **Security.** The agent container is untrusted (prompt injection). Today the files give
-  a clean story: the container can only write its own `outbound.db`; it cannot reach the
-  host's central DB. A socket to the host is a NEW capability the untrusted container
-  gets, the host must treat every frame as hostile input (it already does for channels:
-  framed, capped, token-gated, identity not trusted). This is not a blocker (the channel
-  socket already crosses this line) but it must be designed, not assumed. Notably: under
-  B1/C the host's durable ledger is HOST-LOCAL and the container never touches it, which
-  is arguably a SECURITY IMPROVEMENT over today, where the container writes a file the
-  host then reads across a mount.
+- **Security (the deciding axis, see section 6).** The agent container is untrusted
+  (prompt injection; "tell the agent to find its way out of the box"). The files give a
+  property no socket can: a **pull model with NO live channel from the box to the host**.
+  The container writes a file in its OWN mount; the host reads it read-only on the host's
+  schedule. The contained process cannot initiate anything toward the host, cannot connect
+  out, cannot send a frame, cannot probe. Its entire reach across the boundary is "write
+  bytes into a file in my own filesystem." A socket inverts this: the runner DIALS the
+  host and holds an open, bidirectional, authenticated pipe from inside the box to the host
+  process, a live channel a compromised/escaped agent can SPEAK on. Framed, capped, and
+  token-gated though it is, it is a strictly larger attack surface than a one-way file
+  write, and it is added to the MOST sensitive path (the core agent), not a narrow plugin.
+  The earlier draft called the host-local ledger under B1/C "arguably a security
+  improvement"; that is half the picture and the less important half. Yes, the durable
+  store becomes host-local (good), but the agent GAINS a live outbound channel to the host
+  (bad, and it is the half that matters for "no escape"). The host-can-treat-frames-as-
+  hostile mitigation is real but it is mitigation of a surface the file model never opens.
+  Net: on the agent path, files are the more contained choice. The channel-plugin socket
+  already crosses this line, but channel plugins are narrow and explicitly untrusted; the
+  agent runner is the thing we most want air-gapped from the host.
 
 ## 6. Recommendation
 
-**Target Option C/B1: one socket boundary for live traffic, durability in a host-owned
-log the container never touches. But do it as a deliberate, staged migration, not a
-big-bang rewrite, and only if we judge the simplification worth the reconnect-protocol
-work.**
+**KEEP Option A: the per-conversation SQLite file pair stays the agent message boundary.
+This is a deliberate SECURITY choice, not "doing nothing." The socket stays where it
+belongs, the channel plugins, and does NOT move onto the core agent path.** (An earlier
+draft of this RFC recommended the opposite, moving to a socket, on complexity grounds.
+That recommendation is reversed: it optimized the wrong variable.)
 
-The reasoning, plainly:
+The reasoning, in priority order:
 
-- The two-DB-over-mount design is the single largest source of incidental complexity in
-  the system: the `mode=ro` enforcement, `journal_mode=DELETE`, open-write-close-per-op,
-  and the corruption-streak-detect-and-respawn loop ALL exist solely to make SQLite
-  survive virtiofs. None of it is intrinsic to "deliver a message to an agent." A socket
-  deletes all of it. And it is not just complexity on paper: it has already produced a
-  production `SQLITE_BUSY` failure on the delivery path (§3.1), the kind of error a socket
-  boundary structurally cannot have.
-- We ALREADY built and proved the hard part: a framed, authenticated, durable-enough
-  socket across the podman VM, with reconnect tolerance (the relay re-accepts on a
-  container bounce). The agent boundary would reuse that machinery, not invent it.
-- Moving durability to a HOST-LOCAL db makes the single-writer rule trivially true (one
-  process, one writer) and removes the untrusted container's write access to a
-  cross-mount file. That is simpler AND safer.
-- The honest cost is a reliable-delivery protocol over the socket (ack, redeliver-on-
-  reconnect, dedup). That is real, but it is bounded and well-understood, and we already
-  carry a dedup ledger today.
+- **Security is the top constraint, and the file boundary wins it.** The decisive
+  property (section 5) is that the file pair is PULL-ONLY: the untrusted, prompt-injectable
+  agent has NO live channel to the host. It writes a file in its own mount; the host reads
+  it read-only. The contained process cannot connect out, cannot send the host a frame,
+  cannot probe, its entire reach is "write bytes into my own filesystem." A socket would
+  hand the box a live, open, bidirectional pipe to the host process on the single most
+  sensitive path. That is the exact "find its way out, file or network" capability we do
+  not want to grant. No complexity saving is worth enlarging the agent's reach toward the
+  host. This alone settles it.
+- **"Two mechanisms" is correct defense-in-depth, not inelegance to eliminate.** The two
+  boundaries sit at two trust levels, and matching the mechanism to the level is the right
+  design: the agent runner (the thing we most want air-gapped) gets the most-isolated
+  boundary (pull-from-files, no outbound channel); the narrowly-scoped channel plugins get
+  the convenient socket. Collapsing them onto one socket "for elegance" would drag the
+  agent path UP to the channel path's surface, the wrong direction. Uniformity is not a
+  goal; containment is.
+- **The complexity the socket would delete is real but already PAID and bounded.** The
+  `mode=ro` enforcement, `journal_mode=DELETE`, open-write-close-per-op, and the
+  corruption-streak respawn exist to make SQLite survive virtiofs, and yes they are a tax
+  (and yes §3.1 was a real `SQLITE_BUSY`). But that machinery is written, tested, and
+  working; the ongoing cost is low. Switching does not recover much, it TRADES this known,
+  bounded set of subtleties for a new correctness-critical surface (a reliable-delivery
+  ack/redeliver/dedup protocol) on the one path where a bug loses or doubles a user's
+  message. That is a bad trade even before the security argument.
 
-If we judge that cost too high for the payoff right now, **Option A is an acceptable
-"do nothing" but we should stop pretending it is elegant**: it is two mechanisms, and the
-brief should say so (it now does). What we should NOT do is keep drifting, adding the
-third and fourth special case onto the SQLite path while the socket sits there proving
-the alternative works.
+What we SHOULD do instead of a redesign:
 
-## 7. A concrete staged path (if we pick C/B1)
+- **Stop drifting.** The legitimate worry that prompted this RFC, "we keep adding special
+  cases to the SQLite path", is addressed by NOT adding more, not by switching transports.
+  The current set of cross-mount rules is the complete set; new features should not extend
+  it. If a feature seems to need a new SQLite-over-mount special case, that is the signal
+  to reconsider the feature, not the boundary.
+- **Keep the framing honest** (done): the brief and CLAUDE.md now say "one pair per
+  conversation, single-writer-per-file" and acknowledge the channel socket coexists, so
+  no one mistakes "two mechanisms" for a defect to be refactored away.
 
-So this is not just philosophy:
+The socket-based agent boundary (Options B1/C) is documented below and in section 7 for
+completeness and so a future reader sees it was considered and consciously rejected, NOT as
+a target. If goclaw's threat model ever changes (e.g. the agent runner becomes trusted, or
+the durability/complexity pain genuinely exceeds the containment value), revisit, but that
+is not today, and the burden is on the change to show it does not enlarge the box's reach.
+
+## 7. A concrete staged path (kept for the REJECTED socket option, reference only)
+
+The following is the migration that a socket-based agent boundary WOULD take. It is
+retained so the rejected option is fully specified (and so a future revisit, see section 6,
+does not start from scratch), NOT as a plan of record. The recommendation is to do none of
+this and keep the file boundary.
+
+The shape it would take:
 
 1. Define the agent frames on the existing protocol: `agent.inbound` (host->runner,
    carries session id + message), `agent.outbound` (runner->host, carries reply +
@@ -246,9 +284,10 @@ So this is not just philosophy:
 Step 7 matters: this redesign is about the MESSAGE boundary, not about the agent's
 on-disk conversation state, which legitimately stays a mounted directory.
 
-## 8. What this would cost us that the current design has
+## 8. What a socket would have COST us (i.e. what the file boundary keeps)
 
-Be honest about the losses, not just the wins:
+These are the properties the rejected socket option would lose, which is to say, the
+reasons beyond the headline security argument that the file boundary is worth keeping:
 
 - **Inspectability.** Today you can `sqlite3 outbound.db` and see exactly what the agent
   produced, post-mortem, with no host running. A socket-based boundary has no such
@@ -265,21 +304,28 @@ Be honest about the losses, not just the wins:
   argues for a careful staged rollout with the old path runnable side-by-side behind a
   flag during bring-up.
 
-## 9. Decision needed
+## 9. Decision (made)
 
-Three ways to go, pick one:
+**DECIDED: keep Option A (the per-conversation file boundary) for the agent path, and
+FREEZE it, add no new SQLite-over-mount special cases.** The socket stays scoped to channel
+plugins. This is a security-first decision: the file boundary is pull-only (no live channel
+from the untrusted box to the host), and that containment property outweighs the
+complexity a socket would delete. The two-mechanisms shape is correct defense-in-depth by
+trust level, not inelegance to refactor away (section 6).
 
-1. **Commit to C/B1** (socket boundary + host-local durability). Biggest simplification,
-   real reconnect-protocol work, highest-stakes migration. The "build it right, not like
-   the system we copied" answer.
-2. **Stay on A** but own it: two mechanisms, documented as such, no pretense of one-
-   mechanism elegance. Lowest risk, keeps the cross-mount tax forever.
-3. **Defer**: leave A in place, but freeze the SQLite boundary (add no new special cases
-   to it), and revisit C/B1 when the next thing that wants the boundary shows up. A
-   conscious "not yet," not a drift.
+What this commits us to:
 
-The author's lean: **(1) is the right end state**, because the cross-mount SQLite tax is
-pure incidental complexity that a socket deletes, and we have already de-risked the
-socket. But (3) is a legitimate, honest interim if the appetite for a delivery-path
-migration is not there right now. (2) is only acceptable if we genuinely will not revisit,
-which seems unlikely given the trajectory.
+- **No agent-path socket.** The runner never dials the host; the host never opens a live
+  pipe into the box for messages. The contained agent's only cross-boundary reach stays
+  "write a file in its own mount."
+- **Freeze, do not extend, the cross-mount SQLite rules.** The current set (`mode=ro`,
+  `journal_mode=DELETE`, open-write-close-per-op, corruption-streak respawn) is complete.
+  A feature that seems to need a NEW special case on this path is a signal to reconsider the
+  feature, not the boundary.
+- **The framing is fixed** in the brief and CLAUDE.md (one pair per conversation,
+  single-writer-per-file, the channel socket coexists) so "two mechanisms" is not later
+  mistaken for a defect.
+
+Revisit only if the threat model changes (the agent runner becomes trusted, or the
+cross-mount pain genuinely exceeds the containment value). The burden is on any such change
+to prove it does NOT give the box a live channel to the host. Until then, this is settled.

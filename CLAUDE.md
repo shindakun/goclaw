@@ -8,19 +8,35 @@ container running Claude, then delivers the reply back. Go 1.26, module
 See `docs/nanoclaw-go-podman-brief.md` for the full design, `docs/security.md` for
 the threat model, and `docs/channels.md` for channel setup.
 
-## The one invariant that explains everything
+## The message boundary: one SQLite pair PER CONVERSATION, single-writer-per-file
 
-The host and the agent container talk ONLY through two SQLite files per session,
-each with exactly one writer:
+The host and the agent container exchange MESSAGES through a pair of SQLite files,
+and there is one such pair **per session (= per conversation)**, NOT two databases
+for the whole system. On disk: `data/sessions/<agentGroupID>/<sessionKey>/{inbound,
+outbound}.db`, where `sessionKey` is the conversation (e.g. `telegram:6306189728`).
+Three conversations means three pairs; a fourth Telegram chat adds a fourth. The
+"two databases" shorthand has always meant "two files per conversation", not a
+global count, this is NanoClaw's per-session model (see the brief), ported faithfully.
+
+Each pair has exactly one writer per file:
 
 - `inbound.db`  written by the HOST, read by the container.
 - `outbound.db` written by the CONTAINER, read by the host (opened read-only).
 
-There is no IPC, no socket, no shared mutable state. The host opens `outbound.db`
-read-only so the single-writer-per-file rule is enforced by the driver, not just
-promised. Before touching anything that crosses this boundary, keep that rule
-intact: a second writer to either file is a corruption/lost-write bug (we have hit
-it). The delivery ledger lives in `inbound.db`; the host never writes `outbound.db`.
+The host opens `outbound.db` read-only so the single-writer-per-file rule is
+enforced by the driver, not just promised. Before touching anything that crosses
+this boundary, keep that rule intact: a second writer to either file is a
+corruption/lost-write bug (we have hit it). The delivery ledger lives in
+`inbound.db`; the host never writes `outbound.db`.
+
+**Caveat on the old "no IPC, no socket" framing.** The original slogan ("the host
+and container talk ONLY through files, no socket") is no longer literally true: the
+channel-plugin relay (`docs/channels-plugin-design.md`) runs a real TCP/Unix socket
+across the same host<->container line. "No networking" was never the actual
+principle, it was a side effect. The load-bearing invariant is **single-writer-per-
+cross-mount-file** (SQLite over virtiofs corrupts under two writers; see the brief
+§5.1 note). Whether the boundary should stay SQLite-over-mount or move to the socket
+is an open question in `docs/boundary-redesign.md`.
 
 ## Layout
 
