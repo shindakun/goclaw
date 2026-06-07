@@ -20,6 +20,13 @@ import (
 	"github.com/shindakun/goclaw/internal/plugin"
 )
 
+// defaultRedirectPort is the loopback callback port used by the consent flow when
+// --redirect-port is not given. It is FIXED (not an ephemeral :0) so the redirect_uri is
+// stable and can be registered in the provider's OAuth app. Providers like Spotify match
+// redirect_uri exactly (incl. port), so a random port could never match. A high port needs
+// no root. Register http://127.0.0.1:<port>/ (default below) as a redirect URI.
+const defaultRedirectPort = 8888
+
 // authAddOAuth implements `goclaw auth add-oauth`: store an OAuth2 (refreshable) credential
 // via one of three consent paths, in order of preference:
 //
@@ -50,6 +57,11 @@ func authAddOAuth(store *credstore.Store, args []string) error {
 		refreshToken = fs.String("refresh-token", "", "store this refresh token directly (skip the consent flow)")
 		noBrowser    = fs.Bool("no-browser", false, "headless: print the consent URL and read the pasted code (no local server)")
 		yes          = fs.Bool("yes", false, "skip the confirmation prompt (non-interactive)")
+		// redirectPort fixes the loopback callback port so the redirect_uri is STABLE and
+		// registerable. Some providers (Spotify) match redirect_uri EXACTLY incl. port, so a
+		// random port can never match a registered value. Default to a fixed high port (no
+		// root needed). Register http://127.0.0.1:<port>/ in the provider's OAuth app.
+		redirectPort = fs.Int("redirect-port", defaultRedirectPort, "fixed loopback port for the consent callback; register http://127.0.0.1:<port>/ in the provider's app")
 		// Overrides for the plugin's declared oauth block (rarely needed).
 		authURLF   = fs.String("auth-url", "", "override the plugin's consent endpoint")
 		tokenURLF  = fs.String("token-url", "", "override the plugin's token endpoint")
@@ -125,9 +137,9 @@ func authAddOAuth(store *credstore.Store, args []string) error {
 				"(or pass --refresh-token to skip it)")
 		}
 		if *noBrowser {
-			rt, err = consentNoBrowser(spec, *clientID, *clientSecret)
+			rt, err = consentNoBrowser(spec, *clientID, *clientSecret, *redirectPort)
 		} else {
-			rt, err = consentLoopback(spec, *clientID, *clientSecret)
+			rt, err = consentLoopback(spec, *clientID, *clientSecret, *redirectPort)
 		}
 		if err != nil {
 			return err
@@ -299,13 +311,17 @@ const consentTimeout = 5 * time.Minute
 // consentLoopback runs the browser-based Authorization Code flow: bind an ephemeral
 // 127.0.0.1 listener, open the browser to the consent URL with that loopback as the
 // redirect, catch the ?code=, exchange it. The local server lives only for this command.
-func consentLoopback(spec plugin.OAuthSpec, clientID, clientSecret string) (string, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func consentLoopback(spec plugin.OAuthSpec, clientID, clientSecret string, port int) (string, error) {
+	// Bind the FIXED port so the redirect_uri is stable and registerable (see
+	// defaultRedirectPort). A provider that matches redirect_uri exactly (Spotify) requires
+	// this; one that ignores the port (Google) does not care.
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
-		return "", fmt.Errorf("loopback listen: %w", err)
+		return "", fmt.Errorf("loopback listen on 127.0.0.1:%d (in use? pick another with --redirect-port): %w", port, err)
 	}
 	defer func() { _ = ln.Close() }()
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/", ln.Addr().(*net.TCPAddr).Port)
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	fmt.Printf("Using redirect URI %s (register this EXACTLY in the provider's OAuth app).\n", redirectURI)
 
 	type result struct {
 		code string
@@ -356,12 +372,13 @@ func consentLoopback(spec plugin.OAuthSpec, clientID, clientSecret string) (stri
 // redirect), the user authorizes elsewhere and pastes the resulting code back. No local
 // server. Uses Google's "urn:ietf:wg:oauth:2.0:oob"-style manual redirect via the
 // loopback string the user copies; here we use the OOB display redirect.
-func consentNoBrowser(spec plugin.OAuthSpec, clientID, clientSecret string) (string, error) {
+func consentNoBrowser(spec plugin.OAuthSpec, clientID, clientSecret string, port int) (string, error) {
 	// For a no-server flow the redirect must be one the provider will DISPLAY the code on.
 	// Google deprecated the OOB urn, so the practical headless path is: use a loopback
 	// redirect_uri the user can read the ?code= out of the address bar after the redirect
-	// fails to connect. We surface that instruction explicitly.
-	const redirectURI = "http://127.0.0.1:0/"
+	// fails to connect. Use the SAME fixed port as the loopback flow so the redirect_uri is
+	// stable and matches what is registered (strict providers like Spotify require this).
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/", port)
 	authURL := buildAuthCodeURL(spec, clientID, redirectURI)
 	fmt.Println("Headless consent. On any machine with a browser, open:")
 	fmt.Println("  " + authURL)
