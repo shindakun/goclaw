@@ -35,8 +35,11 @@ channel-plugin relay (`docs/channels-plugin-design.md`) runs a real TCP/Unix soc
 across the same host<->container line. "No networking" was never the actual
 principle, it was a side effect. The load-bearing invariant is **single-writer-per-
 cross-mount-file** (SQLite over virtiofs corrupts under two writers; see the brief
-§5.1 note). Whether the boundary should stay SQLite-over-mount or move to the socket
-is an open question in `docs/boundary-redesign.md`.
+§5.1 note). Moving the agent path to a socket was evaluated and REJECTED on
+containment grounds (the file boundary is pull-only: the untrusted agent gets no
+live channel to the host); the file boundary stays and the cross-mount rules are
+frozen. The "two mechanisms" shape (files for the agent, socket for channel
+plugins) is deliberate defense-in-depth by trust level. See the brief §5.1 note.
 
 ## Layout
 
