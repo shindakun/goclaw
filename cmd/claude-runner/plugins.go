@@ -32,6 +32,12 @@ type pluginHost struct {
 	log    *slog.Logger
 	dir    string
 
+	// reconcileMu serializes whole reconcile() calls so the fsnotify watch and the periodic
+	// poll cannot run it concurrently. reconcile does a check-then-launch (is this plugin
+	// already loaded? if not, launch it) that is not atomic under mu alone; without this,
+	// two overlapping reconciles could double-launch a newly added plugin.
+	reconcileMu sync.Mutex
+
 	mu       sync.Mutex
 	loaded   map[string]*loadedPlugin  // tool plugins, by plugin name
 	channels map[string]*loadedChannel // channel plugins, by plugin name
@@ -71,6 +77,9 @@ func startPlugins(ctx context.Context, dir string, log *slog.Logger) *pluginHost
 // reconcile diffs the plugins dir against the loaded set: launch newly present
 // plugins, stop ones whose dir is gone. Safe to call repeatedly (on a watch event).
 func (ph *pluginHost) reconcile(ctx context.Context) {
+	ph.reconcileMu.Lock()
+	defer ph.reconcileMu.Unlock()
+
 	entries, err := os.ReadDir(ph.dir)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -198,6 +207,20 @@ func (ph *pluginHost) startWatch(ctx context.Context) {
 		const debounce = 400 * time.Millisecond
 		var timer *time.Timer
 		var timerC <-chan time.Time
+
+		// Periodic reconcile BACKSTOP. The fsnotify watch is the fast path, but /plugins is
+		// a read-only virtiofs bind mount from the host, and inotify does NOT reliably see
+		// host-side changes across the podman-VM/virtiofs boundary (same class as the
+		// Unix-socket-over-virtiofs limitation). So a host-side `plugin remove` (deleting
+		// data/plugins/<name>) may never fire a watch event, and without this poll the
+		// removed channel plugin's process keeps running, e.g. an uninstalled IRC bridge
+		// would keep reconnecting to the server. The poll guarantees reconcile runs (and
+		// thus a removed channel is stopped) within pollEvery regardless of inotify. A scan
+		// is cheap: one ReadDir plus a LoadManifest per plugin dir.
+		const pollEvery = 5 * time.Second
+		poll := time.NewTicker(pollEvery)
+		defer poll.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -216,6 +239,8 @@ func (ph *pluginHost) startWatch(ctx context.Context) {
 			case <-timerC:
 				timerC = nil // disarm until the next event re-arms it
 				ph.reconcile(ctx)
+			case <-poll.C:
+				ph.reconcile(ctx) // backstop: catches host-side changes inotify missed
 			case err, ok := <-w.Errors:
 				if !ok {
 					return

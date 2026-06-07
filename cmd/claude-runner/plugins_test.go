@@ -154,6 +154,45 @@ func TestPluginHost_HotReload(t *testing.T) {
 	}
 }
 
+// TestPluginHost_ReconcileStopsRemoved proves a removed plugin is unloaded by a DIRECT
+// reconcile call, i.e. WITHOUT relying on an fsnotify event. This is the regression guard
+// for the real bug: /plugins is a read-only virtiofs mount and inotify does not see
+// host-side removes across the podman-VM boundary, so the periodic poll (which just calls
+// reconcile) is what must stop a removed plugin, e.g. an uninstalled IRC bridge that would
+// otherwise keep reconnecting. We exercise reconcile directly to simulate the watch being
+// blind.
+func TestPluginHost_ReconcileStopsRemoved(t *testing.T) {
+	staged := installRoll(t)
+	src := filepath.Join(staged, "roll")
+
+	root := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	ph := startPlugins(ctx, root, quietLog())
+	defer ph.Close()
+
+	// Place the plugin and load it via a direct reconcile (not the watch).
+	dst := filepath.Join(root, "roll")
+	if err := os.CopyFS(dst, os.DirFS(src)); err != nil {
+		t.Fatalf("copy plugin: %v", err)
+	}
+	ph.reconcile(ctx)
+	if _, ok := ph.command(ctx, "/roll 2d6"); !ok {
+		t.Fatal("plugin not loaded after reconcile")
+	}
+
+	// Remove the dir and reconcile again: the plugin must be dropped, with NO watch event
+	// involved. This is exactly what the poll backstop does.
+	if err := os.RemoveAll(dst); err != nil {
+		t.Fatal(err)
+	}
+	ph.reconcile(ctx)
+	if _, ok := ph.command(ctx, "/roll 2d6"); ok {
+		t.Fatal("plugin still loaded after removal + reconcile (the poll backstop would not stop it)")
+	}
+}
+
 func waitFor(d time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
