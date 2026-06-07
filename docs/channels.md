@@ -113,3 +113,53 @@ summary to the owner: the Telegram owner if `GOCLAW_OWNER_TELEGRAM_ID` is set,
 otherwise the Discord owner's DM (the bot opens a DM to the owner, since Discord
 posts to channels, not user ids). Maintenance is skipped if no owner channel is
 configured.
+
+## Troubleshooting: where channel-plugin logs live
+
+A channel PLUGIN (IRC, Gmail, any `kind: channel` plugin) runs INSIDE the agent
+container, launched by the in-container runner. Its own runtime logs (connection
+attempts, retries, errors, the `[irc] ...` lines) go to the container's stderr,
+NOT the goclaw host console. The host console only shows host-side lifecycle
+events ("channel plugin launched", "channel plugin attached", "channel relay
+listening"), not the plugin's internal state.
+
+So if a channel is not working and the host console looks clean, the errors are in
+the container logs:
+
+```sh
+podman logs <container>            # e.g. podman logs goclaw-1
+podman logs <container> 2>&1 | grep -i '\[irc\]'   # one channel's lines
+```
+
+This is inherent to the design (the plugin is in the container; the host cannot
+see a container-internal process's stderr without forwarding it across the
+boundary). When diagnosing "channel X never connected", always check
+`podman logs` before assuming the host is at fault.
+
+### IRC specifically: `registration read: EOF` / `tls: access denied`
+
+These are the IRC SERVER (e.g. Libera) refusing the connection, not a goclaw bug:
+
+- `registration read: EOF` - the TCP+TLS connection opened but the server closed it
+  during the IRC handshake (NICK/USER). Usually the nick or your IP is throttled.
+- `tls: access denied` - the server refused at the TLS layer, typically a
+  connection rate-limit / temporary ban.
+
+The usual cause is a RECONNECT STORM: many host restarts in a short window each
+relaunch the IRC plugin, which reconnects, and Libera punishes rapid reconnects
+with a temporary throttle. The plugin then retry-loops (capped backoff), which can
+keep the throttle alive.
+
+To confirm it is the server and not TLS trust: from inside the container,
+`openssl s_client -connect irc.libera.chat:6697 -servername irc.libera.chat`. A
+clean `Verify return code: 0 (ok)` means transport + public-root verification are
+fine (so it is NOT a cert/trust problem; a trust problem would surface as
+`x509: certificate signed by unknown authority` in the plugin, not `access
+denied`). The fix is to STOP reconnecting and wait for the throttle to expire
+(tens of minutes), or try a different `IRC_NICK` while the old one cools down.
+
+Note: the IRC plugin verifies the server against the PUBLIC system roots, NOT
+`SSL_CERT_FILE` (which goclaw sets to the credential-proxy CA for proxy-routed
+HTTP plugins). A direct-TLS plugin like IRC must not inherit the proxy CA as its
+only root, or it would fail to verify the real server cert. See goclawkit
+`cmd/irc` `loadPublicRootPool`.
