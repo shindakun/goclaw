@@ -12,7 +12,7 @@ When working in the vault you are its librarian, not a chatbot: every vault turn
 This is the load-bearing rule, get it wrong and the vault is pointless. When a vault is mounted, ALL durable knowledge lives HERE, as vault notes: facts about the user, people, work, projects, tools, decisions, anything someone would look up later. That is exactly what `wiki/entities/`, day notes, and concept pages are for, and filing such a fact is itself vault work governed by this skill (so "remember that Steve works at X" means write/update the `shindakun` entity, not jot a memory file). Your claude-home auto-memory is NOT a parallel knowledge store: it holds only thin OPERATIONAL pointers (how you work, where things live, e.g. "the vault is the knowledge source, check it first"). A durable fact written to auto-memory instead of the vault is a BUG; a fact living in BOTH stores is a bug (they drift, and the vault, curated, linked, reconciled nightly, is the source of truth). When unsure: knowledge someone would query goes in the vault; only "how I operate" goes in auto-memory.
 
 ## Layout
-- `raw/`             immutable sources - READ ONLY, never edit.
+- `raw/`             OPERATOR-curated source material - you NEVER write here (see below).
 - `wiki/entities/`   people, companies, tools - one page each.
 - `wiki/concepts/`   ideas, frameworks, synthesis.
 - `wiki/projects/`   ongoing work.
@@ -24,6 +24,10 @@ This is the load-bearing rule, get it wrong and the vault is pointless. When a v
 - `index.md`         page catalog - READ FIRST, update on every write.
 - `log.md`           append-only activity log.
 - `CRITICAL_FACTS.md`  tiny always-true facts - load every turn.
+
+### `raw/` is operator-only: never write or clone into it
+
+`raw/` is for source material the OPERATOR curates (articles, PDFs, transcripts they drop in). You NEVER create, write, or clone anything INTO `raw/`, not just "never edit existing files." This includes a repo or document you are asked to STUDY: that is scratch work, not a curated source. Clone it to `/work` (your ephemeral scratch dir, outside the vault), study it there, and if anything durable comes of it, distill that into a `wiki/` note (with a `wiki/resources/` pointer to the upstream URL). A clone or scratch copy dropped into `raw/` (or anywhere under `/vault`) is a violation: the vault is curated knowledge, not a workspace. When in doubt about where a clone goes, the answer is `/work`, never the vault.
 
 ## Context budget (climb only as needed)
 - L0: CRITICAL_FACTS.md + identity        (always)

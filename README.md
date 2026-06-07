@@ -407,6 +407,27 @@ weekly lint. Each runs the agent against the vault and posts a one-line summary
 to the owner's chat. The agent commits its changes with git, so set
 `GOCLAW_GIT_USER_NAME` / `GOCLAW_GIT_USER_EMAIL` to your identity (defaults work).
 
+**Updating the vault after a goclaw upgrade.** `goclaw vault init` only ever
+_fills in missing_ files, so it never refreshes the agent's operating-contract
+files in an EXISTING vault. When a goclaw upgrade improves those (the librarian
+skill, the vault prompt), pull them into your live vault with:
+
+```sh
+goclaw vault sync                  # ~/Vault (or: goclaw vault sync /path)
+goclaw vault sync --dry-run        # show what WOULD change, write nothing
+```
+
+`sync` touches ONLY goclaw's own rulebook, an explicit allowlist:
+
+- `.claude/skills/librarian/SKILL.md` (the librarian discipline)
+- `CLAUDE.md` (the vault's system prompt)
+
+It NEVER touches your content: `index.md`, `log.md`, `CRITICAL_FACTS.md`, and
+every note under `wiki/` are left exactly as they are. Before replacing a changed
+contract file it writes a `<file>.bak` next to it, so a sync is non-destructive
+and reversible. Run it after upgrading goclaw (and re-run after editing the
+templates if you maintain your own).
+
 ### Without container launch
 
 Leave `GOCLAW_LAUNCH_RUNNER` unset to start a runner out of band instead -

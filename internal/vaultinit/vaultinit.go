@@ -92,6 +92,81 @@ func Install(dir string) (*Result, error) {
 	return res, nil
 }
 
+// ownedFiles are the goclaw-AUTHORED operating-contract files inside a vault: the agent's
+// rulebook, not user content. `goclaw vault sync` overwrites exactly these from the current
+// embedded template so a goclaw upgrade can refresh them, while NEVER touching user-owned
+// files (index.md, log.md, CRITICAL_FACTS.md, every wiki/ note), which the template only
+// SEEDS and the user then fills. Keeping this an explicit ALLOWLIST is the safety property:
+// sync defaults to not touching anything, and only the named files are ever replaced.
+var ownedFiles = []string{
+	".claude/skills/librarian/SKILL.md", // the librarian discipline
+	"CLAUDE.md",                         // the vault's system prompt
+}
+
+// SyncResult reports what a Sync did.
+type SyncResult struct {
+	Dir     string
+	Updated []string // owned files replaced because they differed from the template
+	Same    []string // owned files already matching the template
+	Added   []string // owned files that were missing and got created
+	Backups []string // ".bak" copies written before overwriting (empty in dry-run)
+	DryRun  bool
+}
+
+// Sync refreshes the goclaw-OWNED operating-contract files (ownedFiles) in an existing vault
+// from the current embedded template, so a goclaw upgrade can push new prompt/skill text into
+// a live vault. It overwrites ONLY ownedFiles and never user content. Before overwriting a
+// changed file it writes a "<file>.bak" so a sync is non-destructive. dryRun reports what
+// WOULD change without writing anything.
+func Sync(dir string, dryRun bool) (*SyncResult, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("vaultinit: resolve %q: %w", dir, err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return nil, fmt.Errorf("vaultinit: vault %q does not exist (run `goclaw vault init` first): %w", abs, err)
+	}
+	res := &SyncResult{Dir: abs, DryRun: dryRun}
+
+	for _, rel := range ownedFiles {
+		want, err := vaultTemplate.ReadFile(templateRoot + "/" + rel)
+		if err != nil {
+			return nil, fmt.Errorf("vaultinit: read embedded %q: %w", rel, err)
+		}
+		dest := filepath.Join(abs, filepath.FromSlash(rel))
+		cur, readErr := os.ReadFile(dest)
+		switch {
+		case readErr != nil: // missing -> create
+			res.Added = append(res.Added, rel)
+			if dryRun {
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(dest, want, 0o644); err != nil {
+				return nil, fmt.Errorf("vaultinit: write %q: %w", rel, err)
+			}
+		case string(cur) == string(want): // already current
+			res.Same = append(res.Same, rel)
+		default: // differs -> back up, then overwrite
+			res.Updated = append(res.Updated, rel)
+			if dryRun {
+				continue
+			}
+			bak := dest + ".bak"
+			if err := os.WriteFile(bak, cur, 0o644); err != nil {
+				return nil, fmt.Errorf("vaultinit: backup %q: %w", rel, err)
+			}
+			res.Backups = append(res.Backups, rel+".bak")
+			if err := os.WriteFile(dest, want, 0o644); err != nil {
+				return nil, fmt.Errorf("vaultinit: write %q: %w", rel, err)
+			}
+		}
+	}
+	return res, nil
+}
+
 func isGitRepo(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
