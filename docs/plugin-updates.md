@@ -32,15 +32,54 @@ version       plugin.yml `version` at install time
 installed_at  timestamp
 ```
 
-Where it lives: either a sidecar file in the plugin dir (`data/plugins/<name>/.source.json`,
-dot-prefixed so the runner's watch ignores it) or a `plugins` table in the central DB. The
-sidecar is simpler and travels with the plugin; the DB is queryable and harder to tamper
-with from inside the (read-only-mounted) plugin dir. Leaning sidecar for v0 (the plugin dir
-is host-owned; the container only reads it), with a note that a DB table is the upgrade path
-if we want richer history.
+**DECISION: a sidecar file (`data/plugins/<name>/.source.json`), not a DB table.** The
+record is dot-prefixed so the runner's watch ignores it, and the installer writes it into
+the atomic staging dir (`.<name>.installing`) before the rename, so it lands atomically with
+the binary + plugin.yml. Rationale:
+
+- **Single source of truth.** What is installed already lives in the filesystem
+  (`data/plugins/<name>/`), and the poll-reconcile loop treats that dir as authoritative.
+  Provenance is a PROPERTY of an installed plugin, so it belongs in the same place. A DB
+  table would create a SECOND source of truth that must be kept in sync with the dir, and
+  this codebase has already been bitten by two-stores-drift bugs (the inotify-vs-filesystem
+  gap, the delivery ledger). Do not reintroduce that shape for ~5 plugins.
+- **It travels with the plugin.** Remove the dir and the provenance goes with it: no orphan
+  rows, no cleanup step, no "DB says installed but the dir is gone" skew.
+- **Tamper-safe enough.** The plugin dir is host-owned and mounted READ-ONLY into the
+  container, so the container cannot rewrite `.source.json` to spoof its version, the same
+  protection a DB would give, without the DB.
+- **The DB's only real advantage is history**, and history is a separate concern handled by
+  logging (below), not a reason to make the live provenance record relational. The query
+  advantage ("SELECT ... WHERE update_available") is irrelevant at goclaw's plugin count.
+
+Revisit ONLY if provenance ever becomes cross-plugin and relational (a dependency graph, a
+shared registry cache); a SQL query over a handful of files is not that signal.
 
 This provenance record is independently useful (audit: "what is installed, from where, at
 what commit"), so it is worth doing even before the update check.
+
+### Install/remove logging (currently ABSENT, add it alongside provenance)
+
+Today goclaw does NOT log or persist installs at all. `pluginAdd`/`pluginRemove`
+(`internal/router/router.go`) only return a transient CHAT reply to the owner ("Installed
+gmail v1.0.0 at abc12345"); the git URL and commit are echoed and then DISCARDED (not even
+written into the plugin dir). So an install leaves no durable trace once the chat scrolls.
+
+Add logging when we touch the install path for provenance, two cheap, additive pieces:
+
+- A structured host log line on every add/remove: `log.Info("plugin installed", "name",
+  ..., "git_url", ..., "subdir", ..., "commit", ..., "version", ...)` and the matching
+  `"plugin removed"`. Zero new storage; shows up in the host console/journal.
+- Optionally an append-only `data/plugins/.install-log.jsonl` (one JSON line per install /
+  update / remove event) for a durable audit HISTORY. This is the separate "history"
+  concern the sidecar deliberately does NOT cover (the sidecar holds only CURRENT state and
+  is overwritten on update). Keeping history as an append-only LOG, not as DB rows, preserves
+  the single-source-of-truth property: the sidecar is current state, the log is the event
+  trail, neither is a queryable mutable store that can drift from the filesystem.
+
+So: sidecar for current provenance, a log line (and optional jsonl) for history. Do both
+when implementing phase 1, since the install path is already being edited to write the
+sidecar.
 
 ## 2. What "an update is available" can MEAN (two signals)
 
@@ -138,9 +177,11 @@ must be re-vetted exactly like a first install.
 
 ## 5. Proposed phasing
 
-1. **Provenance (foundational):** persist `{git_url, subdir, commit, version, installed_at}`
-   per plugin at install time (sidecar `.source.json`). Surface it in `goclaw plugin list`.
-   Independently useful as an audit record. NO update logic yet.
+1. **Provenance + logging (foundational):** persist `{git_url, subdir, commit, version,
+   installed_at}` per plugin at install time as a sidecar `.source.json`, and add the
+   install/remove log line (plus optional `.install-log.jsonl`) that is currently absent.
+   Surface provenance in `goclaw plugin list`. Independently useful as an audit record. NO
+   update-checking logic yet.
 2. **On-demand check:** `goclaw plugin check` / `outdated` using the strongest signal the
    provenance supports (tag > manifest-version; no commit-drift fallback), printing the
    update command.
