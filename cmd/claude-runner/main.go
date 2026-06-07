@@ -388,9 +388,22 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 	// Archive the conversation to conversations/ just before the CLI compacts it,
 	// so the about-to-be-summarized history stays recallable (base memory, always
 	// on - see archive.go). The hook payload carries the transcript path.
-	opts = append(opts, claude.WithHooks(map[claude.HookEvent][]claude.HookMatcher{
+	hooks := map[claude.HookEvent][]claude.HookMatcher{
 		claude.HookPreCompact: {{Callbacks: []claude.HookCallback{r.preCompactArchive}}},
-	}))
+	}
+	// When a vault is mounted, re-assert the vault-first discipline on EVERY turn via a
+	// UserPromptSubmit hook. A reminder buried in the system prompt gets scrolled past; a
+	// hook injects it fresh at decision time each message. Registered programmatically here
+	// (not via ~/.claude/settings.json) so it ships in the runner and every install/agent
+	// group gets it by construction, no per-container hand-editing that a fresh install
+	// would lose. additionalContext is the documented field that reaches the model's
+	// context for UserPromptSubmit.
+	if r.vaultMounted {
+		hooks[claude.HookUserPromptSubmit] = []claude.HookMatcher{
+			{Callbacks: []claude.HookCallback{r.vaultFirstReminder}},
+		}
+	}
+	opts = append(opts, claude.WithHooks(hooks))
 
 	for msg, qErr := range claude.Query(ctx, prompt, opts...) {
 		if qErr != nil {

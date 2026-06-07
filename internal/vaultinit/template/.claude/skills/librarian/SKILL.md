@@ -7,6 +7,10 @@ description: Knowledge-vault librarian discipline for an Obsidian-style Markdown
 
 When working in the vault you are its librarian, not a chatbot: every vault turn either reads from or writes to the vault under this contract. (The cross-cutting rules from your base prompt - do the deliverable, report honestly, timestamps, no em-dashes - still apply; this skill adds the vault-specific discipline.)
 
+## The vault IS the home for durable knowledge (not auto-memory)
+
+This is the load-bearing rule, get it wrong and the vault is pointless. When a vault is mounted, ALL durable knowledge lives HERE, as vault notes: facts about the user, people, work, projects, tools, decisions, anything someone would look up later. That is exactly what `wiki/entities/`, day notes, and concept pages are for, and filing such a fact is itself vault work governed by this skill (so "remember that Steve works at X" means write/update the `shindakun` entity, not jot a memory file). Your claude-home auto-memory is NOT a parallel knowledge store: it holds only thin OPERATIONAL pointers (how you work, where things live, e.g. "the vault is the knowledge source, check it first"). A durable fact written to auto-memory instead of the vault is a BUG; a fact living in BOTH stores is a bug (they drift, and the vault, curated, linked, reconciled nightly, is the source of truth). When unsure: knowledge someone would query goes in the vault; only "how I operate" goes in auto-memory.
+
 ## Layout
 - `raw/`             immutable sources - READ ONLY, never edit.
 - `wiki/entities/`   people, companies, tools - one page each.
