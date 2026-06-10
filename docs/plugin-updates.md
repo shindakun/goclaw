@@ -1,28 +1,25 @@
 # Plugin update checks (notify, never auto-apply)
 
-Status: DESIGN / RFC. No code. How goclaw should tell the operator that an installed
-plugin has a newer version available, WITHOUT ever updating it automatically. Plugins are
-untrusted code the operator chose to install; a silent auto-update would re-run arbitrary
-untrusted code on the operator's behalf, exactly what the install sandbox + operator-in-the-
-loop model exists to prevent. So the goal is: **detect and surface; the operator decides.**
+Status: PARTIALLY IMPLEMENTED. Phase 1 (provenance + install/remove history) has SHIPPED;
+phases 2-4 (the actual update checking, the operator surface, the optional periodic notify)
+are still design. How goclaw should tell the operator that an installed plugin has a newer
+version available, WITHOUT ever updating it automatically. Plugins are untrusted code the
+operator chose to install; a silent auto-update would re-run arbitrary untrusted code on the
+operator's behalf, exactly what the install sandbox + operator-in-the-loop model exists to
+prevent. So the goal is: **detect and surface; the operator decides.**
 
 Read `internal/plugin/install.go` (the sandboxed clone/scan/build/stage pipeline) and
 `docs/security.md` first.
 
-## 1. The hard prerequisite: goclaw does not currently remember where a plugin came from
+## 1. The hard prerequisite (NOW SHIPPED): remember where a plugin came from
 
-An update check needs to compare "what is installed" against "what is upstream." goclaw can
-do the first half but not the second, because it throws the provenance away:
+An update check needs to compare "what is installed" against "what is upstream." This used to
+be impossible because goclaw threw the provenance away: `Installer.acceptArtifact` computed the
+source commit and version but copied only the binary + `plugin.yml` into the installed dir, so
+at rest a plugin was just `{binary, plugin.yml}` with no record of its repo/commit.
 
-- `Installer.acceptArtifact` COMPUTES the source commit (`/out/.commit`) and the version,
-  and returns them in `InstallResult`. But it only copies the BINARY and `plugin.yml` into
-  the installed dir (`data/plugins/<name>/`). The git URL, the subdir, and the installed
-  commit are NOT persisted anywhere.
-- So at rest, an installed plugin is just `{binary, plugin.yml}`. goclaw cannot answer "what
-  repo/commit is this from?", which is the input an update check requires.
-
-**Therefore step one of any option below is: persist provenance per installed plugin.** A
-small record written at install time:
+**That gap is now closed.** Provenance is persisted per installed plugin (the decision and
+rationale below shipped as `internal/plugin/install.go`). The record written at install time:
 
 ```
 git_url       the source repo (e.g. https://github.com/shindakun/goclaw-gmail)
@@ -32,7 +29,7 @@ version       plugin.yml `version` at install time
 installed_at  timestamp
 ```
 
-**DECISION: a sidecar file (`data/plugins/<name>/.source.json`), not a DB table.** The
+**SHIPPED DECISION: a sidecar file (`data/plugins/<name>/.source.json`), not a DB table.** The
 record is dot-prefixed so the runner's watch ignores it, and the installer writes it into
 the atomic staging dir (`.<name>.installing`) before the rename, so it lands atomically with
 the binary + plugin.yml. Rationale:
@@ -181,28 +178,32 @@ must be re-vetted exactly like a first install.
 
 ## 5. Proposed phasing
 
-1. **Provenance + logging (foundational):** persist `{git_url, subdir, commit, version,
-   installed_at}` per plugin at install time as a sidecar `.source.json`, and add the
-   install/remove history (now recorded as `plugin.*` events in `internal/eventlog`).
-   Surface provenance in `goclaw plugin list`. Independently useful as an audit record. NO
-   update-checking logic yet.
+1. **Provenance + logging (foundational): SHIPPED.** Provenance `{git_url, subdir, commit,
+   version, installed_at}` is persisted per plugin at install time as the sidecar
+   `.source.json`, and install/remove history is recorded as `plugin.*` events in
+   `internal/eventlog`. (Remaining nice-to-have from this phase: surface provenance in `goclaw
+   plugin list`, which is not yet wired.) No update-checking logic, by design, that is phase 2.
 2. **On-demand check:** `goclaw plugin check` / `outdated` using the strongest signal the
    provenance supports (tag > manifest-version; no commit-drift fallback), printing the
    update command.
    Add the optional `@<tag>`/`@<commit>` pin to the install spec and a `goclaw plugin update
    <name>` that re-installs at the newer ref through the full sandbox.
-3. **Author guidance (tags as the blessed path):** document that plugins SHOULD ship semver
-   release tags; tagged installs get precise update checks, bare-URL installs get the weaker
-   fallback. This is where goclawkit needs a handoff (section 6).
+3. **Author guidance (tags as the blessed path): DOCUMENTED.** The convention that plugins
+   SHOULD ship semver `v<semver>` release tags (tagged installs get precise update checks,
+   bare-URL installs get the weaker fallback) is written up in goclawkit `docs/sdk-spec.md`
+   ("Releasing a plugin"), covering semver `version`, `v<semver>` tags, the `@<ref>` install
+   pin, and the `CHANGELOG.md` convention (section 6). The DOC half of this phase is done; the
+   goclaw-side code that consumes tags (the `@<ref>` pin and the tag-preferring check) is part
+   of phase 2 and not yet built, so author guidance is fully usable only once phase 2 lands.
 4. **Optional periodic check + owner notification:** opt-in background check that updates the
    "available" state and (if a channel is configured) sends a daily informational summary.
    Off by default.
 
-## 6. What this asks of goclawkit (handoff to write later)
+## 6. What this asks of goclawkit (handoff: DONE, documented in sdk-spec.md)
 
 goclaw owns the MECHANISM (provenance, checking, the operator surface). goclawkit is where
-plugin AUTHORS live, so it owns the CONVENTION authors follow. A later goclawkit handoff
-should cover:
+plugin AUTHORS live, so it owns the CONVENTION authors follow. This handoff has been written
+into goclawkit `docs/sdk-spec.md` (see the closing note below); it covers:
 
 - **Versioning discipline:** `plugin.yml` `version` MUST be semver and MUST be bumped on any
   behavior change (today it is free-form and often left at `1.0.0`; gmail-tools shipped while
@@ -223,7 +224,8 @@ so tag-based checks (2b) can be the primary signal.
 
 ## 7. Recommendation in one line
 
-Persist provenance now (phase 1, useful on its own), then an on-demand `plugin check` that
-prefers release tags and falls back to manifest version, never auto-applying; push authors
-toward semver tags via goclawkit. Tag namespacing is settled (one plugin per repo, bare
-`v<semver>`), so tags can be the primary signal.
+Provenance is persisted (phase 1, shipped) and the author-guidance handoff is documented in
+goclawkit (phase 3 docs). What remains is the goclaw-side phase 2: an on-demand `plugin check`
+that prefers release tags and falls back to manifest version, never auto-applying, plus the
+`@<ref>` install pin and `plugin update <name>`. Tag namespacing is settled (one plugin per
+repo, bare `v<semver>`), so tags can be the primary signal.
