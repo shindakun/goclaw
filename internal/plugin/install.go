@@ -26,6 +26,7 @@ const sourceFileName = ".source.json"
 type Source struct {
 	GitURL      string `json:"git_url"`
 	Subdir      string `json:"subdir,omitempty"` // monorepo subdir, or "" for a root plugin
+	Ref         string `json:"ref,omitempty"`    // the requested install ref (tag/commit/branch), or "" for the default branch
 	Commit      string `json:"commit"`           // the pinned source commit the build came from
 	Version     string `json:"version"`          // plugin.yml version at install time
 	InstalledAt string `json:"installed_at"`     // RFC3339, host local time
@@ -102,12 +103,15 @@ type InstallResult struct {
 // layout), or "<git-url>#<subdir>" to select ONE plugin inside a monorepo (e.g.
 // "...goclaw-gmail#cmd/gmail"), where <subdir> holds that plugin's plugin.yml. The whole
 // repo is still scanned for red flags; only the manifest read + build come from <subdir>.
+//
+// An optional trailing "@<ref>" pins the install to a tag or commit (e.g.
+// "...goclaw-roll@v1.3.0" or "...#cmd/gmail@v2.0.0"). With no @<ref> the default branch is
+// used. The ref is checked out INSIDE the sandbox after the clone, so pinning changes only
+// what source is built, not where it runs. The requested ref is persisted in provenance so an
+// update can re-pin.
 func (in *Installer) Add(ctx context.Context, spec string) (*InstallResult, error) {
-	gitURL, subdir, _ := strings.Cut(spec, "#")
-	if err := validateGitURL(gitURL); err != nil {
-		return nil, err
-	}
-	if err := validateSubdir(subdir); err != nil {
+	gitURL, subdir, ref, err := parseSpec(spec)
+	if err != nil {
 		return nil, err
 	}
 
@@ -144,6 +148,7 @@ func (in *Installer) Add(ctx context.Context, spec string) (*InstallResult, erro
 		"-v", outAbs + ":/out:Z",
 		"-e", "PLUGIN_GIT_URL=" + gitURL,
 		"-e", "PLUGIN_SUBDIR=" + subdir,
+		"-e", "PLUGIN_REF=" + ref,
 		"--entrypoint", "sh",
 		in.image, "-c", installScript,
 	}
@@ -159,7 +164,7 @@ func (in *Installer) Add(ctx context.Context, spec string) (*InstallResult, erro
 	}
 
 	// The build container wrote the artifact to /out. Read what it staged.
-	res, err := in.acceptArtifact(out, gitURL, subdir)
+	res, err := in.acceptArtifact(out, gitURL, subdir, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -172,9 +177,9 @@ func (in *Installer) Add(ctx context.Context, spec string) (*InstallResult, erro
 }
 
 // acceptArtifact validates the build container's output and moves it into the host plugins
-// dir atomically, writing the provenance sidecar (gitURL/subdir/commit/version/installed_at)
-// alongside the binary + plugin.yml so all three land together on the rename.
-func (in *Installer) acceptArtifact(out, gitURL, subdir string) (*InstallResult, error) {
+// dir atomically, writing the provenance sidecar (gitURL/subdir/ref/commit/version/
+// installed_at) alongside the binary + plugin.yml so all three land together on the rename.
+func (in *Installer) acceptArtifact(out, gitURL, subdir, ref string) (*InstallResult, error) {
 	man, err := LoadManifest(out) // the build wrote plugin.yml here
 	if err != nil {
 		return nil, fmt.Errorf("install: built artifact has no valid plugin.yml: %w", err)
@@ -188,6 +193,7 @@ func (in *Installer) acceptArtifact(out, gitURL, subdir string) (*InstallResult,
 	src := Source{
 		GitURL:      gitURL,
 		Subdir:      subdir,
+		Ref:         ref,
 		Commit:      commit,
 		Version:     man.Version,
 		InstalledAt: nowRFC3339(),
@@ -349,7 +355,21 @@ rm -rf "$SRC"
 # Disable any interactive/credential prompt so a private URL fails fast instead
 # of hanging.
 export GIT_TERMINAL_PROMPT=0
-if ! git clone --depth 1 "$PLUGIN_GIT_URL" "$SRC" 2>/tmp/clone.err; then
+# PLUGIN_REF pins the install to a tag/branch/commit (validated host-side). With a ref we
+# try a shallow clone OF that ref first (works for a tag or branch name); if that fails (a
+# raw commit SHA cannot be cloned with --branch) we do a full clone and check the ref out.
+# With no ref, the default branch shallow clone is used (the original behaviour).
+if [ -n "${PLUGIN_REF:-}" ]; then
+  if git clone --depth 1 --branch "$PLUGIN_REF" "$PLUGIN_GIT_URL" "$SRC" 2>/tmp/clone.err; then
+    :
+  elif git clone "$PLUGIN_GIT_URL" "$SRC" 2>/tmp/clone.err && git -C "$SRC" checkout --quiet "$PLUGIN_REF" 2>/tmp/clone.err; then
+    :
+  else
+    echo "clone/checkout of ref '$PLUGIN_REF' failed (unknown tag/commit, or a private repo):" >&2
+    cat /tmp/clone.err >&2
+    exit 1
+  fi
+elif ! git clone --depth 1 "$PLUGIN_GIT_URL" "$SRC" 2>/tmp/clone.err; then
   echo "clone failed (private repos are not supported yet):" >&2
   cat /tmp/clone.err >&2
   exit 1

@@ -1,8 +1,9 @@
 # Plugin update checks (notify, never auto-apply)
 
-Status: PARTIALLY IMPLEMENTED. Phase 1 (provenance + install/remove history) has SHIPPED;
-phases 2-4 (the actual update checking, the operator surface, the optional periodic notify)
-are still design. How goclaw should tell the operator that an installed plugin has a newer
+Status: PARTIALLY IMPLEMENTED. Phases 1-3 have SHIPPED (provenance + history; on-demand
+check, the `@<ref>` install pin, and `plugin update`; author-guidance docs in goclawkit);
+phase 4 (the optional periodic notify) is still design. How goclaw should tell the operator
+that an installed plugin has a newer
 version available, WITHOUT ever updating it automatically. Plugins are untrusted code the
 operator chose to install; a silent auto-update would re-run arbitrary untrusted code on the
 operator's behalf, exactly what the install sandbox + operator-in-the-loop model exists to
@@ -183,18 +184,21 @@ must be re-vetted exactly like a first install.
    `.source.json`, and install/remove history is recorded as `plugin.*` events in
    `internal/eventlog`. (Remaining nice-to-have from this phase: surface provenance in `goclaw
    plugin list`, which is not yet wired.) No update-checking logic, by design, that is phase 2.
-2. **On-demand check:** `goclaw plugin check` / `outdated` using the strongest signal the
-   provenance supports (tag > manifest-version; no commit-drift fallback), printing the
-   update command.
-   Add the optional `@<tag>`/`@<commit>` pin to the install spec and a `goclaw plugin update
-   <name>` that re-installs at the newer ref through the full sandbox.
+2. **On-demand check: SHIPPED.** `/plugin check [name]` compares the installed plugin.yml
+   version against the highest stable `v<semver>` upstream tag via a read-only `git ls-remote`
+   (no clone, no build, no sandbox), and prints the update command when a newer release exists.
+   The `@<ref>` install pin is wired into the spec (`<url>[#<subdir>][@<ref>]`, checked out in
+   the sandbox) and persisted in provenance, and `/plugin update <name>` re-installs at the
+   newest tag through the FULL sandboxed build, never auto-applying. (Implementation:
+   `internal/plugin/update.go`, `internal/plugin/semver.go`; commands in `internal/router`.
+   Note: the `@<ref>` checkout runs in the build container, so it needs the runner image
+   rebuilt to take effect; the host-side check and spec parsing work regardless.)
 3. **Author guidance (tags as the blessed path): DOCUMENTED.** The convention that plugins
    SHOULD ship semver `v<semver>` release tags (tagged installs get precise update checks,
    bare-URL installs get the weaker fallback) is written up in goclawkit `docs/sdk-spec.md`
    ("Releasing a plugin"), covering semver `version`, `v<semver>` tags, the `@<ref>` install
-   pin, and the `CHANGELOG.md` convention (section 6). The DOC half of this phase is done; the
-   goclaw-side code that consumes tags (the `@<ref>` pin and the tag-preferring check) is part
-   of phase 2 and not yet built, so author guidance is fully usable only once phase 2 lands.
+   pin, and the `CHANGELOG.md` convention (section 6). With phase 2 shipped, the goclaw-side
+   code that consumes tags now exists, so this guidance is fully usable.
 4. **Optional periodic check + owner notification:** opt-in background check that updates the
    "available" state and (if a channel is configured) sends a daily informational summary.
    Off by default.
@@ -224,8 +228,8 @@ so tag-based checks (2b) can be the primary signal.
 
 ## 7. Recommendation in one line
 
-Provenance is persisted (phase 1, shipped) and the author-guidance handoff is documented in
-goclawkit (phase 3 docs). What remains is the goclaw-side phase 2: an on-demand `plugin check`
-that prefers release tags and falls back to manifest version, never auto-applying, plus the
-`@<ref>` install pin and `plugin update <name>`. Tag namespacing is settled (one plugin per
-repo, bare `v<semver>`), so tags can be the primary signal.
+Provenance (phase 1), the on-demand `plugin check` + `@<ref>` pin + `plugin update` (phase 2),
+and the author-guidance docs in goclawkit (phase 3) are all shipped. What remains is phase 4:
+an OPTIONAL, opt-in periodic check that updates an "available" state and sends the owner a
+daily informational summary, still never auto-applying. Tag namespacing is settled (one plugin
+per repo, bare `v<semver>`), so tags are the primary signal.

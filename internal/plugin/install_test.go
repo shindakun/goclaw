@@ -46,7 +46,7 @@ func TestAcceptArtifact_WritesSourceSidecarAndLog(t *testing.T) {
 	in := NewInstaller(pluginsDir, "img", "podman").WithEventLog(ev)
 	out := writeFakeOut(t, "gmail", "1.4.0", "abc123def456")
 
-	res, err := in.acceptArtifact(out, "https://github.com/shindakun/goclaw-gmail", "cmd/gmail")
+	res, err := in.acceptArtifact(out, "https://github.com/shindakun/goclaw-gmail", "cmd/gmail", "")
 	if err != nil {
 		t.Fatalf("acceptArtifact: %v", err)
 	}

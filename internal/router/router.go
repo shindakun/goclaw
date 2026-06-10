@@ -252,7 +252,7 @@ func (r *Router) SetInstaller(in *plugin.Installer, pluginDir string) {
 	r.pluginDir = pluginDir
 	r.commands.Register(command.Command{
 		Name:        "plugin",
-		Description: "Manage plugins: /plugin add <git-url> | list | remove <name>",
+		Description: "Manage plugins: /plugin add <git-url>[@<ref>] | list | check [name] | update <name> | remove <name>",
 		MinRole:     permissions.RoleOwner,
 		Source:      "builtin",
 		Handler:     r.cmdPlugin,
@@ -273,16 +273,23 @@ func (r *Router) cmdPlugin(ctx context.Context, req command.Request) (string, er
 		return r.pluginList()
 	case "add":
 		if arg == "" {
-			return "Usage: /plugin add <git-url>[#<subdir>]  (subdir selects one plugin in a monorepo, e.g. ...#cmd/gmail)", nil
+			return "Usage: /plugin add <git-url>[#<subdir>][@<ref>]  (subdir selects one plugin in a monorepo, e.g. ...#cmd/gmail; @<ref> pins a tag/commit, e.g. ...@v1.3.0)", nil
 		}
 		return r.pluginAdd(ctx, arg)
+	case "check":
+		return r.pluginCheck(ctx, arg) // arg empty = check all
+	case "update":
+		if arg == "" {
+			return "Usage: /plugin update <name>", nil
+		}
+		return r.pluginUpdate(ctx, arg)
 	case "remove", "rm":
 		if arg == "" {
 			return "Usage: /plugin remove <name>", nil
 		}
 		return r.pluginRemove(arg)
 	default:
-		return "Unknown subcommand. Use: /plugin add <git-url>[#<subdir>] | list | remove <name>", nil
+		return "Unknown subcommand. Use: /plugin add <git-url>[#<subdir>][@<ref>] | list | check [name] | update <name> | remove <name>", nil
 	}
 }
 
@@ -336,6 +343,70 @@ func (r *Router) pluginAdd(ctx context.Context, gitURL string) (string, error) {
 	}
 	msg += ". It will be live within a few seconds."
 	return msg, nil
+}
+
+// pluginCheck reports whether installed plugins have a newer release upstream. With no name it
+// checks every installed plugin. It NEVER modifies anything (read-only git ls-remote); applying
+// an update is the separate, explicit /plugin update.
+func (r *Router) pluginCheck(ctx context.Context, name string) (string, error) {
+	var names []string
+	if name = strings.TrimSpace(name); name != "" {
+		names = []string{name}
+	} else {
+		mans, err := r.installer.List()
+		if err != nil {
+			return "", err
+		}
+		if len(mans) == 0 {
+			return "No plugins installed.", nil
+		}
+		for _, m := range mans {
+			names = append(names, m.Name)
+		}
+	}
+	var b strings.Builder
+	for _, n := range names {
+		st, err := r.installer.CheckUpdate(ctx, n)
+		if err != nil {
+			fmt.Fprintf(&b, "  %s: check failed (%s)\n", n, err.Error())
+			continue
+		}
+		switch {
+		case st.Provenanceless:
+			fmt.Fprintf(&b, "  %s: no provenance (installed before tracking); reinstall to enable checks\n", st.Name)
+		case st.UpdateAvail:
+			fmt.Fprintf(&b, "  %s: v%s installed, %s available - update with /plugin update %s\n", st.Name, st.InstalledVer, st.LatestTag, st.Name)
+		case st.LatestTag == "":
+			fmt.Fprintf(&b, "  %s: v%s installed; upstream ships no release tags to compare\n", st.Name, st.InstalledVer)
+		default:
+			fmt.Fprintf(&b, "  %s: v%s is current (latest tag %s)\n", st.Name, st.InstalledVer, st.LatestTag)
+		}
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// pluginUpdate re-installs a plugin at its newest upstream release tag, through the full
+// sandboxed build, only when a newer release exists. The operator triggers it explicitly;
+// nothing auto-updates.
+func (r *Router) pluginUpdate(ctx context.Context, name string) (string, error) {
+	res, st, err := r.installer.Update(ctx, name)
+	if err != nil {
+		r.log.Error("plugin update failed", "name", name, "err", err)
+		return "Update failed: " + err.Error(), nil
+	}
+	if res == nil {
+		// No newer release: no rebuild happened.
+		if st.LatestTag == "" {
+			return fmt.Sprintf("%s is current (upstream ships no release tags).", st.Name), nil
+		}
+		return fmt.Sprintf("%s is already up to date (v%s, latest tag %s).", st.Name, st.InstalledVer, st.LatestTag), nil
+	}
+	r.log.Info("plugin updated",
+		"name", res.Name, "from_version", st.InstalledVer, "to_version", res.Version,
+		"tag", st.LatestTag, "commit", res.Source.Commit)
+	r.RegisterPluginCommands(r.pluginDir)
+	return fmt.Sprintf("Updated %s: v%s -> v%s (%s). It will be live within a few seconds.",
+		res.Name, st.InstalledVer, res.Version, st.LatestTag), nil
 }
 
 func (r *Router) pluginRemove(name string) (string, error) {
