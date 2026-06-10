@@ -42,6 +42,8 @@ const (
 	KindDeliveryDenied Kind = "delivery.denied"    // an outbound message was denied by authorization
 	KindDeliveryFailed Kind = "delivery.failed"    // an outbound dispatch errored
 	KindProxyCANew     Kind = "proxy.ca_generated" // a NEW proxy CA identity was minted (containers trust a stale cert)
+	KindPluginInstall  Kind = "plugin.install"     // a plugin was installed/updated (subsumes the old .install-log.jsonl)
+	KindPluginRemove   Kind = "plugin.remove"      // a plugin was removed
 )
 
 // Event is one record. Common fields are explicit; everything kind-specific rides in

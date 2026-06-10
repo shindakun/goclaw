@@ -386,7 +386,7 @@ func run(log *slog.Logger) error {
 	// it live. Only available when the runner is enabled (it needs the runner image
 	// for the sandboxed build).
 	if cfg.LaunchRunner {
-		installer := plugin.NewInstaller(pluginsHostDir(cfg), cfg.RunnerImage, cfg.PodmanBin)
+		installer := plugin.NewInstaller(pluginsHostDir(cfg), cfg.RunnerImage, cfg.PodmanBin).WithEventLog(events)
 		rtr.SetInstaller(installer, pluginsHostDir(cfg))
 	}
 

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/shindakun/goclaw/internal/eventlog"
 )
 
 // sourceFileName is the per-plugin provenance sidecar, written into the plugin's installed
@@ -29,21 +31,19 @@ type Source struct {
 	InstalledAt string `json:"installed_at"`     // RFC3339, host local time
 }
 
-// installLogName is the append-only audit log of install/update/remove events, one JSON
-// line per event, in the plugins dir. Dot-prefixed so the runner's watch ignores it. This
-// is the HISTORY store (the sidecar holds only current state); keeping it as a log, not DB
-// rows, preserves the single-source-of-truth property. See docs/plugin-updates.md.
-const installLogName = ".install-log.jsonl"
-
-// installEvent is one line in the install log.
+// installEvent carries the fields of one install/remove history record. It used to be
+// serialized to a separate .install-log.jsonl in the plugins dir; that parallel log is now
+// FOLDED INTO the host operational event log (eventlog.KindPluginInstall / KindPluginRemove)
+// so there is one operational history store, not two. The per-plugin .source.json sidecar
+// still holds CURRENT provenance state (and is what the container reads); this struct is just
+// the shape of a history entry. See docs/plugin-updates.md and internal/eventlog.
 type installEvent struct {
-	At     string `json:"at"`     // RFC3339
-	Action string `json:"action"` // "install" | "remove"
-	Name   string `json:"name"`
-	GitURL string `json:"git_url,omitempty"`
-	Subdir string `json:"subdir,omitempty"`
-	Commit string `json:"commit,omitempty"`
-	Vers   string `json:"version,omitempty"`
+	Action string // "install" | "remove" (maps to the event kind)
+	Name   string
+	GitURL string
+	Subdir string
+	Commit string
+	Vers   string
 }
 
 // Installer installs plugins by building them INSIDE a throwaway container, so
@@ -53,10 +53,11 @@ type installEvent struct {
 // into the agent container where the runner discovers it (via fsnotify) and
 // launches it. The host never clones, scans, builds, or executes the plugin.
 type Installer struct {
-	pluginsDir string // host plugins dir: ONLY finished, installed plugins live here
-	stagingDir string // host dir the container hands the finished artifact back to
-	image      string // OCI image with git + the Go toolchain (the runner image)
-	podmanBin  string // podman binary
+	pluginsDir string           // host plugins dir: ONLY finished, installed plugins live here
+	stagingDir string           // host dir the container hands the finished artifact back to
+	image      string           // OCI image with git + the Go toolchain (the runner image)
+	podmanBin  string           // podman binary
+	events     *eventlog.Logger // optional; nil = no operational event log (install/remove history dropped)
 }
 
 // NewInstaller builds an Installer. image must contain git and a Go toolchain
@@ -74,6 +75,13 @@ func NewInstaller(pluginsDir, image, podmanBin string) *Installer {
 		image:      image,
 		podmanBin:  podmanBin,
 	}
+}
+
+// WithEventLog sets the operational event log install/remove history is recorded into.
+// Optional (nil-safe); returns in for chaining.
+func (in *Installer) WithEventLog(e *eventlog.Logger) *Installer {
+	in.events = e
+	return in
 }
 
 // InstallResult reports what an install produced.
@@ -156,7 +164,7 @@ func (in *Installer) Add(ctx context.Context, spec string) (*InstallResult, erro
 		return nil, err
 	}
 	in.appendLog(installEvent{
-		At: nowRFC3339(), Action: "install", Name: res.Name,
+		Action: "install", Name: res.Name,
 		GitURL: res.Source.GitURL, Subdir: res.Source.Subdir,
 		Commit: res.Source.Commit, Vers: res.Version,
 	})
@@ -244,7 +252,7 @@ func (in *Installer) Remove(name string) (bool, error) {
 		return false, fmt.Errorf("install: remove %q: %w", dir, err)
 	}
 	in.appendLog(installEvent{
-		At: nowRFC3339(), Action: "remove", Name: name,
+		Action: "remove", Name: name,
 		GitURL: src.GitURL, Subdir: src.Subdir, Commit: src.Commit, Vers: src.Version,
 	})
 	return true, nil
@@ -265,24 +273,23 @@ func ReadSource(pluginDir string) (Source, error) {
 	return s, nil
 }
 
-// appendLog appends one event to the install log (.install-log.jsonl in the plugins dir).
-// Best-effort: a logging failure must never fail an install/remove, so errors are swallowed
-// (the structured host log line from the router is the primary signal; this is the durable
-// audit trail).
+// appendLog records one install/remove history event into the host operational event log.
+// This subsumes the old .install-log.jsonl: there is one operational history store now, not a
+// parallel JSONL in the plugins dir. Best-effort and nil-safe (Emit tolerates a nil logger):
+// recording history must never fail an install/remove. Fields are provenance metadata only
+// (name, git origin, commit, version), never plugin source or secrets.
 func (in *Installer) appendLog(ev installEvent) {
-	line, err := json.Marshal(ev)
-	if err != nil {
-		return
+	kind := eventlog.KindPluginInstall
+	if ev.Action == "remove" {
+		kind = eventlog.KindPluginRemove
 	}
-	if err := os.MkdirAll(in.pluginsDir, 0o755); err != nil {
-		return
-	}
-	f, err := os.OpenFile(filepath.Join(in.pluginsDir, installLogName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer func() { _ = f.Close() }()
-	_, _ = f.Write(append(line, '\n'))
+	in.events.Emit(kind, eventlog.Bool(true), map[string]any{
+		"name":    ev.Name,
+		"git_url": ev.GitURL,
+		"subdir":  ev.Subdir,
+		"commit":  ev.Commit,
+		"version": ev.Vers,
+	})
 }
 
 // nowRFC3339 is the install timestamp source, overridable in tests.

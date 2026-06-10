@@ -1,10 +1,13 @@
 package plugin
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/shindakun/goclaw/internal/eventlog"
 )
 
 // writeFakeOut stages a build-container output dir (binary + plugin.yml + .commit) the way
@@ -35,7 +38,12 @@ func TestAcceptArtifact_WritesSourceSidecarAndLog(t *testing.T) {
 	t.Cleanup(func() { nowRFC3339 = oldNow })
 
 	pluginsDir := t.TempDir()
-	in := NewInstaller(pluginsDir, "img", "podman")
+	evDir := t.TempDir()
+	ev, err := eventlog.New(evDir, eventlog.Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := NewInstaller(pluginsDir, "img", "podman").WithEventLog(ev)
 	out := writeFakeOut(t, "gmail", "1.4.0", "abc123def456")
 
 	res, err := in.acceptArtifact(out, "https://github.com/shindakun/goclaw-gmail", "cmd/gmail")
@@ -65,18 +73,35 @@ func TestAcceptArtifact_WritesSourceSidecarAndLog(t *testing.T) {
 		t.Fatalf("sidecar missing: %v", err)
 	}
 
-	// acceptArtifact alone does NOT log (Add does); but exercise the log path via appendLog
-	// the way Add would, and confirm the install-log line is appended.
-	in.appendLog(installEvent{At: nowRFC3339(), Action: "install", Name: res.Name,
+	// acceptArtifact alone does NOT log (Add does); exercise the log path via appendLog the
+	// way Add would, and confirm a plugin.install event lands in the OPERATIONAL event log
+	// (the old .install-log.jsonl was folded into it: there is no separate plugins-dir log).
+	in.appendLog(installEvent{Action: "install", Name: res.Name,
 		GitURL: res.Source.GitURL, Subdir: res.Source.Subdir, Commit: res.Source.Commit, Vers: res.Version})
-	logBytes, err := os.ReadFile(filepath.Join(pluginsDir, installLogName))
+	if _, err := os.Stat(filepath.Join(pluginsDir, ".install-log.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("the parallel .install-log.jsonl must NOT be written after the fold-in (stat err = %v)", err)
+	}
+	logBytes, err := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
 	if err != nil {
-		t.Fatalf("read install log: %v", err)
+		t.Fatalf("read event log: %v", err)
 	}
 	line := strings.TrimSpace(string(logBytes))
-	for _, want := range []string{`"action":"install"`, `"name":"gmail"`, `"commit":"abc123def456"`, `"git_url":"https://github.com/shindakun/goclaw-gmail"`} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("install-log line %q missing %q", line, want)
+	var evt struct {
+		Kind   string         `json:"kind"`
+		Fields map[string]any `json:"fields"`
+	}
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		t.Fatalf("malformed event line %q: %v", line, err)
+	}
+	if evt.Kind != string(eventlog.KindPluginInstall) {
+		t.Fatalf("kind = %q, want %q", evt.Kind, eventlog.KindPluginInstall)
+	}
+	for k, want := range map[string]string{
+		"name": "gmail", "commit": "abc123def456",
+		"git_url": "https://github.com/shindakun/goclaw-gmail", "version": "1.4.0",
+	} {
+		if evt.Fields[k] != want {
+			t.Fatalf("event field %q = %v, want %q", k, evt.Fields[k], want)
 		}
 	}
 }

@@ -40,9 +40,10 @@ with them:
 
 - **The vault `log.md`** is a KNOWLEDGE audit (the librarian's append-only record of vault
   mutations). It is about notes, not operations. It stays the vault's, not this.
-- **`.install-log.jsonl`** (added for plugin provenance) is a narrow, append-only JSONL of
-  install/remove events. It is, in effect, the FIRST slice of the event log proposed here;
-  this RFC generalizes that exact pattern.
+- **`.install-log.jsonl`** (added for plugin provenance) WAS a narrow, append-only JSONL of
+  install/remove events. It has since been FOLDED INTO the event log (kinds `plugin.install`
+  / `plugin.remove`); it was the first slice of this pattern and no longer exists as a
+  separate file.
 - **The SQLite session pair** is the message boundary, not a log.
 
 So the event log is a NEW thing: a unified, host-owned, append-only, agent-readable record

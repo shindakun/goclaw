@@ -70,12 +70,14 @@ Add logging when we touch the install path for provenance, two cheap, additive p
 - A structured host log line on every add/remove: `log.Info("plugin installed", "name",
   ..., "git_url", ..., "subdir", ..., "commit", ..., "version", ...)` and the matching
   `"plugin removed"`. Zero new storage; shows up in the host console/journal.
-- Optionally an append-only `data/plugins/.install-log.jsonl` (one JSON line per install /
-  update / remove event) for a durable audit HISTORY. This is the separate "history"
-  concern the sidecar deliberately does NOT cover (the sidecar holds only CURRENT state and
-  is overwritten on update). Keeping history as an append-only LOG, not as DB rows, preserves
-  the single-source-of-truth property: the sidecar is current state, the log is the event
-  trail, neither is a queryable mutable store that can drift from the filesystem.
+- A durable audit HISTORY of add/remove events. This is the separate "history" concern the
+  sidecar deliberately does NOT cover (the sidecar holds only CURRENT state and is overwritten
+  on update). It was briefly its own `data/plugins/.install-log.jsonl`, but that parallel log
+  is now FOLDED INTO the host operational event log (`internal/eventlog`, kinds `plugin.install`
+  / `plugin.remove`), so there is one operational history store, not two. Keeping history as an
+  append-only LOG, not as DB rows, preserves the single-source-of-truth property: the sidecar
+  is current state, the event log is the event trail, neither is a queryable mutable store that
+  can drift from the filesystem.
 
 So: sidecar for current provenance, a log line (and optional jsonl) for history. Do both
 when implementing phase 1, since the install path is already being edited to write the
@@ -181,7 +183,7 @@ must be re-vetted exactly like a first install.
 
 1. **Provenance + logging (foundational):** persist `{git_url, subdir, commit, version,
    installed_at}` per plugin at install time as a sidecar `.source.json`, and add the
-   install/remove log line (plus optional `.install-log.jsonl`) that is currently absent.
+   install/remove history (now recorded as `plugin.*` events in `internal/eventlog`).
    Surface provenance in `goclaw plugin list`. Independently useful as an audit record. NO
    update-checking logic yet.
 2. **On-demand check:** `goclaw plugin check` / `outdated` using the strongest signal the
