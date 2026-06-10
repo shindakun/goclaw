@@ -118,8 +118,10 @@ version bump or a tag.
 toward REQUIRING a semver tag for a plugin to participate in update checks, but degrade
 gracefully:
 
-- A plugin installed from a tag (`...#cmd/gmail@v1.2.0`, a tag spec we would add) gets
-  proper tag-based update checks (2b): "v1.2.0 installed, v1.3.0 available."
+- A plugin installed from a tag (`<url>@v1.2.0`, a tag spec we would add) gets proper
+  tag-based update checks (2b): "v1.2.0 installed, v1.3.0 available." The convention is one
+  plugin per repo, so a bare `v<semver>` tag is unambiguous (see goclawkit
+  `docs/sdk-spec.md`, "Releasing a plugin").
 - A plugin installed from a bare URL / branch still works, but its update check falls back to
   2a (version-in-manifest), clearly labeled as less precise. There is NO commit-drift
   fallback: a plugin whose author publishes neither a tag nor a version bump simply reports
@@ -203,23 +205,23 @@ should cover:
 - **Versioning discipline:** `plugin.yml` `version` MUST be semver and MUST be bumped on any
   behavior change (today it is free-form and often left at `1.0.0`; gmail-tools shipped while
   the channel was `1.0.0`). The handshake `Info.Version` must agree.
-- **Release tags as the blessed distribution:** authors cut a semver git tag (`vX.Y.Z`) per
-  release; for a monorepo, a tag convention that disambiguates which subdir/plugin a tag is
-  for (e.g. `gmail/v1.3.0` vs a repo-wide `v1.3.0`), since `goclaw-gmail` ships two plugins
-  from one repo. This is the main open design point for goclawkit: per-plugin tag namespacing
-  in a multi-plugin repo.
+- **Release tags as the blessed distribution:** authors cut a semver git tag (`v<semver>`)
+  per release. SETTLED: one plugin per repo, so a bare `v<semver>` tag is unambiguous, no
+  per-plugin tag namespacing is needed. (`goclaw-gmail` currently ships two plugins from one
+  repo; it is to be split into one-plugin repos so this convention holds.)
 - **A changelog/`CHANGELOG.md` convention** (optional) so `goclaw plugin check` can show WHAT
   changed, not just that something did.
 - Possibly an SDK helper or a `goclawkit`-side lint that fails CI if `version` was not bumped
   when code changed, to make the discipline enforceable rather than aspirational.
 
-The per-plugin-tag-in-a-monorepo question is the one thing to settle with goclawkit before
-committing to tag-based checks (2b) as the primary signal, because `goclaw-gmail` (two
-plugins, one repo) is already a case a repo-wide tag cannot describe.
+These conventions are now documented in goclawkit `docs/sdk-spec.md` ("Releasing a plugin"):
+semver `version`, bare `v<semver>` release tags, the `@<ref>` install pin, and the
+`CHANGELOG.md` convention. The tag-namespacing question is resolved (one plugin per repo),
+so tag-based checks (2b) can be the primary signal.
 
 ## 7. Recommendation in one line
 
 Persist provenance now (phase 1, useful on its own), then an on-demand `plugin check` that
 prefers release tags and falls back to manifest version, never auto-applying; push authors
-toward semver tags via goclawkit, and settle per-plugin tag namespacing for monorepos before
-making tags the primary signal.
+toward semver tags via goclawkit. Tag namespacing is settled (one plugin per repo, bare
+`v<semver>`), so tags can be the primary signal.
