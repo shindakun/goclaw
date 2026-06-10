@@ -2,14 +2,18 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -115,7 +119,12 @@ func TestScheduler_DefersWhenRunnerCannotStart(t *testing.T) {
 	id := seedTask(t, d, owner, "inbox", 8, "summarize my inbox")
 
 	en := &flakyEnsurer{healthy: false} // outage
-	s := New(d, dir, en, quiet())
+	evDir := t.TempDir()
+	ev, err := eventlog.New(evDir, eventlog.Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(d, dir, en, quiet()).WithEventLog(ev)
 	now := atLocal(8)
 
 	// During the outage: fires, ensure fails, so nothing is enqueued and last-run is unset.
@@ -133,6 +142,16 @@ func TestScheduler_DefersWhenRunnerCannotStart(t *testing.T) {
 		t.Fatal("a deferred task must NOT stamp last-run (it would never re-fire)")
 	}
 
+	// The event log must record the deferral (not a completion): exactly one
+	// schedule.deferred, and no schedule.fired yet. This is the operational record
+	// that the "fired but didn't complete" bug would now leave behind.
+	if got := countKind(t, evDir, "schedule.deferred"); got != 1 {
+		t.Fatalf("schedule.deferred count = %d, want 1 after the outage tick", got)
+	}
+	if got := countKind(t, evDir, "schedule.fired"); got != 0 {
+		t.Fatalf("schedule.fired count = %d, want 0 (the task did not complete during the outage)", got)
+	}
+
 	// Outage clears. A later tick (still past the boundary) must now actually fire.
 	en.healthy = true
 	s.Tick(context.Background(), now.Add(time.Minute))
@@ -142,6 +161,41 @@ func TestScheduler_DefersWhenRunnerCannotStart(t *testing.T) {
 	if _, ok, _ := d.GetKV(kvPrefix + id); !ok {
 		t.Fatal("last-run should be stamped once the task actually fired")
 	}
+	// Now a schedule.fired is recorded; the deferred count stays at one.
+	if got := countKind(t, evDir, "schedule.fired"); got != 1 {
+		t.Fatalf("schedule.fired count = %d, want 1 after recovery", got)
+	}
+	if got := countKind(t, evDir, "schedule.deferred"); got != 1 {
+		t.Fatalf("schedule.deferred count = %d, want 1 (unchanged after recovery)", got)
+	}
+}
+
+// countKind counts event-log lines whose "kind" matches, across the active file.
+func countKind(t *testing.T, evDir, kind string) int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("malformed event line %q: %v", line, err)
+		}
+		if ev.Kind == kind {
+			n++
+		}
+	}
+	return n
 }
 
 func TestScheduler_SkipsNotYetDueAndDisabled(t *testing.T) {

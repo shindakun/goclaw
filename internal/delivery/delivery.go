@@ -15,6 +15,7 @@ import (
 
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 )
 
 // pollInterval is how often the delivery loop drains outbound queues.
@@ -41,6 +42,7 @@ type Deliverer struct {
 	dataDir     string
 	typer       Typer
 	interceptor OutboundInterceptor // optional; nil = no interception
+	events      *eventlog.Logger    // optional; nil = no operational event log
 	log         *slog.Logger
 }
 
@@ -54,6 +56,13 @@ func New(central *db.DB, registry *channels.Registry, dataDir string, typer Type
 // /schedule directives). Returns d for chaining.
 func (d *Deliverer) WithInterceptor(i OutboundInterceptor) *Deliverer {
 	d.interceptor = i
+	return d
+}
+
+// WithEventLog sets the operational event log delivery records sent/denied/failed events
+// into. Optional (nil-safe); returns d for chaining.
+func (d *Deliverer) WithEventLog(e *eventlog.Logger) *Deliverer {
+	d.events = e
 	return d
 }
 
@@ -123,6 +132,9 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 		if !ok {
 			reason := "delivery not authorized for " + m.Channel + ":" + m.ChatID
 			d.log.Warn("outbound denied", "session", s.SessionKey, "target", m.Channel+":"+m.ChatID)
+			d.events.Emit(eventlog.KindDeliveryDenied, eventlog.Bool(false), map[string]any{
+				"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID,
+			})
 			if err := sess.MarkFailed(m.ID, reason); err != nil {
 				return err
 			}
@@ -157,6 +169,9 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 			// the next drain retries. Dedup still protects us because the ledger
 			// is only written on success below.
 			d.log.Error("dispatch failed", "session", s.SessionKey, "msg_id", m.ID, "err", err)
+			d.events.Emit(eventlog.KindDeliveryFailed, eventlog.Bool(false), map[string]any{
+				"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID,
+			})
 			continue
 		}
 		// Record delivery BEFORE logging success. The host owns inbound.db, so
@@ -165,6 +180,9 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 			return err
 		}
 		d.log.Info("delivered", "session", s.SessionKey, "target", m.Channel+":"+m.ChatID, "msg_id", m.ID)
+		d.events.Emit(eventlog.KindDeliverySent, eventlog.Bool(true), map[string]any{
+			"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID,
+		})
 	}
 	return nil
 }

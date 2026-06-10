@@ -28,6 +28,7 @@ import (
 	"github.com/shindakun/goclaw/internal/credstore"
 	"github.com/shindakun/goclaw/internal/db"
 	"github.com/shindakun/goclaw/internal/delivery"
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/maintenance"
 	"github.com/shindakun/goclaw/internal/mounts"
 	"github.com/shindakun/goclaw/internal/plugin"
@@ -84,6 +85,17 @@ func run(log *slog.Logger) error {
 	}
 	defer func() { _ = central.Close() }()
 	log.Info("central db ready", "path", cfg.CentralDBPath)
+
+	// Operational event log: a host-owned, append-only, structured record of what the
+	// host DID (schedule fire/defer, delivery sent/denied/failed, proxy CA minted),
+	// retained and queryable unlike the ephemeral slog stderr. Host-only for now (not
+	// mounted into the container). A construction failure is non-fatal: the host runs
+	// without the event log rather than refusing to start over a logging concern.
+	events, err := eventlog.New(filepath.Join(cfg.DataDir, "events"), eventlog.Config{}, log)
+	if err != nil {
+		log.Warn("event log disabled (construction failed)", "err", err)
+		events = nil
+	}
 
 	// Optional startup seeding so a first user can message the host without
 	// hand-editing the DB (brief §3.4). Idempotent.
@@ -222,6 +234,10 @@ func run(log *slog.Logger) error {
 				log.Warn("credential proxy: generated a NEW CA identity",
 					"impact", "any already-running runner container trusts a stale CA; recreate runners so they remount the new cert",
 					"dir", proxyCADir(cfg))
+				events.Emit(eventlog.KindProxyCANew, nil, map[string]any{
+					"dir":    proxyCADir(cfg),
+					"impact": "running runners trust a stale CA until recreated",
+				})
 			}
 			caPath := filepath.Join(proxyCADir(cfg), "ca.pem") // mount source (NOT rewritten here)
 			proxyCA = ca
@@ -343,7 +359,7 @@ func run(log *slog.Logger) error {
 	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, nil, log)
 	// The router intercepts an agent reply that IS a "/schedule ..." directive, so the
 	// agent can manage scheduled tasks by emitting one (natural-language scheduling).
-	del := delivery.New(central, registry, cfg.DataDir, typer, log).WithInterceptor(rtr)
+	del := delivery.New(central, registry, cfg.DataDir, typer, log).WithInterceptor(rtr).WithEventLog(events)
 	swp := sweep.New(central, cfg.DataDir, runners, log)
 	// Pin the channel-hosting agent group so the sweep never reaps its container as
 	// idle: an always-on channel plugin (e.g. IRC) must keep its container running to
@@ -408,7 +424,7 @@ func run(log *slog.Logger) error {
 	// whenever the runner is enabled (it needs to wake the container). Owner-gated via
 	// the /schedule command and the schedule_* agent tools.
 	if ensurer != nil {
-		tsk := scheduler.New(central, cfg.DataDir, ensurer, log)
+		tsk := scheduler.New(central, cfg.DataDir, ensurer, log).WithEventLog(events)
 		g.Go(func() error { return tsk.Run(gctx) })
 		log.Info("task scheduler enabled")
 	}

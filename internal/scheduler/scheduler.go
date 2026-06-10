@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -31,6 +32,7 @@ type Scheduler struct {
 	central *db.DB
 	dataDir string
 	ensurer RunnerEnsurer
+	events  *eventlog.Logger // optional; nil = no operational event log
 	log     *slog.Logger
 	now     func() time.Time // injectable for tests
 }
@@ -38,6 +40,13 @@ type Scheduler struct {
 // New constructs a Scheduler.
 func New(central *db.DB, dataDir string, ensurer RunnerEnsurer, log *slog.Logger) *Scheduler {
 	return &Scheduler{central: central, dataDir: dataDir, ensurer: ensurer, log: log, now: time.Now}
+}
+
+// WithEventLog sets the operational event log fired/deferred events are recorded into.
+// Optional (nil-safe); returns s for chaining.
+func (s *Scheduler) WithEventLog(e *eventlog.Logger) *Scheduler {
+	s.events = e
+	return s
 }
 
 // Run evaluates due tasks every checkInterval until ctx is cancelled.
@@ -74,9 +83,18 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		}
 		if err := s.fire(ctx, t, now); err != nil {
 			s.log.Error("scheduler: fire", "task", t.Name, "err", err)
+			// A due task that could not be handed off (e.g. runner ensure failed in an
+			// outage). It was NOT enqueued or stamped, so it re-fires next tick; record
+			// that it deferred rather than completing.
+			s.events.Emit(eventlog.KindScheduleDefer, eventlog.Bool(false), map[string]any{
+				"task": t.Name, "owner": t.OwnerUserID, "reason": err.Error(),
+			})
 			continue
 		}
 		s.log.Info("scheduled task fired", "task", t.Name, "owner", t.OwnerUserID)
+		s.events.Emit(eventlog.KindScheduleFired, eventlog.Bool(true), map[string]any{
+			"task": t.Name, "owner": t.OwnerUserID,
+		})
 	}
 }
 
