@@ -191,8 +191,9 @@ must be re-vetted exactly like a first install.
    the sandbox) and persisted in provenance, and `/plugin update <name>` re-installs at the
    newest tag through the FULL sandboxed build, never auto-applying. (Implementation:
    `internal/plugin/update.go`, `internal/plugin/semver.go`; commands in `internal/router`.
-   Note: the `@<ref>` checkout runs in the build container, so it needs the runner image
-   rebuilt to take effect; the host-side check and spec parsing work regardless.)
+   The build script, including the `@<ref>` checkout, is passed inline to
+   `podman run ... sh -c <script>`, so it ships in the host `goclaw` binary, NOT the image: no
+   image rebuild is needed, the existing toolchain image (git + Go) is all the script needs.)
 3. **Author guidance (tags as the blessed path): DOCUMENTED.** The convention that plugins
    SHOULD ship semver `v<semver>` release tags (tagged installs get precise update checks,
    bare-URL installs get the weaker fallback) is written up in goclawkit `docs/sdk-spec.md`
