@@ -69,6 +69,31 @@ A single append-only JSON-lines file the host writes, one event per line, stable
 - **One writer.** It is host-process-local (single writer trivially), so it does not inherit
   any of the cross-mount SQLite hazards, it is a plain host file the host appends to.
 
+### 2.1 ONE log, many kinds (do not split the operational log)
+
+A deliberate design choice: every operational event goes into the SAME file, discriminated by
+`kind`. We do NOT keep a separate `schedule.jsonl`, `delivery.jsonl`, `proxy.jsonl`. The
+separation between event categories is the `kind` field, queried with a filter, not the
+filesystem. Reasons:
+
+- **Cross-cutting questions need one stream.** "What happened around 07:00 when the task
+  failed" spans `schedule.*`, `delivery.*`, and `proxy.*` at once. On one timestamped stream
+  that is a single filtered read; across three files it is a manual timestamp-merge. Collision
+  signatures (two firings in the same second, a duplicate delivery) are ONLY visible when the
+  categories share a stream.
+- **One writer, one rotation, one schema, one redaction review.** N logs is N of each, and N
+  chances for them to drift out of sync. The install log was already folded in for exactly
+  this reason (section 1); the same logic says do not split it back apart by category.
+- **`kind` is the cheap discriminator.** Looking at only the scheduler is
+  `select(.kind | startswith("schedule."))`, not a different file. You get category isolation
+  without paying for parallel logs.
+
+The split that DOES belong on the filesystem is across NATURE, not category: operational FACT
+(this log) vs the agent's KNOWLEDGE/interpretation (the vault) vs mutable STATE (the
+`scheduled_tasks` DB rows, not an append log) vs message TRANSPORT (the SQLite session pair).
+Those are genuinely different things with different writers and trust levels (section 1). The
+rule is: split across nature, never within the fact log.
+
 ## 3. Where it lives and how the agent reads it
 
 - **On the host:** under the data dir, e.g. `data/events/event-log.jsonl`. Host-owned,
@@ -105,12 +130,28 @@ everything."
 A vault/agent skill (same SKILL.md mechanism as the librarian) that teaches the agent to
 diagnose itself from the log. Its disciplines, the genuinely useful part:
 
-- **Source-of-truth hierarchy.** The event log is GROUND TRUTH for what the system DID
-  (operational fact). The agent's own memory/beliefs may be stale; when they conflict with
-  the event log about an operational fact, the log wins. (Note the deliberate split from the
-  knowledge side: the VAULT is ground truth for KNOWLEDGE; the event log is ground truth for
-  OPERATIONS. Two truths, two domains, do not conflate them, that is the same auto-memory-
-  vs-vault distinction that already bit us.)
+- **Source-of-truth hierarchy (explicit, ordered).** Different sources answer different
+  questions and rank differently when they CONFLICT about an operational fact. From most to
+  least authoritative on "what actually happened":
+
+  1. **The event log** , operational FACT (what the host/runner did). Ground truth for
+     operations.
+  2. **The channel / `outbound.db`** , what was actually SENT/received (external truth,
+     re-readable). Beats the agent's recollection of a conversation.
+  3. **Vault notes** , the agent's own INTERPRETATION/knowledge. Useful for intent, but it is
+     narrative, not operational fact.
+  4. **Auto-memory / beliefs** , the agent's current model of the world. May be stale; lowest.
+
+  When they disagree about an operation, trust higher over lower: event log > channel history >
+  vault > beliefs. This is the same auto-memory-vs-vault distinction that already bit us, made
+  into a ranked rule. Keep the two ground truths apart: the VAULT is ground truth for
+  KNOWLEDGE, the event log is ground truth for OPERATIONS. Do not conflate them.
+
+- **Query recipes, not just prose.** The skill's most useful half is concrete: the event
+  schema plus ready `kind`-filtered queries the agent runs to slice the one log (last N events;
+  errors in the last session; all `schedule.*`; events grouped/counted by `kind`; two events in
+  the same second across sessions = a collision signature). Teaching the agent the schema and a
+  handful of these filters is most of the skill's value, the diagnosis is a query, not a hunt.
 - **THAT-not-WHERE / fix-the-system.** When the agent finds something went wrong, it does
   not just patch the symptom; it asks why the SYSTEM produced that outcome and proposes a
   structural change. The output of a root-cause pass MUST be a verifiable artifact, a file
@@ -135,6 +176,10 @@ Worth it:
   lets the AGENT do the first pass.
 - It turns the maintenance scheduler we already have into a self-correction loop, not just a
   vault-upkeep loop.
+- **One log feeds two readers.** The same file the agent introspects can render a read-only
+  OPERATOR view (a `goclaw events`/dashboard tail) for free, the human and the agent diagnose
+  from the identical ground truth instead of two divergent stories. A cheap byproduct of
+  keeping it one structured stream, not a separate build.
 - It is boundary-safe by construction (host-writes, agent-reads-only, additive), so it does
   not weaken containment.
 
