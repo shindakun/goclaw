@@ -190,11 +190,10 @@ Honest cost:
   one-time check.
 - **Rotation/retention.** A long-running host needs the log bounded; trivial but must be
   built, not forgotten.
-- **Yet another log.** We now have host slog, container logs, vault `log.md`,
-  `.install-log.jsonl`, and this. The event log should SUBSUME `.install-log.jsonl` (fold
-  plugin events into it as `plugin.*` kinds) so we do not accumulate parallel JSONL files,
-  and the docs must be clear which log is which (knowledge=vault, operations=event log,
-  transport=SQLite).
+- **Yet another log.** We have host slog, container logs, vault `log.md`, and this. The event
+  log SUBSUMED `.install-log.jsonl` (plugin install/remove are now `plugin.*` kinds), so there
+  is no parallel JSONL; the docs stay clear about which log is which (knowledge=vault,
+  operations=event log, transport=SQLite).
 
 ## 7. Open questions
 
@@ -214,10 +213,12 @@ Honest cost:
 
 ## 8. Phasing
 
-1. **Host event log core:** a small `internal/eventlog` package (one writer, append JSONL,
-   rotation), a typed event-kind set, and call sites at the existing slog points (schedule
-   fire/defer, delivery, proxy CA, plugin install/remove, runner lifecycle). Read-only mount
-   into the container. Fold in `.install-log.jsonl`.
+1. **Host event log core: MOSTLY SHIPPED.** `internal/eventlog` exists (one writer, append
+   JSONL, size+age rotation, a typed event-kind set) with call sites at schedule fire/defer,
+   delivery sent/denied/failed, proxy CA, and plugin install/remove (the install log was folded
+   in). STILL TODO from this phase: the read-only container mount (so the agent can read it at
+   all) and remaining call sites (runner lifecycle). The mount is the prerequisite for the
+   skill below, and it forces the per-group-vs-shared scoping decision (open question 1).
 2. **Introspection skill:** the SKILL.md teaching the source-of-truth hierarchy + the
    read-the-log disciplines, shipped in the templates (and reachable via `vault sync`).
 3. **Self-audit job:** a scheduled maintenance job that reads recent events, flags
@@ -233,3 +234,113 @@ Defer the self-audit job (phase 3) until the log has accrued real events to audi
 whole thing host-writes / agent-reads-only and additive; if any part of it ever needs the
 agent to WRITE the log or act on the host through it, stop, that crosses the containment
 line this design exists to respect.
+
+## 10. Example introspection SKILL.md (draft)
+
+A concrete draft of the phase-2 skill, using goclaw's REAL event kinds and paths. It is the
+operational counterpart to the librarian skill (knowledge) and is shipped the same way (a
+`SKILL.md` the CLI auto-invokes by `description`). It is a DRAFT, not yet wired, and it has a
+hard prerequisite: **the event log must be mounted read-only into the container first** (phase
+1's remaining mount). Until then the agent cannot read `/run/goclaw/events/`, so the skill
+would never fire usefully. Paths below assume the read-only mount lands at `/run/goclaw/events/`
+(matching the `:ro` plugins-dir mount pattern); the host file is `data/events/event-log.jsonl`.
+
+````markdown
+---
+name: introspection
+description: Diagnose goclaw's own behavior from the operational event log at /run/goclaw/events/. Use when something operational went wrong or looks off: a scheduled task that did not run, deliveries failing or being denied, the proxy CA churning, a plugin install/remove you need to confirm, or auditing your own recent operations. Read-only: this skill READS the event log and writes its findings to the vault or the owner chat; it NEVER writes the event log or acts on the host. Do NOT use for knowledge work (use librarian) or one-off chat.
+---
+
+# Introspection
+
+Your operations leave a trace. The host writes an append-only, structured event log of what
+the SYSTEM actually did; you read it to diagnose problems and propose structural fixes. You
+read it; you never write it (the host is the only writer, and the mount is read-only).
+
+## Source-of-truth hierarchy (when sources disagree about an operation)
+
+1. **The event log** (`/run/goclaw/events/event-log.jsonl`) - operational FACT. Ground truth
+   for what the host/runner did.
+2. **The channel / conversation** - what was actually SENT/received. Beats your recollection.
+3. **Vault notes** - your own INTERPRETATION. Narrative, not operational fact.
+4. **Your current beliefs** - may be stale. Lowest.
+
+Trust higher over lower: event log > channel history > vault > beliefs. The VAULT is ground
+truth for KNOWLEDGE; the event log is ground truth for OPERATIONS. Do not conflate them.
+
+## The log: one file, one event per line, discriminated by `kind`
+
+```json
+{"ts":"2026-06-09T07:00:03-07:00","kind":"schedule.deferred","ok":false,"fields":{"task":"inbox","reason":"ensure runner: outage"}}
+{"ts":"2026-06-09T07:05:03-07:00","kind":"schedule.fired","ok":true,"fields":{"task":"inbox","owner":7}}
+{"ts":"2026-06-09T07:05:09-07:00","kind":"delivery.sent","ok":true,"fields":{"session":"telegram:42","channel":"telegram","chat":"42","msg_id":91}}
+```
+
+Kinds you will see: `schedule.fired` / `schedule.deferred`; `delivery.sent` / `delivery.denied`
+/ `delivery.failed`; `proxy.ca_generated`; `plugin.install` / `plugin.remove`. Common fields:
+`ts` (RFC3339 local), `kind`, `ok` (present where success/failure is meaningful), and
+`fields` (kind-specific). There are no message bodies or secrets here by design; do not expect
+them.
+
+## How to query (diagnosis is a filter, not a hunt)
+
+```bash
+LOG=/run/goclaw/events/event-log.jsonl
+
+# Last 20 events.
+tail -n 20 "$LOG" | jq .
+
+# Did my 07:00 task hand off, or defer? (the "fired but didn't complete" class)
+jq -s 'map(select(.kind|startswith("schedule."))) | sort_by(.ts)' "$LOG"
+
+# All failures/denials.
+jq -c 'select(.ok == false)' "$LOG"
+
+# Events by kind, counted (what is happening most).
+jq -s 'group_by(.kind) | map({kind:.[0].kind, n:length}) | sort_by(-.n)' "$LOG"
+
+# Deliveries to a channel that keep failing.
+jq -c 'select(.kind=="delivery.failed") | .fields.channel' "$LOG" | sort | uniq -c
+
+# Did the proxy CA churn (the bad-cert-flood signature)?
+jq -c 'select(.kind=="proxy.ca_generated")' "$LOG"
+```
+
+## Find the WHAT, then fix the SYSTEM
+
+When you find something wrong, do not just patch the symptom: ask why the SYSTEM produced it
+and produce a VERIFIABLE artifact. Examples:
+
+- `schedule.deferred` with no later `schedule.fired` for the same task => the task is stuck
+  (the runner never came back). The fix is a config/schedule change or a note to the owner with
+  the evidence, NOT "I will remember to check."
+- Repeated `delivery.denied` for one target => an authorization gap; surface it with the exact
+  channel/chat from `fields`, propose the destination rule that is missing.
+- A `proxy.ca_generated` you did not expect => running containers now trust a stale CA;
+  tell the owner to recreate runners (the documented remedy).
+
+A root-cause pass that ends without a diff, a config change, a vault note, or a concrete owner
+message did not happen. Write the finding to the vault (your interpretation) and, if it needs
+the owner, say so plainly with the event evidence.
+
+## Boundaries
+
+You READ the event log and WRITE to the vault / the owner chat. You never write the event log
+(read-only mount; the host is the sole writer) and you gain no new ability to act on the host.
+Your power here is diagnostic, not a control surface.
+````
+
+Notes on the draft:
+
+- It is deliberately SHORT on prose and LONG on schema + queries, the query recipes are the
+  reusable value; the agent should be diagnosing with a `kind` filter, not reasoning from
+  memory.
+- It encodes the SAME source-of-truth ranking and the SAME "fact vs knowledge" split as the
+  rest of this doc, so the introspection skill and the librarian skill never claim each
+  other's ground.
+- It is read-only by construction and says so, matching the containment line: the agent reads,
+  the host writes, and the agent's outputs land in the vault or the owner chat, never back in
+  the log.
+- Ship it via the template + `vault sync` (like the librarian skill), OR baked alongside
+  `coding` if it should be present with no vault, AFTER the read-only mount exists. Without the
+  mount the skill has nothing to read.

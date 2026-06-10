@@ -61,6 +61,41 @@ This is the cheap, safe rung and should ship first. It is the proof that "the ag
 better at recurring work" does not REQUIRE crossing the code boundary, most self-improvement is
 prose.
 
+### 1a. Introspection: the skill that tells the agent WHAT to improve
+
+There are two kinds of skill, and they sit at different places on this ladder:
+
+- **Agent-authored skills** (above): the agent WRITES a new `SKILL.md` for a workflow it keeps
+  repeating. This is the self-improvement act itself.
+- **System-shipped skills** (like `librarian`, and the proposed `introspection`): goclaw ships
+  them; the agent USES them. Introspection is the one that closes the loop, it teaches the
+  agent to read its own operational event log and diagnose what went wrong, which is the SIGNAL
+  that tells it what to author next.
+
+Introspection is drafted in full in `docs/event-log-and-introspection.md` (section 10, an
+example `SKILL.md` using goclaw's real event kinds). For the ladder, the points that matter:
+
+- **It is read-only and boundary-safe.** The agent READS the host-written event log (mounted
+  read-only) and writes its findings to the vault or the owner chat. It never writes the log
+  and gains no host control. So it is a rung-1 skill (prose, lands directly, no gate), even
+  though what it reads is operational.
+- **It is the feedback half of the ladder.** Authoring a skill (rung 1) or proposing a plugin
+  (rung 2) is the agent ACTING to improve. Introspection is the agent OBSERVING what needs
+  improving: "this task keeps deferring", "deliveries to channel X keep failing", "I keep doing
+  this three-step thing by hand". A self-improving agent needs both, the observe step
+  (introspection, reading the event log) feeds the act step (author a skill, or propose a
+  plugin). Without introspection the agent improves blind; with it, improvements are grounded
+  in what actually happened.
+- **It respects the same fact/knowledge split.** Introspection reads OPERATIONAL fact (the
+  event log); librarian governs KNOWLEDGE (the vault). The agent's findings FROM introspection
+  get written AS knowledge (vault notes) or surfaced to the owner, never back into the log.
+  Two ground truths, two skills, no overlap.
+
+So the full rung-1 picture is: introspection (observe) + agent-authored skills (act on what you
+observed, in prose) + the skill-creator discipline (author well). All three are prose, all
+land without a gate, and together they are a complete self-improvement loop that never crosses
+the code boundary. Rung 2 is only for when that loop surfaces a need a prose skill cannot meet.
+
 ## 2. Rung 2: operator-gated plugin proposals (code, human approves)
 
 When a workflow genuinely needs a new TOOL (host execution: a new API the agent can call, a
@@ -157,6 +192,11 @@ is the contributor's PR: it sits, visible, until a human acts.
 
 1. **Rung 1 (skills):** build `docs/agent-authored-skills.md`, composition scans the skills
    root + the skill-creator discipline. Safe, no gate, proves most self-improvement is prose.
+   Pair with the introspection skill (section 1a; drafted in
+   `docs/event-log-and-introspection.md` section 10) once the event log is mounted read-only
+   into the container, that is the observe half that tells the agent what to author. The
+   skill-authoring (act) and introspection (observe) pieces are both prose and reinforce each
+   other; ship them close together.
 2. **Rung 2 proposal plumbing:** the `plugin_proposals` table (mirroring `pending_approvals`),
    the agent-emittable `/plugin propose <git-url>` directive (intercepted host-side like
    `/schedule`), and the owner-only `plugin proposals` / `approve` / `reject` commands.
