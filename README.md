@@ -41,7 +41,6 @@ internal/permissions/ roles, sender policy, access gate (REAL)
 internal/credstore/   encrypted credential store (AES-256-GCM) for the proxy (REAL)
 internal/credproxy/   host-side credential-injecting proxy (REAL)
 internal/vault/       OneCLI credential-proxy wiring at spawn time (stub, alt path)
-internal/vaultlock/   flock single-writer guard for the shared vault
 container/            Containerfiles: runner (echo stub) + claude (real runner)
 internal/vaultinit/   `goclaw vault init` installer + embedded vault template (brief §11)
 ```

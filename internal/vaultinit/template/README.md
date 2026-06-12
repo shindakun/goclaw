@@ -40,9 +40,11 @@ once you have real notes.
 2. Fill in `CRITICAL_FACTS.md` (owner, purpose, timezone).
 3. Open the folder in Obsidian: the graph view and Dataview work out of the box.
 4. Point goclaw at it: set `GOCLAW_VAULT_DIR=~/Vault` and restart. The host mounts
-   it read-write at `/vault` in the agent-group container (`:Z` under Podman),
-   points the runner's system prompt at this manual, and takes a `flock` write
-   guard. See §11.5 of the brief for the guard and scheduled-maintenance jobs.
+   it read-write at `/vault` in the agent-group container (`:Z` under Podman) and
+   points the runner's system prompt at this manual. Concurrent writers (agent
+   sessions and you in Obsidian) are kept from colliding by the librarian skill's
+   task-lease discipline plus git history, not a host lock. See §11.5 of the brief
+   for the scheduled-maintenance jobs.
 
 ## Why git
 

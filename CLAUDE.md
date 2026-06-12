@@ -55,7 +55,6 @@ plugins) is deliberate defense-in-depth by trust level. See the brief §5.1 note
 - `internal/permissions` pure access-control logic (roles, scope, unknown-sender policy). Fail-closed.
 - `internal/mounts`   external mount allowlist + validation (most security-critical: symlink resolution, `..`/colon rejection).
 - `internal/credproxy` + `internal/credstore` bundled TLS-intercepting credential proxy + encrypted token store.
-- `internal/vaultlock` flock single-writer guard for the optional knowledge vault.
 - `internal/vaultinit` `goclaw vault init` installer + the embedded vault template.
 - `internal/maintenance` scheduled vault upkeep jobs.
 - `internal/config`   env/.env config loading.
