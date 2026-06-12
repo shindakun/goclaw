@@ -79,8 +79,9 @@ func (s *Sweeper) Run(ctx context.Context) error {
 func (s *Sweeper) tick(ctx context.Context) {
 	s.recoverRunners(ctx)
 	s.gcIdleRunners(ctx, time.Now())
-	// TODO: due-message wake (scheduled messages whose time has come),
-	// TODO: recurrence (re-arm recurring scheduled tasks).
+	// Due-task wake and recurrence re-arm are owned by internal/scheduler (its own
+	// ticker evaluates due() against each task's period + last-run stamp), not the
+	// sweep; the sweep only recovers runners and reaps idle containers.
 }
 
 // recoverRunners ensures a runner is up for every active session that still has

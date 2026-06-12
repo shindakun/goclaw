@@ -453,16 +453,21 @@ on the same `ChannelAdapter` interface; the knowledge vault mount with scheduled
 maintenance; the GitHub dev environment (clone + open PRs); container teardown /
 idle-runner GC (`internal/sweep`); the
 [Credential proxy](#credential-proxy) that keeps the raw Anthropic and GitHub
-tokens out of the agent container (verified live); a central slash-command registry
-with `/commands`; and [Plugins](#plugins-run-sandboxed-in-the-agent-container) (tool
-plugins, run sandboxed in the agent container, with the `roll` reference plugin).
+tokens out of the agent container (verified live), with plugin-declared OAuth2
+(Gmail) on top; a central slash-command registry with `/commands`;
+[Plugins](#plugins-run-sandboxed-in-the-agent-container) with the full `/plugin`
+command set (add/list/check/update/remove), build-on-install, and the `roll`
+reference plugin; channel plugins on the same boundary (a relay socket per
+channel); user-definable scheduled tasks (`/schedule`); and a host-owned
+operational event log (`internal/eventlog`).
 
 Next:
 
-1. More channels (e.g. Slack) on the same `ChannelAdapter` interface (brief §7).
-2. The `/plugin` command set (add/enable/disable/list) + build-on-install and
-   fsnotify hot-reload; then channel plugins (see
-   [`docs/plugins-design.md`](docs/plugins-design.md)).
+1. More built-in channels (e.g. Slack) on the same `ChannelAdapter` interface
+   (brief §7), or as channel plugins.
+2. Attachments end to end: outbound attachments need a boundary change (an
+   attachment column on `outbound.db` plus a runner-side convention for the agent
+   to emit a file); inbound and the adapter `Send` plumbing are wired.
 3. Validated extra mounts on the runner via the allowlist (brief §8).
 4. More credential-proxy hosts as needed (the store and per-host injection are
    generic; add a host's auth scheme to `injectAuth` if it is neither x-api-key
