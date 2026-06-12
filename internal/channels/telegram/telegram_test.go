@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"github.com/shindakun/goclaw/internal/channels"
 )
 
 func TestMapAttachments(t *testing.T) {
@@ -142,3 +144,51 @@ func TestSenderIDAndName(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveAttachments(t *testing.T) {
+	t.Run("resolves file ids to direct urls", func(t *testing.T) {
+		a := &Adapter{resolveFileURL: func(fileID string) (string, error) {
+			return "https://api.telegram.org/file/bot<token>/" + fileID, nil
+		}}
+		atts := []channels.Attachment{{URL: "doc1"}, {URL: "photo2"}}
+		a.resolveAttachments(atts)
+		if atts[0].URL != "https://api.telegram.org/file/bot<token>/doc1" {
+			t.Fatalf("att0 url = %q", atts[0].URL)
+		}
+		if atts[1].URL != "https://api.telegram.org/file/bot<token>/photo2" {
+			t.Fatalf("att1 url = %q", atts[1].URL)
+		}
+	})
+
+	t.Run("a resolve failure clears that url but does not panic or affect others", func(t *testing.T) {
+		a := &Adapter{resolveFileURL: func(fileID string) (string, error) {
+			if fileID == "bad" {
+				return "", errFake
+			}
+			return "url:" + fileID, nil
+		}}
+		atts := []channels.Attachment{{URL: "good"}, {URL: "bad"}}
+		a.resolveAttachments(atts)
+		if atts[0].URL != "url:good" {
+			t.Fatalf("good att url = %q", atts[0].URL)
+		}
+		if atts[1].URL != "" {
+			t.Fatalf("failed att url should be cleared, got %q", atts[1].URL)
+		}
+	})
+
+	t.Run("nil resolver is a no-op", func(t *testing.T) {
+		a := &Adapter{}
+		atts := []channels.Attachment{{URL: "keep"}}
+		a.resolveAttachments(atts)
+		if atts[0].URL != "keep" {
+			t.Fatalf("nil resolver must leave url untouched, got %q", atts[0].URL)
+		}
+	})
+}
+
+var errFake = fmtError("telegram: fake resolve failure")
+
+type fmtError string
+
+func (e fmtError) Error() string { return string(e) }

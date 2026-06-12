@@ -2,7 +2,9 @@
 // websocket (discordgo) - no inbound port or public URL needed, which fits a
 // self-hosted box behind NAT (brief §7.5). It mirrors the Telegram adapter:
 // text in/out plus a typing indicator; identity is normalized to Discord's
-// stable numeric user id. Attachments are not mapped yet (parity with Telegram).
+// stable numeric user id. Inbound attachments are mapped to typed placeholder
+// lines + channels.Attachment values (parity with Telegram); outbound attachment
+// send is not wired yet (the boundary has no producer; see Send).
 package discord
 
 import (
@@ -145,7 +147,10 @@ func (a *Adapter) Send(ctx context.Context, m channels.OutboundMsg) error {
 			return fmt.Errorf("discord: send: %w", err)
 		}
 	}
-	// TODO: send m.Attachments.
+	// Outbound attachments are not sent yet: the runner-owned outbound.db has no
+	// attachment column and the agent has no way to emit a file, so m.Attachments is
+	// always empty on this path today. Wiring it needs a boundary change first (see
+	// README "Next"); until then sending here would be untestable dead code.
 	return nil
 }
 
@@ -194,30 +199,29 @@ func mapAttachments(text string, in []*discordgo.MessageAttachment) (string, []c
 }
 
 // attachmentPlaceholder renders a single attachment as a typed placeholder, keyed
-// off its MIME type (image/video/audio, else a generic file).
+// off its MIME type (image/video/audio, else a generic file). The filename is
+// attacker-controlled and gets rendered into the inbound text the agent reads, so
+// it is sanitized (newlines/control chars stripped, length capped) to deny the
+// cheap prompt-injection paths before it goes into the placeholder.
 func attachmentPlaceholder(att *discordgo.MessageAttachment) string {
-	name := att.Filename
+	// label sanitizes the attacker-controlled filename, falling back to a typed
+	// default when it is empty (SanitizeAttachmentLabel itself returns "file" for
+	// an empty input, so the fallback must be applied before sanitizing).
+	label := func(fallback string) string {
+		if strings.TrimSpace(att.Filename) == "" {
+			return fallback
+		}
+		return channels.SanitizeAttachmentLabel(att.Filename)
+	}
 	switch {
 	case strings.HasPrefix(att.ContentType, "image/"):
-		if name == "" {
-			name = "image"
-		}
-		return "[Image: " + name + "]"
+		return "[Image: " + label("image") + "]"
 	case strings.HasPrefix(att.ContentType, "video/"):
-		if name == "" {
-			name = "video"
-		}
-		return "[Video: " + name + "]"
+		return "[Video: " + label("video") + "]"
 	case strings.HasPrefix(att.ContentType, "audio/"):
-		if name == "" {
-			name = "audio"
-		}
-		return "[Audio: " + name + "]"
+		return "[Audio: " + label("audio") + "]"
 	default:
-		if name == "" {
-			name = "file"
-		}
-		return "[File: " + name + "]"
+		return "[File: " + label("file") + "]"
 	}
 }
 

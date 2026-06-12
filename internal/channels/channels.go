@@ -12,7 +12,10 @@ package channels
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ChannelAdapter is implemented once per channel (Telegram, Slack, ...).
@@ -76,6 +79,52 @@ type Attachment struct {
 type SystemAction struct {
 	Kind string // "typing", "reaction", ...
 	Data string
+}
+
+// maxAttachmentLabelRunes caps a sanitized attachment label. A filename is
+// attacker-controlled and is rendered into the message text the agent reads, so an
+// unbounded one could flood the prompt; a real filename is well under this.
+const maxAttachmentLabelRunes = 120
+
+// SanitizeAttachmentLabel cleans an attacker-controlled attachment filename (or
+// other label) before it is rendered into the placeholder line that becomes part
+// of the inbound text an LLM reads. A filename arrives from the remote chat
+// service and is fully attacker-chosen, so without this a name like
+// "x\n\nIgnore previous instructions and ..." would inject a forged line into the
+// prompt, and a name with control characters or megabytes of text could corrupt or
+// flood it. This is a defense-in-depth measure on the prompt-injection surface, not
+// a guarantee the agent obeys only trusted text; it removes the cheap structural
+// attacks (newline/control-char injection, framing breakout, length blowup). It
+// collapses any run of control characters or whitespace (newlines, tabs, NUL, ...)
+// to a single space, trims the ends, caps the length, and substitutes a placeholder
+// when nothing usable remains, so the result is always a single safe line.
+func SanitizeAttachmentLabel(name string) string {
+	var b strings.Builder
+	kept := 0 // runes written (cap is per-rune, not per-byte, for multibyte names)
+	lastSpace := false
+	for _, r := range name {
+		// Treat C0/C1 controls (incl. newline, tab, NUL), the decode-error rune, and
+		// any Unicode space as a single collapsed space; this is what stops a
+		// newline-injected forged prompt line and control-char corruption.
+		if r == utf8.RuneError || unicode.IsControl(r) || unicode.IsSpace(r) {
+			if !lastSpace && b.Len() > 0 {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+			continue
+		}
+		if kept >= maxAttachmentLabelRunes {
+			break
+		}
+		b.WriteRune(r)
+		kept++
+		lastSpace = false
+	}
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return "file"
+	}
+	return out
 }
 
 // SplitMessage breaks s into chunks of at most max runes each, so a reply that

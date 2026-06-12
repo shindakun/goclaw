@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,10 @@ const channelName = "telegram"
 type Adapter struct {
 	bot     *tgbotapi.BotAPI
 	limiter *rate.Limiter // outbound rate limit (Telegram ~30 msg/s, brief §7.3)
+	// resolveFileURL turns a Telegram file_id into a direct download URL. It is a
+	// field (not a direct bot call) so a test can inject a fake without a live
+	// Telegram connection. Defaults to bot.GetFileDirectURL.
+	resolveFileURL func(fileID string) (string, error)
 }
 
 // New constructs a Telegram adapter from a bot token (load from env/vault -
@@ -37,7 +42,8 @@ func New(token string) (*Adapter, error) {
 	return &Adapter{
 		bot: bot,
 		// Stay comfortably under Telegram's ~30 msg/s ceiling.
-		limiter: rate.NewLimiter(rate.Limit(25), 1),
+		limiter:        rate.NewLimiter(rate.Limit(25), 1),
+		resolveFileURL: bot.GetFileDirectURL,
 	}, nil
 }
 
@@ -75,6 +81,12 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 					body = msg.Caption
 				}
 				body, atts := mapAttachments(body, msg)
+				// mapAttachments leaves each Attachment.URL holding the Telegram
+				// file_id (the update has no URL). Resolve those to direct download
+				// URLs now so the agent can fetch the bytes, not just see the
+				// placeholder. A resolve failure logs and drops that file's URL
+				// (the placeholder line still tells the agent something arrived).
+				a.resolveAttachments(atts)
 				in := channels.InboundMsg{
 					Channel:     channelName,
 					ChatID:      strconv.FormatInt(msg.Chat.ID, 10),
@@ -85,8 +97,6 @@ func (a *Adapter) Start(ctx context.Context) (<-chan channels.InboundMsg, error)
 					Raw:         raw,
 					Timestamp:   time.Unix(int64(msg.Date), 0),
 				}
-				// TODO: resolve file URLs via a.bot.GetFile for the ingest path so
-				// the agent can fetch the bytes, not just see the placeholder.
 				select {
 				case out <- in:
 				case <-ctx.Done():
@@ -118,7 +128,10 @@ func (a *Adapter) Send(ctx context.Context, m channels.OutboundMsg) error {
 			return fmt.Errorf("telegram: send: %w", err)
 		}
 	}
-	// TODO: send m.Attachments.
+	// Outbound attachments are not sent yet: the runner-owned outbound.db has no
+	// attachment column and the agent has no way to emit a file, so m.Attachments is
+	// always empty on this path today. Wiring it needs a boundary change first (see
+	// README "Next"); until then sending here would be untestable dead code.
 	return nil
 }
 
@@ -150,12 +163,22 @@ func telegramAction(kind string) string {
 	}
 }
 
+// labelOr sanitizes an attacker-controlled filename for use in a placeholder,
+// substituting a typed default (e.g. "audio") when the name is empty rather than
+// SanitizeAttachmentLabel's generic "file".
+func labelOr(name, fallback string) string {
+	if strings.TrimSpace(name) == "" {
+		return fallback
+	}
+	return channels.SanitizeAttachmentLabel(name)
+}
+
 // mapAttachments inspects a Telegram message for media and, when present, appends
 // a typed placeholder line to text (so the agent, which reads only Text, knows
 // something non-text arrived) and returns matching channels.Attachment values.
-// Telegram media URLs are not in the update: fetching bytes needs an async
-// GetFile call (see the TODO at the call site), so URL is left empty here and the
-// FileID is carried so a later ingest step can resolve it.
+// Telegram media URLs are not in the update: fetching bytes needs a GetFile call,
+// so URL carries the file_id here and Start resolves it via resolveAttachments
+// (see the call site) before the message is delivered.
 func mapAttachments(text string, m *tgbotapi.Message) (string, []channels.Attachment) {
 	var (
 		placeholders []string
@@ -170,25 +193,21 @@ func mapAttachments(text string, m *tgbotapi.Message) (string, []channels.Attach
 		})
 	}
 
+	// Filenames here are attacker-controlled and get rendered into the inbound text
+	// the agent reads, so every name that lands in a placeholder is run through
+	// channels.SanitizeAttachmentLabel first (strips newlines/control chars, caps
+	// length) to deny the cheap prompt-injection paths.
 	switch {
 	case len(m.Photo) > 0:
 		// Photo is a slice of sizes; the last is the largest. No filename.
 		p := m.Photo[len(m.Photo)-1]
 		add("[Image]", p.FileID, "", "image/jpeg")
 	case m.Document != nil:
-		name := m.Document.FileName
-		if name == "" {
-			name = "file"
-		}
-		add("[File: "+name+"]", m.Document.FileID, m.Document.FileName, m.Document.MimeType)
+		add("[File: "+labelOr(m.Document.FileName, "file")+"]", m.Document.FileID, m.Document.FileName, m.Document.MimeType)
 	case m.Video != nil:
 		add("[Video]", m.Video.FileID, m.Video.FileName, m.Video.MimeType)
 	case m.Audio != nil:
-		name := m.Audio.FileName
-		if name == "" {
-			name = "audio"
-		}
-		add("[Audio: "+name+"]", m.Audio.FileID, m.Audio.FileName, m.Audio.MimeType)
+		add("[Audio: "+labelOr(m.Audio.FileName, "audio")+"]", m.Audio.FileID, m.Audio.FileName, m.Audio.MimeType)
 	case m.Voice != nil:
 		add("[Voice]", m.Voice.FileID, "", m.Voice.MimeType)
 	case m.Sticker != nil:
@@ -203,6 +222,31 @@ func mapAttachments(text string, m *tgbotapi.Message) (string, []channels.Attach
 		return joined, atts
 	}
 	return text + "\n" + joined, atts
+}
+
+// resolveAttachments turns each attachment's carried Telegram file_id (left in
+// URL by mapAttachments) into a direct download URL. On a resolve failure it logs
+// and clears that URL rather than failing the whole message: the placeholder line
+// already told the agent a file arrived, and one unresolvable file should not drop
+// the user's text. Each resolve is a Telegram API round-trip, so this only runs
+// when attachments are present.
+func (a *Adapter) resolveAttachments(atts []channels.Attachment) {
+	if a.resolveFileURL == nil {
+		return
+	}
+	for i := range atts {
+		fileID := atts[i].URL
+		if fileID == "" {
+			continue
+		}
+		url, err := a.resolveFileURL(fileID)
+		if err != nil {
+			slog.Warn("telegram: resolve file url", "file_id", fileID, "err", err)
+			atts[i].URL = "" // leave the placeholder; drop the unusable id
+			continue
+		}
+		atts[i].URL = url
+	}
 }
 
 func senderID(m *tgbotapi.Message) string {
