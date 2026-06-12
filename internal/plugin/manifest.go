@@ -17,7 +17,7 @@ import (
 // starts.
 type Manifest struct {
 	Name        string   `yaml:"name"`        // stable id; must match handshake Info.Name
-	Kind        string   `yaml:"kind"`        // "tool" now ("channel" later)
+	Kind        string   `yaml:"kind"`        // "tool" or "channel"
 	Version     string   `yaml:"version"`     // the plugin's own version
 	Author      string   `yaml:"author"`      // free-form; shown in plugin listings
 	URL         string   `yaml:"url"`         // source/home (git or web)

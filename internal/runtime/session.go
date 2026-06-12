@@ -43,21 +43,15 @@ const vaultMountPath = "/vault"
 
 // pluginsMountPath is where the host's installed-plugins dir is mounted READ-ONLY.
 // The in-container runner discovers and launches plugins from here; mounting it
-// read-only keeps untrusted plugin code from modifying its own install.
+// read-only keeps untrusted plugin code from modifying its own install. The runner
+// (cmd/claude-runner) hardcodes the same path; they must match.
 const pluginsMountPath = "/plugins"
-
-// PluginsContainerPath is the in-container path of the plugins mount, exported so
-// the runner knows where to discover plugins.
-func PluginsContainerPath() string { return pluginsMountPath }
 
 // channelSockMountPath is where the host's per-channel Unix sockets are mounted
 // READ-WRITE. The in-container runner dials <name>.sock here to bridge a channel
-// plugin's stdio to the host relay. Must match cmd/claude-runner's channelSocketDir.
+// plugin's stdio to the host relay. Must match cmd/claude-runner's channelSocketDir
+// and internal/channels/plugin's channelSockContainerPath.
 const channelSockMountPath = "/run/goclaw/channels"
-
-// ChannelSockContainerPath is the in-container path of the channel-socket mount,
-// exported so the host and runner agree on where the sockets live.
-func ChannelSockContainerPath() string { return channelSockMountPath }
 
 // caCertMountPath is where the credential-proxy CA cert is mounted (read-only)
 // in the container. The runner's trust env vars (NODE_EXTRA_CA_CERTS,

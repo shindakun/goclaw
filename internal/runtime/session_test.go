@@ -163,10 +163,6 @@ func TestEnsureGroupRunner_MountsChannelSocketDirRW(t *testing.T) {
 	if strings.Contains(run, absSock+":"+channelSockMountPath+":ro") {
 		t.Errorf("channel socket mount is read-only; must be RW: %s", run)
 	}
-	// The exported container path must match what the runner dials.
-	if ChannelSockContainerPath() != channelSockMountPath {
-		t.Errorf("ChannelSockContainerPath()=%q != %q", ChannelSockContainerPath(), channelSockMountPath)
-	}
 }
 
 func TestEnsureGroupRunner_NoChannelMountWhenUnset(t *testing.T) {
@@ -477,5 +473,29 @@ func TestEnsureGroupRunner_ConcurrentLaunchesOnce(t *testing.T) {
 	defer mu.Unlock()
 	if runs != 1 {
 		t.Fatalf("expected exactly 1 container launch under concurrency, got %d", runs)
+	}
+}
+
+// Stop must pass an explicit SIGTERM grace (`-t 10`) to podman, so the grace is
+// pinned regardless of the podman version's default.
+func TestStop_PassesExplicitGrace(t *testing.T) {
+	orig := execCommand
+	t.Cleanup(func() { execCommand = orig })
+	var got []string
+	execCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		got = append(got, append([]string{name}, args...)...)
+		// Re-exec the helper as a successful no-op command.
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--", "other", "")
+		cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+		return cmd
+	}
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
+	if err := m.Stop(context.Background(), "some-container"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	want := "podman stop -t 10 some-container"
+	if joined != want {
+		t.Fatalf("Stop argv = %q, want %q", joined, want)
 	}
 }

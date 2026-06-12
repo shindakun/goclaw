@@ -182,8 +182,8 @@ must be re-vetted exactly like a first install.
 1. **Provenance + logging (foundational): SHIPPED.** Provenance `{git_url, subdir, commit,
    version, installed_at}` is persisted per plugin at install time as the sidecar
    `.source.json`, and install/remove history is recorded as `plugin.*` events in
-   `internal/eventlog`. (Remaining nice-to-have from this phase: surface provenance in `goclaw
-   plugin list`, which is not yet wired.) No update-checking logic, by design, that is phase 2.
+   `internal/eventlog`. `/plugin list` surfaces it (`<name> v<version> @<shortcommit> by
+   <author>`). No update-checking logic, by design, that is phase 2.
 2. **On-demand check: SHIPPED.** `/plugin check [name]` compares the installed plugin.yml
    version against the highest stable `v<semver>` upstream tag via a read-only `git ls-remote`
    (no clone, no build, no sandbox), and prints the update command when a newer release exists.

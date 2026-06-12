@@ -13,12 +13,13 @@
 // boundary. So the production wiring is the host CONNECTING to a sandboxed plugin over a
 // socket, never `cmd/goclaw` exec-ing the plugin binary host-side.
 //
-// Today the only ChannelClient constructor (`plugin.LaunchChannel`) spawns a host child
-// process; that path is for the chantest dev harness and tests, NOT the daemon. The
-// sandboxed-boundary work splits the ChannelClient so it can attach to an
-// already-connected socket instead of spawning, at which point this adapter wraps it
-// unchanged. Until that lands, this package is wired ONLY by chantest/tests, never by
-// cmd/goclaw.
+// There are two ChannelClient constructors. `plugin.LaunchChannel` spawns a host
+// child process and is for the `cmd/chantest` dev harness and tests only. The
+// production path is `plugin.AttachChannel`, which drives the protocol over an
+// already-connected socket the host accepts from the sandboxed plugin; cmd/goclaw's
+// channel relay (setupChannelPlugins -> relay.Open -> NewAdapter, plus live activation
+// on `/plugin add`) wires this adapter that way, so the host never exec-s the plugin
+// binary itself.
 package plugin
 
 import (

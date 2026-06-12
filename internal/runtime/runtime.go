@@ -172,7 +172,10 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir
 
 // claudeHomeFor derives the persistent claude-home dir for a group from its
 // sessions dir. groupDir is <data>/sessions/<id>; the home is
-// <data>/claude-home/<id> - a sibling tree outside the sessions scan.
+// <data>/claude-home/<id> - a sibling tree outside the sessions scan. This is the
+// sole owner of the claude-home layout: it works in string ids derived from the
+// path (the int64 group id is not available here), so keep the layout defined here
+// rather than re-deriving it elsewhere.
 func claudeHomeFor(groupDir string) string {
 	id := filepath.Base(groupDir)                   // <id>
 	dataDir := filepath.Dir(filepath.Dir(groupDir)) // <data>
@@ -198,10 +201,11 @@ func (m *Manager) validateExtra(reqs []mounts.Request) []mounts.Mount {
 	return out
 }
 
-// Run launches a container per spec via `podman run`. Returns the container id.
-//
-// TODO: capture stdout/stderr, detached vs. foreground, restart policy, and
-// teardown. For v0 this only assembles the argv and runs it.
+// Run launches a container per spec via `podman run -d` (detached) and returns its
+// id from stdout; podman's stderr is captured and surfaced on failure. Teardown is
+// Stop plus the sweep's idle-runner GC (internal/sweep). There is deliberately no
+// podman `--restart` policy: a dead runner is recovered by the sweep relaunching
+// it for any session with pending work, not by podman auto-restarting it.
 func (m *Manager) Run(ctx context.Context, spec Spec) (string, error) {
 	args := m.buildArgs(spec)
 	cmd := execCommand(ctx, m.podmanBin, args...)
@@ -249,11 +253,15 @@ func (m *Manager) buildArgs(spec Spec) []string {
 	return args
 }
 
-// Stop stops a running container by id or name.
-//
-// TODO: implement `podman stop` with a grace period.
+// stopGraceSeconds is the SIGTERM-to-SIGKILL grace `podman stop` allows a runner to
+// shut down cleanly. Passed explicitly rather than relying on podman's default so the
+// grace is pinned regardless of the podman version.
+const stopGraceSeconds = 10
+
+// Stop stops a running container by id or name, giving it stopGraceSeconds to exit
+// on SIGTERM before podman sends SIGKILL.
 func (m *Manager) Stop(ctx context.Context, idOrName string) error {
-	cmd := execCommand(ctx, m.podmanBin, "stop", idOrName)
+	cmd := execCommand(ctx, m.podmanBin, "stop", "-t", fmt.Sprintf("%d", stopGraceSeconds), idOrName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("runtime: podman stop %q: %w", idOrName, err)
 	}

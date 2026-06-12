@@ -82,9 +82,6 @@ func Launch(ctx context.Context, name, execPath string, env []string, log *slog.
 // Info returns the plugin's announced identity (kind, version, advertised tools).
 func (c *Client) Info() Info { return c.info }
 
-// Name returns the plugin name the host launched it under.
-func (c *Client) Name() string { return c.name }
-
 // handshake sends hello and waits for a matching hello.ok, recording the plugin's
 // Info. It runs before the read loop starts, so it reads the reply directly.
 func (c *Client) handshake() error {

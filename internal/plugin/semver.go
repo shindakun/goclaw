@@ -57,6 +57,8 @@ func (a semver) less(b semver) bool {
 	return a.patch < b.patch
 }
 
+// String renders the version as major.minor.patch. Used in tests and useful in
+// any future diagnostic; kept as the conventional Stringer for the type.
 func (a semver) String() string { return fmt.Sprintf("%d.%d.%d", a.major, a.minor, a.patch) }
 
 // latestSemverTag picks the highest stable v<semver> tag from a set of tag names, returning the
