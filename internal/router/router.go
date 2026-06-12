@@ -50,6 +50,18 @@ type Typer interface {
 	Start(ctx context.Context, channel, chatID string)
 }
 
+// ChannelActivator registers (or unregisters) a channel plugin live, so a
+// kind:channel plugin installed via `/plugin add` starts routing without a host
+// restart. It mirrors what the host's startup channel-plugin discovery does
+// (bind a relay socket, register the adapter). Implemented in cmd/goclaw, where
+// the relay and channel registry live; nil here means channel hot-reload is off
+// and a newly installed channel plugin only activates on the next restart.
+// Activate/Deactivate take the plugin name and its host plugin dir.
+type ChannelActivator interface {
+	Activate(name, pluginDir string) error
+	Deactivate(name string)
+}
+
 // Router routes inbound messages to session inbound DBs.
 type Router struct {
 	central   *db.DB
@@ -60,6 +72,7 @@ type Router struct {
 	commands  *command.Registry
 	installer *plugin.Installer // drives /plugin add|remove|list; nil disables /plugin
 	pluginDir string            // host plugins dir (for re-listing commands after add/remove)
+	chanAct   ChannelActivator  // live-(de)register channel plugins; nil = restart needed
 	log       *slog.Logger
 
 	// autoWireAgentGroupID, when non-zero, lets the owner bootstrap a wiring by
@@ -259,6 +272,14 @@ func (r *Router) SetInstaller(in *plugin.Installer, pluginDir string) {
 	})
 }
 
+// WithChannelActivator wires the live channel-plugin (de)registration hook, so a
+// kind:channel plugin installed via `/plugin add` activates without a host
+// restart. Optional; nil leaves channel hot-reload off. Returns r for chaining.
+func (r *Router) WithChannelActivator(a ChannelActivator) *Router {
+	r.chanAct = a
+	return r
+}
+
 // cmdPlugin handles "/plugin <add|list|remove> ...". Owner-only (enforced by the
 // command's MinRole). Installs build the plugin inside a sandbox container; the
 // in-container runner's watch loads/unloads the result, so there is no restart.
@@ -334,6 +355,12 @@ func (r *Router) pluginAdd(ctx context.Context, gitURL string) (string, error) {
 		"git_url", res.Source.GitURL, "subdir", res.Source.Subdir, "commit", res.Source.Commit)
 	// Refresh the host's /commands listing so the new plugin's command shows up.
 	r.RegisterPluginCommands(r.pluginDir)
+	// A kind:channel plugin is not a slash command and is not loaded by the
+	// in-container runner's watch the way a tool plugin is; the host must bind a
+	// relay socket and register its adapter. Without this it would only activate on
+	// the next restart (the channel hot-reload gap). Best-effort: a failure is
+	// reported in the reply but does not fail the install.
+	chanNote := r.maybeActivateChannel(res.Name)
 	msg := fmt.Sprintf("Installed %s v%s", res.Name, res.Version)
 	if res.Command != "" {
 		msg += fmt.Sprintf(" (/%s)", res.Command)
@@ -341,8 +368,33 @@ func (r *Router) pluginAdd(ctx context.Context, gitURL string) (string, error) {
 	if res.Commit != "" {
 		msg += " at " + shortCommit(res.Commit)
 	}
-	msg += ". It will be live within a few seconds."
+	msg += ". It will be live within a few seconds." + chanNote
 	return msg, nil
+}
+
+// maybeActivateChannel registers a freshly installed/updated plugin as a live
+// channel when it is kind:channel and a ChannelActivator is wired. It returns a
+// human-readable suffix for the command reply ("" for the common tool-plugin case,
+// a confirmation for a channel, or an error note). Reading the manifest here keeps
+// the installer result type free of channel concerns.
+func (r *Router) maybeActivateChannel(name string) string {
+	if r.chanAct == nil {
+		return ""
+	}
+	pdir := filepath.Join(r.pluginDir, name)
+	man, err := plugin.LoadManifest(pdir)
+	if err != nil || man.Kind != "channel" {
+		return "" // not a (valid) channel plugin; nothing to activate
+	}
+	// Re-activating an already-open channel (e.g. an update) must not double-bind;
+	// drop the old registration first, then open fresh.
+	r.chanAct.Deactivate(man.Name)
+	if err := r.chanAct.Activate(man.Name, pdir); err != nil {
+		r.log.Error("channel plugin activate failed", "channel", man.Name, "err", err)
+		return fmt.Sprintf(" (channel %q installed but failed to activate: %s; restart the host to retry)", man.Name, err.Error())
+	}
+	r.log.Info("channel plugin activated live", "channel", man.Name)
+	return fmt.Sprintf(" Channel %q is now live.", man.Name)
 }
 
 // pluginCheck reports whether installed plugins have a newer release upstream. With no name it
@@ -405,8 +457,9 @@ func (r *Router) pluginUpdate(ctx context.Context, name string) (string, error) 
 		"name", res.Name, "from_version", st.InstalledVer, "to_version", res.Version,
 		"tag", st.LatestTag, "commit", res.Source.Commit)
 	r.RegisterPluginCommands(r.pluginDir)
-	return fmt.Sprintf("Updated %s: v%s -> v%s (%s). It will be live within a few seconds.",
-		res.Name, st.InstalledVer, res.Version, st.LatestTag), nil
+	chanNote := r.maybeActivateChannel(res.Name)
+	return fmt.Sprintf("Updated %s: v%s -> v%s (%s). It will be live within a few seconds.%s",
+		res.Name, st.InstalledVer, res.Version, st.LatestTag, chanNote), nil
 }
 
 func (r *Router) pluginRemove(name string) (string, error) {
@@ -420,6 +473,12 @@ func (r *Router) pluginRemove(name string) (string, error) {
 	}
 	r.log.Info("plugin removed", "name", name)
 	r.commands.UnregisterSource(name) // drop its /commands listing
+	// If it was a live channel plugin, tear down its relay/registration too so the
+	// host stops routing to a plugin whose files are gone. Unconditional and safe:
+	// Deactivate is a no-op for a name that was never an open channel.
+	if r.chanAct != nil {
+		r.chanAct.Deactivate(name)
+	}
 	return fmt.Sprintf("Removed plugin %q.", name), nil
 }
 

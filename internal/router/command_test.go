@@ -292,3 +292,142 @@ func TestCmdPlugin_OwnerOnly(t *testing.T) {
 		t.Fatal("member /plugin should not be handled (owner-only)")
 	}
 }
+
+// fakeChannelActivator records Activate/Deactivate calls so the hot-reload hook
+// can be tested without a real relay/registry.
+type fakeChannelActivator struct {
+	activated   []string
+	deactivated []string
+	failName    string // if set, Activate(failName) returns an error
+}
+
+func (f *fakeChannelActivator) Activate(name, pluginDir string) error {
+	if name == f.failName {
+		return errActivateFail
+	}
+	f.activated = append(f.activated, name)
+	return nil
+}
+
+func (f *fakeChannelActivator) Deactivate(name string) {
+	f.deactivated = append(f.deactivated, name)
+}
+
+var errActivateFail = fmtErr("relay open: boom")
+
+type fmtErr string
+
+func (e fmtErr) Error() string { return string(e) }
+
+// stageManifest writes a minimal plugin.yml of the given kind into <root>/<name>
+// and returns the root dir (the pluginDir the router scans).
+func stageManifest(t *testing.T, name, kind string) string {
+	t.Helper()
+	root := t.TempDir()
+	pdir := filepath.Join(root, name)
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var yml string
+	switch kind {
+	case "channel":
+		// A channel manifest must NOT declare a command (manifest validation).
+		yml = "name: " + name + "\nkind: channel\nversion: \"1.0.0\"\nexec: " + name + "\ndescription: A channel.\n"
+	default:
+		yml = "name: " + name + "\nkind: tool\nversion: \"1.0.0\"\nexec: " + name + "\ndescription: A tool.\ncommand: " + name + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "plugin.yml"), []byte(yml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestMaybeActivateChannel(t *testing.T) {
+	t.Run("channel plugin is activated and confirmed", func(t *testing.T) {
+		r, _, _ := cmdSetup(t)
+		fa := &fakeChannelActivator{}
+		root := stageManifest(t, "irc", "channel")
+		r.pluginDir = root
+		r.WithChannelActivator(fa)
+
+		note := r.maybeActivateChannel("irc")
+
+		if len(fa.activated) != 1 || fa.activated[0] != "irc" {
+			t.Fatalf("expected irc activated, got %v", fa.activated)
+		}
+		// Re-activation drops the old registration first (idempotent on update).
+		if len(fa.deactivated) != 1 || fa.deactivated[0] != "irc" {
+			t.Fatalf("expected a Deactivate before Activate, got %v", fa.deactivated)
+		}
+		if !strings.Contains(note, "now live") {
+			t.Fatalf("expected a live-confirmation note, got %q", note)
+		}
+	})
+
+	t.Run("tool plugin is not activated as a channel", func(t *testing.T) {
+		r, _, _ := cmdSetup(t)
+		fa := &fakeChannelActivator{}
+		root := stageManifest(t, "roll", "tool")
+		r.pluginDir = root
+		r.WithChannelActivator(fa)
+
+		note := r.maybeActivateChannel("roll")
+
+		if len(fa.activated) != 0 || len(fa.deactivated) != 0 {
+			t.Fatalf("a tool plugin must not touch the channel activator: act=%v deact=%v", fa.activated, fa.deactivated)
+		}
+		if note != "" {
+			t.Fatalf("a tool plugin should add no note, got %q", note)
+		}
+	})
+
+	t.Run("no activator wired is a silent no-op", func(t *testing.T) {
+		r, _, _ := cmdSetup(t)
+		root := stageManifest(t, "irc", "channel")
+		r.pluginDir = root
+		// chanAct left nil.
+		if note := r.maybeActivateChannel("irc"); note != "" {
+			t.Fatalf("nil activator should add no note, got %q", note)
+		}
+	})
+
+	t.Run("activation failure surfaces in the note and does not panic", func(t *testing.T) {
+		r, _, _ := cmdSetup(t)
+		fa := &fakeChannelActivator{failName: "irc"}
+		root := stageManifest(t, "irc", "channel")
+		r.pluginDir = root
+		r.WithChannelActivator(fa)
+
+		note := r.maybeActivateChannel("irc")
+		if !strings.Contains(note, "failed to activate") {
+			t.Fatalf("expected a failure note, got %q", note)
+		}
+	})
+}
+
+// Removing a plugin always tears down any live channel registration for that name,
+// even if the dir is already gone (Deactivate is a safe no-op for non-channels).
+func TestPluginRemove_DeactivatesChannel(t *testing.T) {
+	r, _, _ := cmdSetup(t)
+	fa := &fakeChannelActivator{}
+	// A real installer whose plugins dir is empty: Remove returns (false, nil).
+	r.SetInstaller(plugin.NewInstaller(t.TempDir(), "img", "podman"), t.TempDir())
+	r.WithChannelActivator(fa)
+
+	// Even when nothing was installed, remove of a name must not error; and when a
+	// plugin IS removed, Deactivate is called. Stage one so Remove reports removed.
+	root := stageManifest(t, "irc", "channel")
+	r.SetInstaller(plugin.NewInstaller(root, "img", "podman"), root)
+	r.WithChannelActivator(fa)
+
+	msg, err := r.pluginRemove("irc")
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if !strings.Contains(msg, "Removed") {
+		t.Fatalf("expected removal confirmation, got %q", msg)
+	}
+	if len(fa.deactivated) != 1 || fa.deactivated[0] != "irc" {
+		t.Fatalf("remove should Deactivate the channel, got %v", fa.deactivated)
+	}
+}

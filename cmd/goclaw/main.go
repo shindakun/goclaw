@@ -388,6 +388,12 @@ func run(log *slog.Logger) error {
 	if cfg.LaunchRunner {
 		installer := plugin.NewInstaller(pluginsHostDir(cfg), cfg.RunnerImage, cfg.PodmanBin).WithEventLog(events)
 		rtr.SetInstaller(installer, pluginsHostDir(cfg))
+		// Let a kind:channel plugin installed via `/plugin add` activate live (bind a
+		// relay socket + register its adapter) instead of waiting for the next restart.
+		// Needs the relay, which exists whenever channel-plugin support is wired.
+		if chanRelay != nil {
+			rtr.WithChannelActivator(&channelActivator{relay: chanRelay, registry: registry})
+		}
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -574,21 +580,53 @@ func setupChannelPlugins(registry *channels.Registry, cfg chanplugin.Config, plu
 		if err != nil || man.Kind != "channel" {
 			continue // not a (valid) channel plugin
 		}
-		// pdir is the host plugin dir; the relay writes .endpoint here, and the runner
-		// reads it from the same dir mounted read-only into the container.
-		adapter, err := relay.Open(man.Name, pdir)
-		if err != nil {
-			log.Error("channel plugin: relay open failed", "channel", man.Name, "err", err)
-			continue
-		}
-		if err := registry.Register(adapter); err != nil {
-			log.Error("channel plugin: register failed", "channel", man.Name, "err", err)
-			relay.Close(man.Name)
+		if err := registerChannelPlugin(relay, registry, man.Name, pdir); err != nil {
+			log.Error("channel plugin: register failed at startup", "channel", man.Name, "err", err)
 			continue
 		}
 		log.Info("registered channel plugin", "channel", man.Name)
 	}
 	return relay, nil
+}
+
+// registerChannelPlugin binds a relay socket for one channel plugin and registers
+// the resulting adapter, so the router/agent treat it like a built-in channel. It
+// is the shared per-plugin step used both by startup discovery (setupChannelPlugins)
+// and by live activation after `/plugin add` (channelActivator). pdir is the host
+// plugin dir: the relay writes its .endpoint there, and the runner reads it from
+// the same dir mounted read-only into the container.
+func registerChannelPlugin(relay *chanplugin.Relay, registry *channels.Registry, name, pdir string) error {
+	adapter, err := relay.Open(name, pdir)
+	if err != nil {
+		return fmt.Errorf("relay open: %w", err)
+	}
+	if err := registry.Register(adapter); err != nil {
+		relay.Close(name) // unwind the listener we just bound
+		return fmt.Errorf("register adapter: %w", err)
+	}
+	return nil
+}
+
+// channelActivator implements router.ChannelActivator, letting a kind:channel
+// plugin installed via `/plugin add` start routing without a host restart. It
+// holds the same relay + registry the startup discovery uses, so live activation
+// is exactly the startup path applied to one plugin.
+type channelActivator struct {
+	relay    *chanplugin.Relay
+	registry *channels.Registry
+}
+
+// Activate binds a relay socket and registers the channel plugin's adapter live.
+func (a *channelActivator) Activate(name, pluginDir string) error {
+	return registerChannelPlugin(a.relay, a.registry, name, pluginDir)
+}
+
+// Deactivate unregisters the channel's adapter and tears down its relay socket. It
+// is a no-op for a name that is not an open channel, so callers may invoke it
+// unconditionally (e.g. on any plugin remove, or before re-activating on update).
+func (a *channelActivator) Deactivate(name string) {
+	a.registry.Unregister(name)
+	a.relay.Close(name)
 }
 
 // credHostList returns the stored credential hosts for a startup log line, so the
