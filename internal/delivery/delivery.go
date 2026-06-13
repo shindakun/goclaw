@@ -188,8 +188,17 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 		// introspection skill can spot a run of failing turns, not just a normal send.
 		if m.Kind == "turn_failed" {
 			d.events.Emit(eventlog.KindRunnerTurnFail, eventlog.Bool(false), map[string]any{
-				"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID,
+				"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID, "source": m.Source,
 			})
+			// If the failed message was a scheduled job, re-arm it: the scheduler stamped
+			// last-run at fire time, so without this the job is lost (neither completed nor
+			// re-fired until its next scheduled time). Clearing last-run makes it fire again
+			// on the next scheduler tick (~minutes), a fresh attempt once the outage clears.
+			if rearmed, err := d.central.RearmFailedSchedule(m.Source); err != nil {
+				d.log.Error("re-arm failed schedule", "session", s.SessionKey, "source", m.Source, "err", err)
+			} else if rearmed {
+				d.log.Info("re-armed failed scheduled job for retry", "session", s.SessionKey, "source", m.Source)
+			}
 		}
 	}
 	return nil

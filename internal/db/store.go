@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // This file holds the central-DB query helpers the router uses to resolve an
@@ -191,6 +192,38 @@ func (d *DB) SetKV(key, value string) error {
 		return fmt.Errorf("set kv %q: %w", key, err)
 	}
 	return nil
+}
+
+// DeleteKV removes a host-state value (a no-op if absent).
+func (d *DB) DeleteKV(key string) error {
+	if _, err := d.Exec(`DELETE FROM kv WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("delete kv %q: %w", key, err)
+	}
+	return nil
+}
+
+// RearmFailedSchedule clears the last-run stamp for a scheduled job whose turn failed
+// terminally, so it fires again on the scheduler's next tick instead of being lost
+// (the scheduler stamps last-run at fire time, before the agent turn runs). source is
+// the value echoed onto the failed turn_failed outbound row: "task:<id>" for a user
+// scheduled task or "maint:<name>" for a vault-maintenance job; anything else (e.g.
+// "user") is not a schedule and returns (false, nil). The kv keys MUST match the
+// schedulers: internal/scheduler keys "task:lastrun:<id>", internal/maintenance keys
+// "maint:lastrun:<name>". Returns whether a re-arm applied.
+func (d *DB) RearmFailedSchedule(source string) (bool, error) {
+	var key string
+	switch {
+	case strings.HasPrefix(source, "task:"):
+		key = "task:lastrun:" + strings.TrimPrefix(source, "task:")
+	case strings.HasPrefix(source, "maint:"):
+		key = "maint:lastrun:" + strings.TrimPrefix(source, "maint:")
+	default:
+		return false, nil // not a scheduled origin; nothing to re-arm
+	}
+	if err := d.DeleteKV(key); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Session is a resolved session row (the central-DB record; the on-disk DB pair

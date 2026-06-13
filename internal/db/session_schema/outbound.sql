@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS messages (
     -- transient failures; the text is an apology and the host emits a
     -- runner.turn_failed event on delivery). Default keeps existing rows 'reply'.
     kind          TEXT NOT NULL DEFAULT 'reply',
+    -- for a 'turn_failed' row, the origin of the message that failed, echoed from the
+    -- inbound row so the host can re-arm a failed scheduled job: 'user', 'task:<id>',
+    -- or 'maint:<name>'. 'user' for a normal reply. See inbound.sql's source column.
+    source        TEXT NOT NULL DEFAULT 'user',
     -- lifecycle: pending → delivered (or failed). The container writes
     -- 'pending'; the host delivery loop advances it.
     status        TEXT NOT NULL DEFAULT 'pending',

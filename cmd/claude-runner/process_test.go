@@ -185,3 +185,60 @@ func TestProcessSession_AllSucceed(t *testing.T) {
 		t.Fatalf("all messages should be consumed; pending = %+v", pend)
 	}
 }
+
+// On give-up, the runner echoes the inbound source onto the turn_failed outbound row
+// (so the host can re-arm a scheduled job) and tailors the notice to the origin (so a
+// scheduled-job failure does not read as a reply to a phantom user message).
+func TestProcessSession_GiveUpEchoesSourceAndTailorsMessage(t *testing.T) {
+	cases := []struct {
+		name        string
+		source      string
+		wantSource  string
+		wantInText  string
+		notWantText string
+	}{
+		{"user", "user", "user", "Your message wasn't answered", "scheduled"},
+		{"task", "task:abc123", "task:abc123", "scheduled task", "Your message wasn't answered"},
+		{"maint", "maint:morning", "maint:morning", `maintenance job "morning"`, "Your message wasn't answered"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := db.SessionDir(t.TempDir(), 1, "telegram:42")
+			sess, err := db.OpenSessionDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = sess.Close() }()
+			if _, err := sess.EnqueueInboundSource("telegram", "42", "system", "scheduler", "do it", c.source); err != nil {
+				t.Fatal(err)
+			}
+
+			r := &runner{log: quietLogger()}
+			handler := func(_ context.Context, _ *db.SessionDBs, _, _ string) (string, error) {
+				return "", fmt.Errorf("transient agent failure: api down")
+			}
+			for pass := 1; pass <= maxTransientAttempts; pass++ {
+				if _, err := r.processSessionWith(context.Background(), dir, handler); err != nil {
+					t.Fatalf("pass %d: %v", pass, err)
+				}
+			}
+
+			out, _ := sess.PendingOutbound()
+			if len(out) != 1 {
+				t.Fatalf("want one give-up row, got %+v", out)
+			}
+			if out[0].Kind != "turn_failed" {
+				t.Fatalf("kind = %q, want turn_failed", out[0].Kind)
+			}
+			if out[0].Source != c.wantSource {
+				t.Fatalf("source = %q, want %q (must echo inbound source for re-arm)", out[0].Source, c.wantSource)
+			}
+			if !strings.Contains(out[0].Text, c.wantInText) {
+				t.Fatalf("text %q missing %q", out[0].Text, c.wantInText)
+			}
+			if strings.Contains(out[0].Text, c.notWantText) {
+				t.Fatalf("text %q should not contain %q (wrong origin wording)", out[0].Text, c.notWantText)
+			}
+		})
+	}
+}

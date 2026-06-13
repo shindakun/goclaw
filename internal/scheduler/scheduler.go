@@ -149,7 +149,11 @@ func (s *Scheduler) fire(ctx context.Context, t db.ScheduledTask, now time.Time)
 	}
 	defer func() { _ = sess.Close() }()
 
-	if _, err := sess.EnqueueInbound(t.Channel, t.ChatID, "system", "scheduler", t.Prompt); err != nil {
+	// Tag the message with its task origin so that, if the agent turn later fails
+	// terminally, the runner names the task in its give-up notice and the host re-arms
+	// this task (clears last-run) instead of leaving it silently lost. The source value
+	// must encode the task id the host re-arms by (kvPrefix is "task:lastrun:<id>").
+	if _, err := sess.EnqueueInboundSource(t.Channel, t.ChatID, "system", "scheduler", t.Prompt, "task:"+t.ID); err != nil {
 		return err
 	}
 

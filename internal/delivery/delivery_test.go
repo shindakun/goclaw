@@ -220,7 +220,7 @@ func TestDrain_TurnFailedEmitsEvent(t *testing.T) {
 	if _, err := runner.EnqueueOutbound("telegram", "555", "a normal answer"); err != nil {
 		t.Fatalf("enqueue reply: %v", err)
 	}
-	if _, err := runner.EnqueueOutboundKind("telegram", "555", "could not reach the model", "turn_failed"); err != nil {
+	if _, err := runner.EnqueueOutboundKind("telegram", "555", "could not reach the model", "turn_failed", "user"); err != nil {
 		t.Fatalf("enqueue turn_failed: %v", err)
 	}
 	_ = runner.Close()
@@ -240,5 +240,66 @@ func TestDrain_TurnFailedEmitsEvent(t *testing.T) {
 	}
 	if got := strings.Count(log, `"kind":"delivery.sent"`); got != 2 {
 		t.Fatalf("want 2 delivery.sent (both rows delivered), got %d; log:\n%s", got, log)
+	}
+}
+
+// Delivering a turn_failed row whose source names a scheduled task re-arms it: the
+// host clears that task's last-run stamp so the scheduler re-fires it (the scheduler
+// stamps last-run at fire time, so without this the failed job is silently lost).
+func TestDrain_TurnFailedRearmsScheduledJob(t *testing.T) {
+	d, central, agID, dataDir, _ := setup(t)
+
+	const key = "telegram:555"
+	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	// The scheduler stamped last-run at fire time.
+	if err := central.SetKV("task:lastrun:job7", "2026-06-13T07:00:00Z"); err != nil {
+		t.Fatalf("seed last-run: %v", err)
+	}
+
+	runner, err := db.OpenSessionDir(db.SessionDir(dataDir, agID, key))
+	if err != nil {
+		t.Fatalf("open runner session: %v", err)
+	}
+	if _, err := runner.EnqueueOutboundKind("telegram", "555", "scheduled task couldn't run", "turn_failed", "task:job7"); err != nil {
+		t.Fatalf("enqueue turn_failed: %v", err)
+	}
+	_ = runner.Close()
+
+	if err := d.drain(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	// last-run cleared => the task is due again on the next scheduler tick.
+	if _, ok, err := central.GetKV("task:lastrun:job7"); err != nil || ok {
+		t.Fatalf("task last-run should be cleared (re-armed); ok=%v err=%v", ok, err)
+	}
+}
+
+// A normal reply (kind 'reply', source 'user') must NOT re-arm anything.
+func TestDrain_NormalReplyDoesNotRearm(t *testing.T) {
+	d, central, agID, dataDir, _ := setup(t)
+	const key = "telegram:555"
+	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if err := central.SetKV("task:lastrun:job7", "2026-06-13T07:00:00Z"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	runner, err := db.OpenSessionDir(db.SessionDir(dataDir, agID, key))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := runner.EnqueueOutbound("telegram", "555", "a normal answer"); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	_ = runner.Close()
+
+	if err := d.drain(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if _, ok, _ := central.GetKV("task:lastrun:job7"); !ok {
+		t.Fatal("a normal reply must not re-arm (clear) a task's last-run")
 	}
 }

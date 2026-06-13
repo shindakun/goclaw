@@ -208,7 +208,9 @@ func (s *Scheduler) fire(ctx context.Context, job Job, now time.Time) error {
 	}
 	defer func() { _ = sess.Close() }()
 
-	if _, err := sess.EnqueueInbound(s.target.Channel, s.target.ChatID, "system", "maintenance", job.Prompt); err != nil {
+	// Tag with the maintenance-job origin so a terminally-failed turn is named in the
+	// give-up notice and re-armed by the host (kvPrefix is "maint:lastrun:<name>").
+	if _, err := sess.EnqueueInboundSource(s.target.Channel, s.target.ChatID, "system", "maintenance", job.Prompt, "maint:"+job.Name); err != nil {
 		return err
 	}
 

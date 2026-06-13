@@ -235,13 +235,15 @@ func (r *runner) processSessionWith(ctx context.Context, dir string, handle msgH
 			// the normal delivery path, stops the stuck "typing" indicator) and CONSUME the
 			// message so it does not loop. Better a visible failure than a silent hang.
 			r.log.Error("giving up on message after repeated transient failures",
-				"session", filepath.Base(dir), "in_id", m.ID, "attempts", attempts, "err", transient)
+				"session", filepath.Base(dir), "in_id", m.ID, "source", m.Source, "attempts", attempts, "err", transient)
 			// Enqueue as kind 'turn_failed' so the host emits a runner.turn_failed event
-			// on delivery (the introspection skill can then spot a run of these), not just
-			// a normal reply send.
+			// on delivery (the introspection skill can spot a run of these), not just a
+			// normal reply. Echo m.Source so the host can re-arm a failed scheduled job
+			// (clear its last-run so it re-fires) instead of leaving it silently lost. The
+			// notice text is tailored to the origin so a scheduled-job failure does not look
+			// like a reply to a message the user never sent.
 			if _, err := sess.EnqueueOutboundKind(m.Channel, m.ChatID,
-				"⚠️ I couldn't reach the model after several tries (it may be a temporary outage or the API is out of quota). Your message wasn't answered; please try again later.",
-				"turn_failed"); err != nil {
+				giveUpNotice(m.Source), "turn_failed", m.Source); err != nil {
 				return answered, err
 			}
 			if err := sess.SetInboundHWM(m.ID); err != nil {
@@ -266,6 +268,28 @@ func (r *runner) processSessionWith(ctx context.Context, dir string, handle msgH
 		r.log.Info("answered", "session", filepath.Base(dir), "in_id", m.ID)
 	}
 	return answered, nil
+}
+
+// giveUpNotice composes the user-facing give-up text for a message the runner could
+// not answer, tailored to the message's origin so a scheduled-job failure does not
+// read as a reply to a message the user never sent. source is the inbound source:
+// "user", "task:<id>", or "maint:<name>".
+func giveUpNotice(source string) string {
+	const tail = " (the API may be down or out of quota)."
+	switch {
+	case strings.HasPrefix(source, "maint:"):
+		return "⚠️ Scheduled maintenance job \"" + strings.TrimPrefix(source, "maint:") +
+			"\" couldn't run: I couldn't reach the model after several tries" + tail +
+			" It will be retried shortly."
+	case strings.HasPrefix(source, "task:"):
+		// The task id is an opaque identifier, not friendly; say "a scheduled task" and
+		// let the re-arm + the host's event log carry the specifics.
+		return "⚠️ A scheduled task couldn't run: I couldn't reach the model after several tries" +
+			tail + " It will be retried shortly."
+	default:
+		return "⚠️ I couldn't reach the model after several tries" + tail +
+			" Your message wasn't answered; please try again later."
+	}
 }
 
 // bumpAttempts increments and returns the transient-failure count for an inbound

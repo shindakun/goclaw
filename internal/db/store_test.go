@@ -151,3 +151,48 @@ func TestCountAgentGroups(t *testing.T) {
 		t.Fatalf("after two groups: n=%d err=%v, want 2", n, err)
 	}
 }
+
+func TestRearmFailedSchedule(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed last-run stamps as the schedulers would.
+	if err := d.SetKV("task:lastrun:abc123", "2026-06-13T07:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetKV("maint:lastrun:morning", "2026-06-13T07:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A user-origin source is not a schedule: no re-arm, both stamps untouched.
+	if rearmed, err := d.RearmFailedSchedule("user"); err != nil || rearmed {
+		t.Fatalf("user source: rearmed=%v err=%v, want false/nil", rearmed, err)
+	}
+	if _, ok, _ := d.GetKV("task:lastrun:abc123"); !ok {
+		t.Fatal("user re-arm must not clear a task stamp")
+	}
+
+	// A task source clears exactly that task's last-run.
+	if rearmed, err := d.RearmFailedSchedule("task:abc123"); err != nil || !rearmed {
+		t.Fatalf("task source: rearmed=%v err=%v, want true/nil", rearmed, err)
+	}
+	if _, ok, _ := d.GetKV("task:lastrun:abc123"); ok {
+		t.Fatal("task last-run should be cleared (re-armed)")
+	}
+	// The maintenance stamp is untouched by the task re-arm.
+	if _, ok, _ := d.GetKV("maint:lastrun:morning"); !ok {
+		t.Fatal("task re-arm must not touch the maintenance stamp")
+	}
+
+	// A maint source clears the maintenance job's last-run.
+	if rearmed, err := d.RearmFailedSchedule("maint:morning"); err != nil || !rearmed {
+		t.Fatalf("maint source: rearmed=%v err=%v, want true/nil", rearmed, err)
+	}
+	if _, ok, _ := d.GetKV("maint:lastrun:morning"); ok {
+		t.Fatal("maint last-run should be cleared (re-armed)")
+	}
+
+	// Re-arming an absent key is a harmless no-op that still reports applied.
+	if rearmed, err := d.RearmFailedSchedule("task:never-ran"); err != nil || !rearmed {
+		t.Fatalf("absent task: rearmed=%v err=%v, want true/nil", rearmed, err)
+	}
+}

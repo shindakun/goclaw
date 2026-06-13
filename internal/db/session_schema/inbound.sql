@@ -12,6 +12,11 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_id     TEXT NOT NULL,   -- channel-native sender id
     sender_name   TEXT,            -- best-effort display name
     text          TEXT NOT NULL,   -- message body
+    -- origin of this message, so the runner can name it in a give-up notice and the
+    -- host can re-arm a failed scheduled job: 'user' (a real chat message),
+    -- 'task:<id>' (a user scheduled task), or 'maint:<name>' (a vault-maintenance
+    -- job). Default keeps existing rows 'user'.
+    source        TEXT NOT NULL DEFAULT 'user',
     -- lifecycle: pending → consumed. The host writes 'pending'; the container
     -- flips it to 'consumed' once it has picked the message up.
     status        TEXT NOT NULL DEFAULT 'pending',

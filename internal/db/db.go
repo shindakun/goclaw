@@ -201,6 +201,12 @@ func openInboundRW(dir string) (*sql.DB, error) {
 		_ = inbound.Close()
 		return nil, fmt.Errorf("init inbound schema: %w", err)
 	}
+	// Backfill the source column on an inbound.db that predates it (the host owns and
+	// writes inbound.db, so it migrates first; the runner only reads source). Idempotent.
+	if err := ensureMessagesColumn(inbound, "source", `ADD COLUMN source TEXT NOT NULL DEFAULT 'user'`); err != nil {
+		_ = inbound.Close()
+		return nil, err
+	}
 	return inbound, nil
 }
 
@@ -275,10 +281,15 @@ func OpenSessionDir(dir string) (*SessionDBs, error) {
 		return nil, fmt.Errorf("init outbound schema: %w", err)
 	}
 	// CREATE TABLE IF NOT EXISTS does not add a column to an outbound.db that
-	// predates it, so backfill the `kind` column on existing session DBs. The runner
-	// owns outbound.db (opened RW here), so it is the correct and only writer of this
-	// migration; the host reads the column RO. Idempotent: guarded on table_info.
-	if err := ensureOutboundKindColumn(outbound); err != nil {
+	// predates it, so backfill the kind + source columns on existing session DBs. The
+	// runner owns outbound.db (opened RW here), so it is the correct and only writer of
+	// this migration; the host reads the columns RO. Idempotent: guarded on table_info.
+	if err := ensureMessagesColumn(outbound, "kind", `ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'`); err != nil {
+		_ = inbound.Close()
+		_ = outbound.Close()
+		return nil, err
+	}
+	if err := ensureMessagesColumn(outbound, "source", `ADD COLUMN source TEXT NOT NULL DEFAULT 'user'`); err != nil {
 		_ = inbound.Close()
 		_ = outbound.Close()
 		return nil, err
@@ -287,16 +298,19 @@ func OpenSessionDir(dir string) (*SessionDBs, error) {
 	return &SessionDBs{Inbound: inbound, Outbound: outbound, dir: dir}, nil
 }
 
-// ensureOutboundKindColumn adds messages.kind to an outbound.db that predates the
-// column (CREATE TABLE IF NOT EXISTS won't add it to an existing table). Runs only
-// on the runner's read-write handle. A no-op once the column exists.
-func ensureOutboundKindColumn(outbound *sql.DB) error {
-	var has bool
-	rows, err := outbound.Query(`PRAGMA table_info(messages)`)
+// ensureMessagesColumn adds a column to a session DB's messages table that predates
+// it (CREATE TABLE IF NOT EXISTS won't add a column to an existing table), so old
+// session DBs are migrated in place. addColumnDDL is the full "ADD COLUMN ..." body.
+// Idempotent: a no-op once the column exists. The caller must hold a read-write
+// handle to the DB being altered (the file's owner: host for inbound, runner for
+// outbound).
+func ensureMessagesColumn(d *sql.DB, column, addColumnDDL string) error {
+	rows, err := d.Query(`PRAGMA table_info(messages)`)
 	if err != nil {
-		return fmt.Errorf("outbound table_info: %w", err)
+		return fmt.Errorf("table_info(messages): %w", err)
 	}
 	defer func() { _ = rows.Close() }()
+	has := false
 	for rows.Next() {
 		// PRAGMA table_info columns: cid, name, type, notnull, dflt_value, pk.
 		var cid int
@@ -306,7 +320,7 @@ func ensureOutboundKindColumn(outbound *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			return fmt.Errorf("scan table_info: %w", err)
 		}
-		if name == "kind" {
+		if name == column {
 			has = true
 		}
 	}
@@ -316,8 +330,8 @@ func ensureOutboundKindColumn(outbound *sql.DB) error {
 	if has {
 		return nil
 	}
-	if _, err := outbound.Exec(`ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'`); err != nil {
-		return fmt.Errorf("add outbound kind column: %w", err)
+	if _, err := d.Exec(`ALTER TABLE messages ` + addColumnDDL); err != nil {
+		return fmt.Errorf("add messages.%s column: %w", column, err)
 	}
 	return nil
 }
@@ -325,10 +339,18 @@ func ensureOutboundKindColumn(outbound *sql.DB) error {
 // EnqueueInbound writes one message into the session's inbound queue as
 // 'pending' for the container to pick up. Host is the sole writer (brief §5.1).
 func (s *SessionDBs) EnqueueInbound(channel, chatID, senderID, senderName, text string) (int64, error) {
+	return s.EnqueueInboundSource(channel, chatID, senderID, senderName, text, "user")
+}
+
+// EnqueueInboundSource is EnqueueInbound with an explicit origin: "user" for a real
+// chat message, "task:<id>" for a user scheduled task, "maint:<name>" for a vault
+// maintenance job. The runner reads it to name a give-up notice; the host reads the
+// echoed value off a turn_failed outbound row to re-arm a failed scheduled job.
+func (s *SessionDBs) EnqueueInboundSource(channel, chatID, senderID, senderName, text, source string) (int64, error) {
 	res, err := s.Inbound.Exec(`
-		INSERT INTO messages (channel, chat_id, sender_id, sender_name, text)
-		VALUES (?, ?, ?, ?, ?)`,
-		channel, chatID, senderID, senderName, text,
+		INSERT INTO messages (channel, chat_id, sender_id, sender_name, text, source)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		channel, chatID, senderID, senderName, text, source,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("enqueue inbound: %w", err)
@@ -359,6 +381,7 @@ type OutboundMessage struct {
 	ChatID  string
 	Text    string
 	Kind    string // 'reply' (normal) or 'turn_failed' (runner gave up); see outbound.sql
+	Source  string // origin echoed from the inbound row (for turn_failed re-arm): 'user' | 'task:<id>' | 'maint:<name>'
 }
 
 // PendingOutbound returns the outbound rows still awaiting delivery, oldest
@@ -367,17 +390,17 @@ func (s *SessionDBs) PendingOutbound() ([]OutboundMessage, error) {
 	if s.Outbound == nil {
 		return nil, nil // no outbound.db yet (runner hasn't started)
 	}
-	// COALESCE so a row predating the kind column (host reads RO and cannot run the
-	// runner's backfill ALTER) still yields 'reply' rather than NULL. The runner
-	// backfills the column on its next open, but the host must not depend on ordering.
+	// COALESCE so a row predating the kind/source columns (host reads RO and cannot run
+	// the runner's backfill ALTER) still yields the defaults rather than NULL. The runner
+	// backfills the columns on its next open, but the host must not depend on ordering.
 	rows, err := s.Outbound.Query(`
-		SELECT id, channel, chat_id, text, COALESCE(kind, 'reply')
+		SELECT id, channel, chat_id, text, COALESCE(kind, 'reply'), COALESCE(source, 'user')
 		FROM messages
 		WHERE status = 'pending'
 		ORDER BY id ASC`)
 	if err != nil {
-		// An outbound.db that predates the kind column entirely: fall back to the
-		// pre-kind SELECT so the host keeps delivering (kind defaults to 'reply').
+		// An outbound.db that predates these columns entirely: fall back to the pre-kind
+		// SELECT so the host keeps delivering (kind/source default to 'reply'/'user').
 		return s.pendingOutboundNoKind()
 	}
 	defer func() { _ = rows.Close() }()
@@ -385,7 +408,7 @@ func (s *SessionDBs) PendingOutbound() ([]OutboundMessage, error) {
 	var out []OutboundMessage
 	for rows.Next() {
 		var m OutboundMessage
-		if err := rows.Scan(&m.ID, &m.Channel, &m.ChatID, &m.Text, &m.Kind); err != nil {
+		if err := rows.Scan(&m.ID, &m.Channel, &m.ChatID, &m.Text, &m.Kind, &m.Source); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -410,7 +433,7 @@ func (s *SessionDBs) pendingOutboundNoKind() ([]OutboundMessage, error) {
 
 	var out []OutboundMessage
 	for rows.Next() {
-		m := OutboundMessage{Kind: "reply"}
+		m := OutboundMessage{Kind: "reply", Source: "user"}
 		if err := rows.Scan(&m.ID, &m.Channel, &m.ChatID, &m.Text); err != nil {
 			return nil, err
 		}
@@ -482,6 +505,7 @@ type InboundMessage struct {
 	SenderID   string
 	SenderName string
 	Text       string
+	Source     string // origin: 'user' | 'task:<id>' | 'maint:<name>' (see inbound.sql)
 }
 
 // metaInboundHWM is the outbound.meta key holding the highest inbound message id
@@ -518,7 +542,7 @@ func (s *SessionDBs) PendingInbound() ([]InboundMessage, error) {
 		return nil, err
 	}
 	rows, err := s.Inbound.Query(`
-		SELECT id, channel, chat_id, sender_id, COALESCE(sender_name, ''), text
+		SELECT id, channel, chat_id, sender_id, COALESCE(sender_name, ''), text, COALESCE(source, 'user')
 		FROM messages
 		WHERE id > ?
 		ORDER BY id ASC`, hwm)
@@ -530,7 +554,7 @@ func (s *SessionDBs) PendingInbound() ([]InboundMessage, error) {
 	var out []InboundMessage
 	for rows.Next() {
 		var m InboundMessage
-		if err := rows.Scan(&m.ID, &m.Channel, &m.ChatID, &m.SenderID, &m.SenderName, &m.Text); err != nil {
+		if err := rows.Scan(&m.ID, &m.Channel, &m.ChatID, &m.SenderID, &m.SenderName, &m.Text, &m.Source); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -558,17 +582,19 @@ func (s *SessionDBs) HasPendingInbound() (bool, error) {
 // EnqueueOutbound writes a reply into the session's outbound queue as 'pending'
 // for the host delivery loop to pick up (runner side).
 func (s *SessionDBs) EnqueueOutbound(channel, chatID, text string) (int64, error) {
-	return s.EnqueueOutboundKind(channel, chatID, text, "reply")
+	return s.EnqueueOutboundKind(channel, chatID, text, "reply", "user")
 }
 
 // EnqueueOutboundKind is EnqueueOutbound with an explicit kind ('reply' for a
-// normal answer, 'turn_failed' for the runner's give-up apology). The host reads
-// kind on delivery to log a normal send vs a runner.turn_failed event. Runner side
-// (sole writer of outbound.db).
-func (s *SessionDBs) EnqueueOutboundKind(channel, chatID, text, kind string) (int64, error) {
+// normal answer, 'turn_failed' for the runner's give-up apology). source is 'user'
+// for a normal reply, or echoed from the failed message's inbound source
+// ('task:<id>' / 'maint:<name>') on a turn_failed row so the host can re-arm a
+// failed scheduled job. The host reads kind on delivery to log a normal send vs a
+// runner.turn_failed event. Runner side (sole writer of outbound.db).
+func (s *SessionDBs) EnqueueOutboundKind(channel, chatID, text, kind, source string) (int64, error) {
 	res, err := s.Outbound.Exec(`
-		INSERT INTO messages (channel, chat_id, text, kind) VALUES (?, ?, ?, ?)`,
-		channel, chatID, text, kind,
+		INSERT INTO messages (channel, chat_id, text, kind, source) VALUES (?, ?, ?, ?, ?)`,
+		channel, chatID, text, kind, source,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("enqueue outbound: %w", err)
