@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -29,6 +30,7 @@ type GroupRunner struct {
 	CACertPath     string         // OPTIONAL host path to the credential-proxy CA, mounted RO
 	PluginsDir     string         // OPTIONAL host plugins dir, mounted RO at /plugins
 	ChannelSockDir string         // OPTIONAL host channel-socket dir, mounted RW at /run/goclaw/channels
+	EventsDir      string         // OPTIONAL host event-log dir, mounted RO at /run/goclaw/events
 	ExtraMounts    []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
 
@@ -52,6 +54,12 @@ const pluginsMountPath = "/plugins"
 // plugin's stdio to the host relay. Must match cmd/claude-runner's channelSocketDir
 // and internal/channels/plugin's channelSockContainerPath.
 const channelSockMountPath = "/run/goclaw/channels"
+
+// eventsMountPath is where the host's operational event-log dir is mounted
+// READ-ONLY. The agent's introspection skill reads the log here; the host is the
+// sole writer (internal/eventlog) so the agent cannot write it. Must match the path
+// the introspection SKILL.md tells the agent to read (/run/goclaw/events).
+const eventsMountPath = "/run/goclaw/events"
 
 // caCertMountPath is where the credential-proxy CA cert is mounted (read-only)
 // in the container. The runner's trust env vars (NODE_EXTRA_CA_CERTS,
@@ -146,7 +154,7 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		// fresh each launch: the baked-in base (/app/CLAUDE.md), the coding skill
 		// (always), and the librarian skill when a vault is mounted. The runner
 		// reads the composed CLAUDE.md as its system prompt (see compose.go).
-		if err := composeGroupPrompt(home, gr.VaultDir != ""); err != nil {
+		if err := composeGroupPrompt(home, gr.VaultDir != "", gr.EventsDir != ""); err != nil {
 			return err
 		}
 		groupMounts = append(groupMounts, mounts.Mount{
@@ -224,6 +232,27 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		})
 	}
 
+	// Mount the operational event-log dir READ-ONLY at /run/goclaw/events so the
+	// agent's introspection skill can read what the system did. The host is the sole
+	// writer (internal/eventlog), and the mount is read-only, so this is read-only by
+	// construction with no write channel from the box to the host. The host decides
+	// whether EventsDir is set (gated fail-closed on a single agent group, since the
+	// one shared log can contain other groups' events); runtime just mounts what it
+	// is given. Same stat-guard as plugins: an absent dir is fine (no log yet).
+	if gr.EventsDir != "" {
+		events, err := filepath.Abs(gr.EventsDir)
+		if err != nil {
+			return fmt.Errorf("runtime: resolve events dir %q: %w", gr.EventsDir, err)
+		}
+		if _, statErr := os.Stat(events); statErr == nil {
+			groupMounts = append(groupMounts, mounts.Mount{
+				HostPath:      events,
+				ContainerPath: eventsMountPath,
+				ReadWrite:     false,
+			})
+		}
+	}
+
 	spec := Spec{
 		Name:    name,
 		Image:   gr.Image,
@@ -245,6 +274,12 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		detail := m.diagnose(ctx, name)
 		return fmt.Errorf("runtime: runner %q exited immediately after launch (id %s): %s", name, id, detail)
 	}
+	// A container was actually (re)launched and is up. Emit once here (not in the
+	// idempotent no-op path above where a warm container is left alone), so
+	// runner.launched fires per real launch regardless of caller.
+	m.events.Emit(eventlog.KindRunnerLaunched, eventlog.Bool(true), map[string]any{
+		"agent_group": gr.AgentGroupID, "image": gr.Image,
+	})
 	return nil
 }
 

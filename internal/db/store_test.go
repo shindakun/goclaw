@@ -114,3 +114,40 @@ func TestApply_Bootstrap(t *testing.T) {
 		t.Fatalf("owner not seeded correctly: %+v err=%v", u, err)
 	}
 }
+
+func TestCountAgentGroups(t *testing.T) {
+	d := openTestDB(t)
+
+	// Fresh DB: no groups.
+	n, err := d.CountAgentGroups()
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("fresh DB groups = %d, want 0", n)
+	}
+
+	// One group.
+	if _, err := d.upsertAgentGroup("default", "default"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if n, err = d.CountAgentGroups(); err != nil || n != 1 {
+		t.Fatalf("after one group: n=%d err=%v, want 1", n, err)
+	}
+
+	// Re-upserting the same name is idempotent (still one).
+	if _, err := d.upsertAgentGroup("default", "default"); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if n, err = d.CountAgentGroups(); err != nil || n != 1 {
+		t.Fatalf("after re-upsert: n=%d err=%v, want 1", n, err)
+	}
+
+	// A second distinct group makes two (the multi-group case the events mount refuses).
+	if _, err := d.upsertAgentGroup("second", "second"); err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if n, err = d.CountAgentGroups(); err != nil || n != 2 {
+		t.Fatalf("after two groups: n=%d err=%v, want 2", n, err)
+	}
+}

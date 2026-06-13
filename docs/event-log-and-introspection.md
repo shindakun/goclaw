@@ -1,6 +1,6 @@
 # Host event log + agent introspection (RFC)
 
-Status: DESIGN / RFC. Nothing built. Date: 2026-06-07. Proposes a single host-owned,
+Status: PARTIALLY SHIPPED. Date: 2026-06-07 (updated 2026-06-12). Proposes a single host-owned,
 append-only operational event log and an agent skill that reads it for self-diagnosis. The
 goal: let the agent (and the operator) answer "what did the system actually DO, and why did
 that go wrong" from one ground-truth artifact, instead of reconstructing it from scattered
@@ -152,11 +152,14 @@ diagnose itself from the log. Its disciplines, the genuinely useful part:
   errors in the last session; all `schedule.*`; events grouped/counted by `kind`; two events in
   the same second across sessions = a collision signature). Teaching the agent the schema and a
   handful of these filters is most of the skill's value, the diagnosis is a query, not a hunt.
-- **THAT-not-WHERE / fix-the-system.** When the agent finds something went wrong, it does
-  not just patch the symptom; it asks why the SYSTEM produced that outcome and proposes a
-  structural change. The output of a root-cause pass MUST be a verifiable artifact, a file
-  edit, a config/schedule change, a vault note, NOT a resolution to "remember to do better."
-  A behavioral fix that produces no diff did not happen.
+- **THAT-not-WHERE / recommend-the-fix.** When the agent finds something went wrong, it does
+  not just note the symptom; it asks why the SYSTEM produced that outcome and says how the system
+  should change. Crucially, the agent is ADVISORY: it is sandboxed and cannot reach the host, so
+  it does not apply the fix itself. The output of a root-cause pass MUST be a concrete artifact,
+  an owner message with the recommended change, a vault note, or (for a genuine code bug, with a
+  token) a PR on a BRANCH against the goclaw repo, NOT a resolution to "remember to do better"
+  and NOT a claim to have changed something it cannot touch. A pass that produces no such
+  artifact did not happen. (The shipped skill spells out exactly which outputs are possible.)
 - **Self-audit as a scheduled job.** A maintenance-style job (we already have the
   maintenance scheduler) periodically reads recent events, looks for failures/drift (e.g.
   "a scheduled task fired but its session shows no answered turn", "deliveries to channel X
@@ -197,9 +200,12 @@ Honest cost:
 
 ## 7. Open questions
 
-1. **Per-group vs system scoping.** Per-agent-group logs (mounted only into that group) is
-   the safe default, but cross-group/system events (CA generated, host started) need a home.
-   A shared read-only `system` log seems right; confirm nothing in it is group-sensitive.
+1. **Per-group vs system scoping. RESOLVED (interim).** Shipped as a single shared log mounted
+   read-only ONLY when exactly one agent group exists (`db.CountAgentGroups() == 1`); with more
+   than one group the host refuses the mount and logs why, so no group ever reads another's
+   events. This is fail-closed and unblocks the single-group deployment today. The fuller answer
+   (per-agent-group logs plus a shared non-sensitive `system` log) is still the eventual design
+   when multi-group support arrives; the gate is the placeholder until then.
 2. **Retention policy.** Size cap, age cap, how many rotated files. Default: a few MB, a few
    files, deleted oldest-first. Decide concrete numbers.
 3. **Does `.install-log.jsonl` fold in now or later?** It is the same pattern; folding it in
@@ -213,16 +219,23 @@ Honest cost:
 
 ## 8. Phasing
 
-1. **Host event log core: MOSTLY SHIPPED.** `internal/eventlog` exists (one writer, append
-   JSONL, size+age rotation, a typed event-kind set) with call sites at schedule fire/defer,
-   delivery sent/denied/failed, proxy CA, and plugin install/remove (the install log was folded
-   in). STILL TODO from this phase: the read-only container mount (so the agent can read it at
-   all) and remaining call sites (runner lifecycle). The mount is the prerequisite for the
-   skill below, and it forces the per-group-vs-shared scoping decision (open question 1).
-2. **Introspection skill:** the SKILL.md teaching the source-of-truth hierarchy + the
-   read-the-log disciplines, shipped in the templates (and reachable via `vault sync`).
+1. **Host event log core: SHIPPED.** `internal/eventlog` exists (one writer, append JSONL,
+   size+age rotation, a typed event-kind set) with call sites at schedule fire/defer, delivery
+   sent/denied/failed, proxy CA, plugin install/remove (the install log was folded in), and
+   runner lifecycle (`runner.launched` on an actual container (re)launch in `internal/runtime`,
+   `runner.reaped` on idle GC in `internal/sweep`). The read-only container mount is shipped
+   too: `data/events/` is mounted `:ro` at `/run/goclaw/events/`, GATED FAIL-CLOSED on there
+   being a single agent group (the one shared log can carry other groups' events; with >1 group
+   the host logs and does NOT mount). That gate is the chosen answer to open question 1 for now:
+   single shared log, mounted only when one group exists, until a per-group log is built.
+2. **Introspection skill: SHIPPED.** `container/skills/introspection/SKILL.md` teaches the
+   source-of-truth hierarchy + the read-the-log disciplines. It is BAKED INTO THE IMAGE
+   alongside `coding` (it needs only the mount, not a vault), and `compose.go` links it into a
+   group's `~/.claude/skills/` only when the event log is mounted (mirroring how `librarian` is
+   gated on a vault).
 3. **Self-audit job:** a scheduled maintenance job that reads recent events, flags
-   failures/drift, and reports to the owner. Report-only first.
+   failures/drift, and reports to the owner. Report-only first. STILL DEFERRED (per §9): let the
+   log accrue real events first.
 4. **(Later, if wanted) structural-fix authority:** let the audit job make narrowly-scoped,
    reversible fixes, gated and logged as its own events.
 
@@ -237,13 +250,13 @@ line this design exists to respect.
 
 ## 10. Example introspection SKILL.md (draft)
 
-A concrete draft of the phase-2 skill, using goclaw's REAL event kinds and paths. It is the
-operational counterpart to the librarian skill (knowledge) and is shipped the same way (a
-`SKILL.md` the CLI auto-invokes by `description`). It is a DRAFT, not yet wired, and it has a
-hard prerequisite: **the event log must be mounted read-only into the container first** (phase
-1's remaining mount). Until then the agent cannot read `/run/goclaw/events/`, so the skill
-would never fire usefully. Paths below assume the read-only mount lands at `/run/goclaw/events/`
-(matching the `:ro` plugins-dir mount pattern); the host file is `data/events/event-log.jsonl`.
+The draft below was phase 2's design; it SHIPPED (with `runner.*` kinds added) as
+`container/skills/introspection/SKILL.md`, baked into the image and gated in `compose.go` on the
+event-log mount. It is the operational counterpart to the librarian skill (knowledge) and is
+loaded the same way (a `SKILL.md` the CLI auto-invokes by `description`). Its prerequisite, the
+read-only event-log mount at `/run/goclaw/events/`, also shipped (phase 1). The shipped file may
+have drifted slightly from this draft; treat the file as canonical. The host file is
+`data/events/event-log.jsonl`.
 
 ````markdown
 ---

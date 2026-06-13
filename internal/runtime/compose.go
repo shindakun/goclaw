@@ -14,16 +14,18 @@ import (
 //
 //   - a generic agent-first BASE, baked into the image at /app/CLAUDE.md
 //   - SKILLS the model auto-invokes by description: the coding skill (always,
-//     baked at /app/skills/coding) and the librarian skill (only when a vault is
-//     mounted, from /vault/.claude/skills/librarian)
+//     baked at /app/skills/coding), the librarian skill (only when a vault is
+//     mounted, from /vault/.claude/skills/librarian), and the introspection skill
+//     (only when the event log is mounted, baked at /app/skills/introspection)
 //
 // We write, into the group's claude-home dir (mounted at the container's
 // $HOME/.claude):
 //
-//   CLAUDE.md            an imports-only entry point: @./.claude-shared.md
-//   .claude-shared.md    symlink -> /app/CLAUDE.md          (the base)
-//   skills/coding        symlink -> /app/skills/coding      (always)
-//   skills/librarian     symlink -> /vault/.claude/skills/librarian (if vault)
+//   CLAUDE.md             an imports-only entry point: @./.claude-shared.md
+//   .claude-shared.md     symlink -> /app/CLAUDE.md          (the base)
+//   skills/coding         symlink -> /app/skills/coding      (always)
+//   skills/librarian      symlink -> /vault/.claude/skills/librarian (if vault)
+//   skills/introspection  symlink -> /app/skills/introspection (if event log mounted)
 //
 // The symlink targets are CONTAINER paths: they dangle on the host but resolve
 // inside the container, where /app and /vault are mounted. The CLI discovers
@@ -35,6 +37,10 @@ const (
 	baseClaudeMdContainerPath = "/app/CLAUDE.md"
 	skillsContainerBase       = "/app/skills"
 	vaultLibrarianSkillPath   = vaultMountPath + "/.claude/skills/librarian"
+	// introspectionSkillPath is the baked-in introspection skill. Unlike librarian
+	// (which lives in the vault), it ships in the image, so its target is under
+	// /app/skills like coding; it is linked only when the event log is mounted.
+	introspectionSkillPath = skillsContainerBase + "/introspection"
 	// vaultCriticalFactsPath is the always-load L0 facts file (brief §11). When a
 	// vault is mounted we import it directly into the entry-point CLAUDE.md so the
 	// owner/timezone/purpose facts are present on EVERY turn, not only when the
@@ -48,10 +54,11 @@ const composedClaudeMdName = "CLAUDE.md"
 
 // composeGroupPrompt writes the imports-only CLAUDE.md and syncs the skill
 // symlinks into claudeHome (the host dir mounted at the container's
-// $HOME/.claude). vaultMounted toggles the librarian skill. It is deterministic
-// and idempotent: re-running with the same inputs yields the same files, and
-// skills no longer desired are unlinked. Called on every launch.
-func composeGroupPrompt(claudeHome string, vaultMounted bool) error {
+// $HOME/.claude). vaultMounted toggles the librarian skill; eventsMounted toggles
+// the introspection skill. It is deterministic and idempotent: re-running with the
+// same inputs yields the same files, and skills no longer desired are unlinked.
+// Called on every launch.
+func composeGroupPrompt(claudeHome string, vaultMounted, eventsMounted bool) error {
 	if err := os.MkdirAll(claudeHome, 0o777); err != nil {
 		return fmt.Errorf("compose: create claude home %q: %w", claudeHome, err)
 	}
@@ -62,13 +69,17 @@ func composeGroupPrompt(claudeHome string, vaultMounted bool) error {
 	}
 
 	// Skill symlinks under claudeHome/skills/. coding is always present; librarian
-	// only when a vault is mounted. Anything else is pruned so a vault being
-	// unmounted removes the librarian link.
+	// only when a vault is mounted; introspection only when the event log is mounted.
+	// Anything else is pruned, so unmounting a source removes its link (e.g. dropping
+	// to multi-group, which un-gates the events mount, removes introspection).
 	desired := map[string]string{
 		"coding": skillsContainerBase + "/coding",
 	}
 	if vaultMounted {
 		desired["librarian"] = vaultLibrarianSkillPath
+	}
+	if eventsMounted {
+		desired["introspection"] = introspectionSkillPath
 	}
 	if err := syncSkillSymlinks(filepath.Join(claudeHome, "skills"), desired); err != nil {
 		return err

@@ -8,7 +8,7 @@ import (
 
 func TestComposeGroupPrompt_NoVault(t *testing.T) {
 	home := t.TempDir()
-	if err := composeGroupPrompt(home, false); err != nil {
+	if err := composeGroupPrompt(home, false, false); err != nil {
 		t.Fatalf("compose: %v", err)
 	}
 
@@ -42,7 +42,7 @@ func TestComposeGroupPrompt_NoVault(t *testing.T) {
 
 func TestComposeGroupPrompt_WithVault(t *testing.T) {
 	home := t.TempDir()
-	if err := composeGroupPrompt(home, true); err != nil {
+	if err := composeGroupPrompt(home, true, false); err != nil {
 		t.Fatalf("compose: %v", err)
 	}
 
@@ -69,13 +69,13 @@ func TestComposeGroupPrompt_WithVault(t *testing.T) {
 // so unmounting a vault doesn't leave a dangling librarian skill behind.
 func TestComposeGroupPrompt_PrunesLibrarianWhenVaultRemoved(t *testing.T) {
 	home := t.TempDir()
-	if err := composeGroupPrompt(home, true); err != nil {
+	if err := composeGroupPrompt(home, true, false); err != nil {
 		t.Fatalf("compose with vault: %v", err)
 	}
 	if _, err := os.Readlink(filepath.Join(home, "skills", "librarian")); err != nil {
 		t.Fatalf("expected librarian after vault compose: %v", err)
 	}
-	if err := composeGroupPrompt(home, false); err != nil {
+	if err := composeGroupPrompt(home, false, false); err != nil {
 		t.Fatalf("compose without vault: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(home, "skills", "librarian")); !os.IsNotExist(err) {
@@ -84,6 +84,48 @@ func TestComposeGroupPrompt_PrunesLibrarianWhenVaultRemoved(t *testing.T) {
 	// coding survives the recompose.
 	if _, err := os.Readlink(filepath.Join(home, "skills", "coding")); err != nil {
 		t.Fatalf("coding link lost on recompose: %v", err)
+	}
+}
+
+func TestComposeGroupPrompt_IntrospectionGatedOnEvents(t *testing.T) {
+	home := t.TempDir()
+
+	// Events off: introspection absent, coding present.
+	if err := composeGroupPrompt(home, false, false); err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, "skills", "introspection")); !os.IsNotExist(err) {
+		t.Fatalf("introspection should be absent without the event log; lstat err = %v", err)
+	}
+
+	// Events on: introspection linked to the baked-in /app/skills/introspection.
+	if err := composeGroupPrompt(home, false, true); err != nil {
+		t.Fatalf("compose with events: %v", err)
+	}
+	if tgt, err := os.Readlink(filepath.Join(home, "skills", "introspection")); err != nil || tgt != introspectionSkillPath {
+		t.Fatalf("introspection link = %q, err %v; want %q", tgt, err, introspectionSkillPath)
+	}
+	if _, err := os.Readlink(filepath.Join(home, "skills", "coding")); err != nil {
+		t.Fatalf("coding link should still be present with events: %v", err)
+	}
+}
+
+// Dropping the events mount (e.g. host goes multi-group, un-gating it) must prune
+// the introspection link, so the agent does not keep a skill pointing at a mount
+// that is no longer there.
+func TestComposeGroupPrompt_PrunesIntrospectionWhenEventsRemoved(t *testing.T) {
+	home := t.TempDir()
+	if err := composeGroupPrompt(home, false, true); err != nil {
+		t.Fatalf("compose with events: %v", err)
+	}
+	if _, err := os.Readlink(filepath.Join(home, "skills", "introspection")); err != nil {
+		t.Fatalf("expected introspection after events compose: %v", err)
+	}
+	if err := composeGroupPrompt(home, false, false); err != nil {
+		t.Fatalf("compose without events: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, "skills", "introspection")); !os.IsNotExist(err) {
+		t.Fatalf("introspection should be pruned after recompose without events; lstat err = %v", err)
 	}
 }
 

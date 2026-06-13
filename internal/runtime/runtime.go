@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -54,6 +55,8 @@ type Manager struct {
 	caCertPath  string            // host path to the credential-proxy CA cert, mounted RO (may be empty)
 	pluginsDir  string            // host plugins dir, mounted RO at /plugins (may be empty)
 	chanSockDir string            // host channel-socket dir, mounted RW at /run/goclaw/channels (may be empty)
+	eventsDir   string            // host operational event-log dir, mounted RO at /run/goclaw/events (may be empty)
+	events      *eventlog.Logger  // optional; nil = no operational event log (runner.launched)
 
 	// ensureMu serializes EnsureGroupRunner per agent group. The router (on a new
 	// message) and the sweep (recovery) both call EnsureRunner concurrently; the
@@ -136,6 +139,31 @@ func (m *Manager) WithPlugins(dir string) *Manager {
 	return m
 }
 
+// WithEvents sets the host operational event-log directory, mounted READ-ONLY at
+// /run/goclaw/events in every runner container so the agent's introspection skill
+// can read what the system did. The HOST is the sole writer (internal/eventlog);
+// the agent only ever reads it (read-only mount + host-only writer), so this adds
+// no write channel from the untrusted box to the host (RFC
+// event-log-and-introspection §0). The host decides WHETHER to call this: it is
+// gated fail-closed on there being a single agent group, since the one shared log
+// can contain other groups' events (see cmd/goclaw and db.CountAgentGroups).
+// Empty disables the events mount. Returns m for chaining.
+func (m *Manager) WithEvents(dir string) *Manager {
+	m.eventsDir = dir
+	return m
+}
+
+// WithEventLog sets the operational event log the manager records runner.launched
+// into, emitted once per ACTUAL container (re)launch (after the post-launch health
+// check passes), regardless of which caller triggered it (router or sweep). It is
+// not emitted for an idempotent no-op EnsureGroupRunner on an already-running
+// container, so repeated runner.launched for one group is a real relaunch signal
+// (the crash-loop signature). Optional (nil-safe); returns m for chaining.
+func (m *Manager) WithEventLog(e *eventlog.Logger) *Manager {
+	m.events = e
+	return m
+}
+
 // WithChannelSockets sets the host directory holding per-channel Unix sockets, mounted
 // READ-WRITE at /run/goclaw/channels in every runner container. The HOST listens on
 // each <name>.sock (the trusted channel relay); the in-container runner DIALS it and
@@ -166,6 +194,7 @@ func (m *Manager) EnsureRunner(ctx context.Context, agentGroupID int64, groupDir
 		CACertPath:     m.caCertPath,
 		PluginsDir:     m.pluginsDir,
 		ChannelSockDir: m.chanSockDir,
+		EventsDir:      m.eventsDir,
 		ExtraMounts:    validated,
 	})
 }

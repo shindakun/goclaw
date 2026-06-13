@@ -87,10 +87,13 @@ func run(log *slog.Logger) error {
 	log.Info("central db ready", "path", cfg.CentralDBPath)
 
 	// Operational event log: a host-owned, append-only, structured record of what the
-	// host DID (schedule fire/defer, delivery sent/denied/failed, proxy CA minted),
-	// retained and queryable unlike the ephemeral slog stderr. Host-only for now (not
-	// mounted into the container). A construction failure is non-fatal: the host runs
-	// without the event log rather than refusing to start over a logging concern.
+	// host DID (schedule fire/defer, delivery sent/denied/failed, proxy CA minted,
+	// runner launched/reaped), retained and queryable unlike the ephemeral slog stderr.
+	// The host is the SOLE writer; it is mounted READ-ONLY into the runner (gated on a
+	// single agent group, see below) so the agent's introspection skill can read it
+	// without any write channel back to the host. A construction failure is non-fatal:
+	// the host runs without the event log rather than refusing to start over a logging
+	// concern.
 	events, err := eventlog.New(filepath.Join(cfg.DataDir, "events"), eventlog.Config{}, log)
 	if err != nil {
 		log.Warn("event log disabled (construction failed)", "err", err)
@@ -307,13 +310,35 @@ func run(log *slog.Logger) error {
 		mgr := runtime.New(cfg.PodmanBin, cfg.RunnerImage, runtime.RuntimeCrun, allow).
 			WithEnv(claudeEnv).
 			WithVault(cfg.VaultDir).
-			WithCredCA(proxyCAHostPath).     // empty when the proxy is off
-			WithPlugins(pluginsHostDir(cfg)) // <data>/plugins, mounted RO at /plugins
+			WithCredCA(proxyCAHostPath).      // empty when the proxy is off
+			WithPlugins(pluginsHostDir(cfg)). // <data>/plugins, mounted RO at /plugins
+			WithEventLog(events)              // emits runner.launched on actual (re)launch (nil-safe)
 		// The channel-socket mount is only needed for the "unix" channel transport; the
 		// "tcp" transport (default, for macOS) dials host.docker.internal and needs no
 		// mounted socket.
 		if cfg.ChannelTransport == "unix" {
 			mgr = mgr.WithChannelSockets(channelSocketsHostDir(cfg))
+		}
+		// Mount the operational event log READ-ONLY into the container so the agent's
+		// introspection skill can read it. Gated FAIL-CLOSED on there being a single
+		// agent group: the one shared log can contain events about every group, so
+		// mounting it into a group's container is only safe when there is just one
+		// group (nothing another group owns can leak in). With more than one group we
+		// log and DO NOT mount, until a per-group event log is built (RFC
+		// event-log-and-introspection §7 q1). Skipped silently if the event log is off.
+		if events != nil {
+			groupCount, cerr := central.CountAgentGroups()
+			switch {
+			case cerr != nil:
+				log.Warn("events mount skipped (could not count agent groups)", "err", cerr)
+			case groupCount == 1:
+				mgr = mgr.WithEvents(filepath.Join(cfg.DataDir, "events"))
+				log.Info("event log mounted read-only into the runner", "path", "/run/goclaw/events")
+			default:
+				log.Warn("event log NOT mounted: multiple agent groups exist, and the single "+
+					"shared log can contain other groups' events; per-group event logs are not "+
+					"built yet (RFC event-log-and-introspection q1)", "agent_groups", groupCount)
+			}
 		}
 		ensurer = mgr
 		runners = mgr
@@ -360,7 +385,7 @@ func run(log *slog.Logger) error {
 	// The router intercepts an agent reply that IS a "/schedule ..." directive, so the
 	// agent can manage scheduled tasks by emitting one (natural-language scheduling).
 	del := delivery.New(central, registry, cfg.DataDir, typer, log).WithInterceptor(rtr).WithEventLog(events)
-	swp := sweep.New(central, cfg.DataDir, runners, log)
+	swp := sweep.New(central, cfg.DataDir, runners, log).WithEventLog(events)
 	// Pin the channel-hosting agent group so the sweep never reaps its container as
 	// idle: an always-on channel plugin (e.g. IRC) must keep its container running to
 	// stay connected, even with no recent agent activity.

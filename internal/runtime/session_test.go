@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -165,6 +166,48 @@ func TestEnsureGroupRunner_MountsChannelSocketDirRW(t *testing.T) {
 	}
 }
 
+func TestEnsureGroupRunner_MountsEventsReadOnly(t *testing.T) {
+	var calls []string
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
+
+	eventsDir := t.TempDir() // must exist: the mount is stat-guarded
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
+	gr := GroupRunner{
+		Image:        "goclaw-runner:latest",
+		AgentGroupID: 1,
+		GroupDir:     filepath.Join("data", "sessions", "1"),
+		EventsDir:    eventsDir,
+	}
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	run := calls[1]
+
+	absEvents, _ := filepath.Abs(eventsDir)
+	// The event log is mounted READ-ONLY (the agent reads it; the host is the sole
+	// writer). A read-only mount renders ":ro,Z", never a bare ":Z" (which is RW).
+	wantRO := absEvents + ":" + eventsMountPath + ":ro,Z"
+	if !strings.Contains(run, wantRO) {
+		t.Errorf("run argv missing read-only events mount %q\n  got: %s", wantRO, run)
+	}
+	if strings.Contains(run, absEvents+":"+eventsMountPath+":Z") && !strings.Contains(run, wantRO) {
+		t.Errorf("events mount must be read-only, not RW: %s", run)
+	}
+}
+
+func TestEnsureGroupRunner_NoEventsMountWhenUnset(t *testing.T) {
+	var calls []string
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
+	gr := GroupRunner{Image: "goclaw-runner:latest", AgentGroupID: 1, GroupDir: filepath.Join("data", "sessions", "1")}
+	if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if strings.Contains(calls[1], eventsMountPath) {
+		t.Errorf("no events mount expected when EventsDir unset: %s", calls[1])
+	}
+}
+
 func TestEnsureGroupRunner_NoChannelMountWhenUnset(t *testing.T) {
 	var calls []string
 	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
@@ -314,6 +357,51 @@ func TestEnsureGroupRunner_KeepsOnCurrentImage(t *testing.T) {
 	if didLaunchOrRemove(calls) {
 		t.Fatalf("expected no replace (kept current image), got: %v", calls)
 	}
+}
+
+// An actual launch emits runner.launched; an idempotent no-op (already running on
+// the current image) emits nothing, so repeated runner.launched is a real relaunch
+// signal (the crash-loop signature) rather than per-tick noise.
+func TestEnsureGroupRunner_EmitsLaunchedOnlyOnRealLaunch(t *testing.T) {
+	// Case 1: absent -> running. A real launch; expect the event.
+	t.Run("emits on launch", func(t *testing.T) {
+		var calls []string
+		withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
+		evDir := t.TempDir()
+		ev, err := eventlog.New(evDir, eventlog.Config{}, nil)
+		if err != nil {
+			t.Fatalf("eventlog: %v", err)
+		}
+		m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil).WithEventLog(ev)
+		gr := GroupRunner{Image: "goclaw-runner:latest", AgentGroupID: 1, GroupDir: filepath.Join("data", "sessions", "1")}
+		if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+			t.Fatalf("ensure: %v", err)
+		}
+		data, _ := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
+		if !strings.Contains(string(data), `"kind":"runner.launched"`) {
+			t.Fatalf("expected runner.launched on launch, log was:\n%s", data)
+		}
+	})
+
+	// Case 2: already running on the current image. A no-op; expect NO event.
+	t.Run("silent on idempotent no-op", func(t *testing.T) {
+		var calls []string
+		ps := "goclaw-1\trunning\tlocalhost/goclaw-claude:latest\t" + fakeImageID + "\n"
+		withFakePodman(t, ps, ps, &calls)
+		evDir := t.TempDir()
+		ev, err := eventlog.New(evDir, eventlog.Config{}, nil)
+		if err != nil {
+			t.Fatalf("eventlog: %v", err)
+		}
+		m := New("podman", "goclaw-claude:latest", RuntimeCrun, nil).WithEventLog(ev)
+		gr := GroupRunner{Image: "goclaw-claude:latest", AgentGroupID: 1, GroupDir: "/data/x"}
+		if err := m.EnsureGroupRunner(context.Background(), gr); err != nil {
+			t.Fatalf("ensure: %v", err)
+		}
+		if data, _ := os.ReadFile(filepath.Join(evDir, "event-log.jsonl")); strings.Contains(string(data), "runner.launched") {
+			t.Fatalf("no-op must not emit runner.launched, log was:\n%s", data)
+		}
+	})
 }
 
 // containsCall reports whether any recorded podman invocation contains substr.

@@ -201,6 +201,20 @@ type Session struct {
 	SessionKey   string
 }
 
+// CountAgentGroups returns how many agent groups exist. The host uses it to gate
+// the shared operational event-log mount fail-closed: the single event log can
+// contain events about every group, so it is safe to mount read-only into a
+// group's container ONLY when there is exactly one group (nothing another group
+// owns can be in it). With more than one group the host refuses the mount until a
+// per-group event log is built (RFC event-log-and-introspection §7 open question 1).
+func (d *DB) CountAgentGroups() (int, error) {
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM agent_groups`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count agent groups: %w", err)
+	}
+	return n, nil
+}
+
 // ActiveSessions returns every session row. v0 treats all sessions as drainable;
 // a later refinement filters by recent activity (brief §3.3 sweep). The delivery
 // loop uses this to know which outbound.db files to poll.

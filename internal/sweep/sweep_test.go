@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -152,6 +155,49 @@ func TestGCIdleRunners_ReapsIdle(t *testing.T) {
 
 	if len(fr.stopped) != 1 || fr.stopped[0] != agID {
 		t.Fatalf("expected group %d reaped, got %v", agID, fr.stopped)
+	}
+}
+
+// Reaping an idle runner emits a runner.reaped event so the introspection skill can
+// see it. Uses a real event log written to a tempdir and reads the line back.
+func TestGCIdleRunners_EmitsReapedEvent(t *testing.T) {
+	central, agID, dataDir := setup(t)
+	const key = "telegram:555"
+	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	evDir := t.TempDir()
+	ev, err := eventlog.New(evDir, eventlog.Config{}, quiet())
+	if err != nil {
+		t.Fatalf("eventlog: %v", err)
+	}
+	fr := &fakeRunners{running: []int64{agID}}
+	s := New(central, dataDir, fr, quiet()).WithEventLog(ev)
+	s.gcIdleRunners(context.Background(), time.Now().Add(24*time.Hour))
+
+	if len(fr.stopped) != 1 {
+		t.Fatalf("precondition: expected a reap, got %v", fr.stopped)
+	}
+	data, err := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	if !strings.Contains(string(data), `"kind":"runner.reaped"`) {
+		t.Fatalf("expected a runner.reaped event, log was:\n%s", data)
+	}
+}
+
+// A nil event log on the sweep must not panic on reap (the common no-eventlog case).
+func TestGCIdleRunners_NilEventLogNoPanic(t *testing.T) {
+	central, agID, dataDir := setup(t)
+	if _, err := central.ResolveOrCreateSession(agID, "telegram:555"); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	fr := &fakeRunners{running: []int64{agID}}
+	s := New(central, dataDir, fr, quiet()) // no WithEventLog
+	s.gcIdleRunners(context.Background(), time.Now().Add(24*time.Hour))
+	if len(fr.stopped) != 1 {
+		t.Fatalf("expected a reap even without an event log, got %v", fr.stopped)
 	}
 }
 

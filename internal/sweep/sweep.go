@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -33,6 +34,7 @@ type Sweeper struct {
 	central *db.DB
 	dataDir string
 	runners RunnerManager
+	events  *eventlog.Logger // optional; nil = no operational event log
 	log     *slog.Logger
 
 	// pinned agent groups are never reaped as idle. A group hosting an always-on
@@ -44,6 +46,14 @@ type Sweeper struct {
 // New constructs a Sweeper. runners may be nil to disable runner recovery + GC.
 func New(central *db.DB, dataDir string, runners RunnerManager, log *slog.Logger) *Sweeper {
 	return &Sweeper{central: central, dataDir: dataDir, runners: runners, log: log}
+}
+
+// WithEventLog sets the operational event log the sweep records runner lifecycle
+// events into (runner.launched on recovery, runner.reaped on idle GC). Optional
+// (nil-safe); returns s for chaining.
+func (s *Sweeper) WithEventLog(e *eventlog.Logger) *Sweeper {
+	s.events = e
+	return s
 }
 
 // WithPinnedGroups marks agent groups that must never be idle-reaped (they host an
@@ -126,6 +136,10 @@ func (s *Sweeper) recoverRunners(ctx context.Context) {
 			continue
 		}
 		s.log.Info("sweep: ensured runner for queued group", "agent_group", agentGroupID)
+		// runner.launched is NOT emitted here: EnsureRunner is idempotent (a warm
+		// container is left alone), so emitting per tick would over-fire. The event is
+		// emitted by internal/runtime at the actual container launch, so it fires once
+		// per real (re)launch regardless of caller (router or this sweep).
 	}
 }
 
@@ -193,6 +207,9 @@ func (s *Sweeper) gcIdleRunners(ctx context.Context, now time.Time) {
 			continue
 		}
 		s.log.Info("sweep: reaped idle runner", "agent_group", agentGroupID)
+		s.events.Emit(eventlog.KindRunnerReaped, eventlog.Bool(true), map[string]any{
+			"agent_group": agentGroupID, "reason": "idle",
+		})
 	}
 }
 
