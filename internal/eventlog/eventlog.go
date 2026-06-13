@@ -7,17 +7,19 @@
 // proxy CA drifting and flooding bad-cert errors) are exactly the class this exists
 // to make a grep instead of an archaeology dig.
 //
-// Scope of THIS slice (deliberately small): a single global host-side log under the
-// data dir, one writer, append JSON-lines, rotated by size and age. It is NOT yet
-// mounted into the container (the agent cannot read it), it does NOT subsume the
-// plugin install log, and there is no introspection skill. Those are follow-ups; if
-// the log is ever made agent-readable, every event kind must first be vetted to
-// never carry a secret or raw user content (an untrusted agent would read it).
+// Shape: a single global host-side log under the data dir, one writer, append
+// JSON-lines, rotated by size and age. It is mounted READ-ONLY into the runner
+// container (gated on a single agent group; see cmd/goclaw) so the agent's
+// introspection skill can read it. Because an untrusted agent reads it, every event
+// kind must be vetted to never carry a secret or raw user content (the fields here
+// are ids, names, and reasons, never tokens or message bodies).
 //
 // Containment note: the log is host-writes only. Nothing here gives the container a
-// way to write it, which is why it is safe to later mount read-only. Adding an
+// way to write it, which is why it is safe to mount read-only. Adding an
 // agent->host "emit event" path would be a write channel out of the box and is the
-// surface the boundary refuses; do not add one.
+// surface the boundary refuses; do not add one. (The runner signals a turn it gave
+// up on by writing a 'turn_failed'-kind row to its OWN outbound.db; the HOST reads
+// that on delivery and emits runner.turn_failed. The runner never writes this log.)
 package eventlog
 
 import (
@@ -46,6 +48,10 @@ const (
 	KindPluginRemove   Kind = "plugin.remove"      // a plugin was removed
 	KindRunnerLaunched Kind = "runner.launched"    // a runner container was (re)launched for a group
 	KindRunnerReaped   Kind = "runner.reaped"      // an idle runner container was stopped/removed by the sweep
+	KindRunnerTurnFail Kind = "runner.turn_failed" // the runner gave up on a message after repeated transient failures
+	KindChannelAttach  Kind = "channel.attached"   // a channel plugin dialed in and its relay is live
+	KindChannelDetach  Kind = "channel.detached"   // a channel plugin's connection dropped (awaiting re-dial)
+	KindMaintFired     Kind = "maintenance.fired"  // a scheduled vault-maintenance job fired
 )
 
 // Event is one record. Common fields are explicit; everything kind-specific rides in

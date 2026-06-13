@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/mounts"
 )
 
@@ -90,7 +91,15 @@ type Scheduler struct {
 	ensurer RunnerEnsurer
 	target  Target
 	jobs    []Job
+	events  *eventlog.Logger // optional; nil = no operational event log (maintenance.fired)
 	log     *slog.Logger
+}
+
+// WithEventLog sets the operational event log the scheduler records maintenance.fired
+// into. Optional (nil-safe); returns s for chaining.
+func (s *Scheduler) WithEventLog(e *eventlog.Logger) *Scheduler {
+	s.events = e
+	return s
 }
 
 // New constructs a Scheduler. ensurer may be nil to skip ensuring the runner
@@ -135,9 +144,13 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 		}
 		if err := s.fire(ctx, job, now); err != nil {
 			s.log.Error("maintenance: fire", "job", job.Name, "err", err)
+			s.events.Emit(eventlog.KindMaintFired, eventlog.Bool(false), map[string]any{
+				"job": job.Name, "err": err.Error(),
+			})
 			continue
 		}
 		s.log.Info("maintenance job fired", "job", job.Name)
+		s.events.Emit(eventlog.KindMaintFired, eventlog.Bool(true), map[string]any{"job": job.Name})
 	}
 }
 

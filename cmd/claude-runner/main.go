@@ -236,8 +236,12 @@ func (r *runner) processSessionWith(ctx context.Context, dir string, handle msgH
 			// message so it does not loop. Better a visible failure than a silent hang.
 			r.log.Error("giving up on message after repeated transient failures",
 				"session", filepath.Base(dir), "in_id", m.ID, "attempts", attempts, "err", transient)
-			if _, err := sess.EnqueueOutbound(m.Channel, m.ChatID,
-				"⚠️ I couldn't reach the model after several tries (it may be a temporary outage or the API is out of quota). Your message wasn't answered; please try again later."); err != nil {
+			// Enqueue as kind 'turn_failed' so the host emits a runner.turn_failed event
+			// on delivery (the introspection skill can then spot a run of these), not just
+			// a normal reply send.
+			if _, err := sess.EnqueueOutboundKind(m.Channel, m.ChatID,
+				"⚠️ I couldn't reach the model after several tries (it may be a temporary outage or the API is out of quota). Your message wasn't answered; please try again later.",
+				"turn_failed"); err != nil {
 				return answered, err
 			}
 			if err := sess.SetInboundHWM(m.ID); err != nil {

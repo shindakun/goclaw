@@ -183,6 +183,14 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 		d.events.Emit(eventlog.KindDeliverySent, eventlog.Bool(true), map[string]any{
 			"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID,
 		})
+		// A 'turn_failed' row is the runner's give-up apology (it could not answer
+		// after repeated transient failures). Record that distinctly so the
+		// introspection skill can spot a run of failing turns, not just a normal send.
+		if m.Kind == "turn_failed" {
+			d.events.Emit(eventlog.KindRunnerTurnFail, eventlog.Bool(false), map[string]any{
+				"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID,
+			})
+		}
 	}
 	return nil
 }

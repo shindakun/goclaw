@@ -221,9 +221,15 @@ Honest cost:
 
 1. **Host event log core: SHIPPED.** `internal/eventlog` exists (one writer, append JSONL,
    size+age rotation, a typed event-kind set) with call sites at schedule fire/defer, delivery
-   sent/denied/failed, proxy CA, plugin install/remove (the install log was folded in), and
-   runner lifecycle (`runner.launched` on an actual container (re)launch in `internal/runtime`,
-   `runner.reaped` on idle GC in `internal/sweep`). The read-only container mount is shipped
+   sent/denied/failed, proxy CA, plugin install/remove (the install log was folded in), runner
+   lifecycle (`runner.launched` on an actual container (re)launch in `internal/runtime`,
+   `runner.reaped` on idle GC in `internal/sweep`, `runner.turn_failed` when the runner gives up
+   on a message after repeated transient failures, surfaced via a `turn_failed`-kind outbound row
+   the host recognizes on delivery), channel lifecycle (`channel.attached` / `channel.detached`
+   from the channel relay), and `maintenance.fired` from the vault-upkeep scheduler. (Deferred:
+   `proxy.token_refresh` for an OAuth refresh, it would need the event logger threaded into the
+   security-sensitive `internal/credstore`, which is the wrong layer to expand right now.) The
+   read-only container mount is shipped
    too: `data/events/` is mounted `:ro` at `/run/goclaw/events/`, GATED FAIL-CLOSED on there
    being a single agent group (the one shared log can carry other groups' events; with >1 group
    the host logs and does NOT mount). That gate is the chosen answer to open question 1 for now:

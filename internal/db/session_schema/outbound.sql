@@ -12,6 +12,11 @@ CREATE TABLE IF NOT EXISTS messages (
     channel       TEXT NOT NULL,
     chat_id       TEXT NOT NULL,
     text          TEXT NOT NULL,
+    -- the nature of this reply, so the host can log it distinctly: 'reply' (a
+    -- normal agent answer) or 'turn_failed' (the runner gave up after repeated
+    -- transient failures; the text is an apology and the host emits a
+    -- runner.turn_failed event on delivery). Default keeps existing rows 'reply'.
+    kind          TEXT NOT NULL DEFAULT 'reply',
     -- lifecycle: pending → delivered (or failed). The container writes
     -- 'pending'; the host delivery loop advances it.
     status        TEXT NOT NULL DEFAULT 'pending',

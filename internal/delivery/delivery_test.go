@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 )
 
 // fakeAdapter records what was sent and never touches a network.
@@ -191,5 +193,52 @@ func TestDrain_InterceptSwallows(t *testing.T) {
 	enqueueAndDrain(t, d, central, agID, dataDir, "telegram:777", "plain reply")
 	if len(fake.sent) != 1 || fake.sent[0].Text != "plain reply" {
 		t.Fatalf("non-marker should pass through, got %+v", fake.sent)
+	}
+}
+
+// A delivered 'turn_failed' outbound row (the runner's give-up apology) emits a
+// runner.turn_failed event in addition to delivery.sent, so the introspection
+// skill can see the turn failed. A normal 'reply' row emits only delivery.sent.
+func TestDrain_TurnFailedEmitsEvent(t *testing.T) {
+	d, central, agID, dataDir, _ := setup(t)
+	evDir := t.TempDir()
+	ev, err := eventlog.New(evDir, eventlog.Config{}, quiet())
+	if err != nil {
+		t.Fatalf("eventlog: %v", err)
+	}
+	d = d.WithEventLog(ev)
+
+	const key = "telegram:555"
+	if _, err := central.ResolveOrCreateSession(agID, key); err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	runner, err := db.OpenSessionDir(db.SessionDir(dataDir, agID, key))
+	if err != nil {
+		t.Fatalf("open runner session: %v", err)
+	}
+	// A normal reply and a give-up reply, in order.
+	if _, err := runner.EnqueueOutbound("telegram", "555", "a normal answer"); err != nil {
+		t.Fatalf("enqueue reply: %v", err)
+	}
+	if _, err := runner.EnqueueOutboundKind("telegram", "555", "could not reach the model", "turn_failed"); err != nil {
+		t.Fatalf("enqueue turn_failed: %v", err)
+	}
+	_ = runner.Close()
+
+	if err := d.drain(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	log := string(data)
+	// Exactly one runner.turn_failed (for the give-up row), and two delivery.sent.
+	if got := strings.Count(log, `"kind":"runner.turn_failed"`); got != 1 {
+		t.Fatalf("want exactly 1 runner.turn_failed, got %d; log:\n%s", got, log)
+	}
+	if got := strings.Count(log, `"kind":"delivery.sent"`); got != 2 {
+		t.Fatalf("want 2 delivery.sent (both rows delivered), got %d; log:\n%s", got, log)
 	}
 }

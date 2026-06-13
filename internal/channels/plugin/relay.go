@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/shindakun/goclaw/internal/eventlog"
 	plug "github.com/shindakun/goclaw/internal/plugin"
 )
 
@@ -46,9 +47,18 @@ type Relay struct {
 	tcpHost   string // tcp: the host address the CONTAINER dials (e.g. "host.docker.internal")
 	tcpBind   string // tcp: the address the host BINDS (e.g. "0.0.0.0"); port is chosen per channel
 	log       *slog.Logger
+	events    *eventlog.Logger // optional; nil = no operational event log (channel.attached/detached)
 
 	mu   sync.Mutex
 	open map[string]*relayChannel // by channel name
+}
+
+// WithEventLog sets the operational event log the relay records channel
+// attach/detach events into (so the introspection skill can see a channel dropping).
+// Optional (nil-safe); returns r for chaining.
+func (r *Relay) WithEventLog(e *eventlog.Logger) *Relay {
+	r.events = e
+	return r
 }
 
 // Config configures a Relay's transport.
@@ -119,6 +129,7 @@ func (r *Relay) Open(name, pluginHostDir string) (*Adapter, error) {
 	rc := &relayChannel{
 		name:          name,
 		log:           r.log,
+		events:        r.events,
 		listener:      ln,
 		token:         ep.Token,
 		pluginHostDir: pluginHostDir,
@@ -220,6 +231,7 @@ func (r *Relay) CloseAll() {
 type relayChannel struct {
 	name          string
 	log           *slog.Logger
+	events        *eventlog.Logger // optional; nil-safe
 	listener      net.Listener
 	token         string // tcp: required leading token; "" for unix
 	pluginHostDir string // where the .endpoint file was written (removed on stop)
@@ -275,6 +287,7 @@ func (rc *relayChannel) acceptLoop() {
 		rc.client = client
 		rc.mu.Unlock()
 		rc.log.Info("channel plugin attached", "channel", rc.name)
+		rc.events.Emit(eventlog.KindChannelAttach, eventlog.Bool(true), map[string]any{"channel": rc.name})
 
 		for in := range client.Inbound() {
 			select {
@@ -292,6 +305,7 @@ func (rc *relayChannel) acceptLoop() {
 			return
 		default:
 			rc.log.Info("channel plugin detached; awaiting re-dial", "channel", rc.name)
+			rc.events.Emit(eventlog.KindChannelDetach, eventlog.Bool(false), map[string]any{"channel": rc.name})
 		}
 	}
 }

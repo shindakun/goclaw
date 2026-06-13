@@ -31,9 +31,12 @@ truth for KNOWLEDGE; the event log is ground truth for OPERATIONS. Do not confla
 
 Kinds you will see: `schedule.fired` / `schedule.deferred`; `delivery.sent` / `delivery.denied`
 / `delivery.failed`; `proxy.ca_generated`; `plugin.install` / `plugin.remove`;
-`runner.launched` / `runner.reaped`. Common fields: `ts` (RFC3339 local), `kind`, `ok`
-(present where success/failure is meaningful), and `fields` (kind-specific). There are no
-message bodies or secrets here by design; do not expect them.
+`runner.launched` / `runner.reaped` / `runner.turn_failed` (the runner gave up on a message
+after repeated transient failures, e.g. the API was unreachable or out of quota);
+`channel.attached` / `channel.detached` (a channel plugin's connection came up / dropped);
+`maintenance.fired` (a scheduled vault-upkeep job ran). Common fields: `ts` (RFC3339 local),
+`kind`, `ok` (present where success/failure is meaningful), and `fields` (kind-specific). There
+are no message bodies or secrets here by design; do not expect them.
 
 ## How to query (diagnosis is a filter, not a hunt)
 
@@ -60,6 +63,15 @@ jq -c 'select(.kind=="proxy.ca_generated")' "$LOG"
 
 # Did a runner keep relaunching (a crash loop)?
 jq -c 'select(.kind=="runner.launched")' "$LOG"
+
+# Are turns failing out (the API is down / out of quota)?
+jq -c 'select(.kind=="runner.turn_failed")' "$LOG"
+
+# Did a channel drop and not come back? (a detach with no later attach for it)
+jq -s 'map(select(.kind|startswith("channel."))) | sort_by(.ts)' "$LOG"
+
+# Did scheduled maintenance actually run?
+jq -c 'select(.kind=="maintenance.fired")' "$LOG"
 ```
 
 If the log has rotated there is also `event-log.1.jsonl` in the same dir; read both (oldest
@@ -95,6 +107,15 @@ Examples, with the realistic output:
 - Repeated `runner.launched` for one group with little `runner.reaped` between => a crash loop.
   Output: gather the surrounding failures and surface them to the owner. If the root cause is a
   bug in goclaw itself and you have a token, a PR (on a branch) is appropriate.
+- One or more `runner.turn_failed` => the model was unreachable and the runner gave up after
+  retrying. Output: tell the owner the model could not be reached (often the API is down or out
+  of quota, an account/billing state you cannot fix from here); recommend they check quota and
+  retry. This is not a goclaw bug to PR.
+- A `channel.detached` with no following `channel.attached` for the same channel => that channel
+  is down (the plugin stopped dialing back). Output: tell the owner which channel dropped, with
+  the timestamps; if it is a goclaw/plugin bug and you have a token, a PR is appropriate.
+- A `maintenance.fired` with `ok:false`, or an expected daily job that never appears => upkeep
+  is not running. Output: surface which job and (for ok:false) the error to the owner.
 
 A root-cause pass that ends without a concrete owner message, a vault note, or a PR did not
 happen. Do not claim you "fixed" or "changed" anything you could not actually do from the

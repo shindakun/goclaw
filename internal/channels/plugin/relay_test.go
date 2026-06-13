@@ -7,10 +7,14 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shindakun/goclaw/internal/channels"
+	"github.com/shindakun/goclaw/internal/eventlog"
 	plug "github.com/shindakun/goclaw/internal/plugin"
 )
 
@@ -279,3 +283,65 @@ func dialTCPWhenReady(t *testing.T, addr string, timeout time.Duration) net.Conn
 type errStr string
 
 func (e errStr) Error() string { return string(e) }
+
+// Attaching a channel plugin emits a channel.attached event, so the introspection
+// skill can see a channel come up (and, by its absence after a later detach, drop).
+func TestRelay_EmitsChannelAttachedEvent(t *testing.T) {
+	pdir := t.TempDir()
+	evDir := t.TempDir()
+	ev, err := eventlog.New(evDir, eventlog.Config{}, quietLog())
+	if err != nil {
+		t.Fatalf("eventlog: %v", err)
+	}
+	r, err := NewRelay(Config{Transport: TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}, quietLog())
+	if err != nil {
+		t.Fatalf("new relay: %v", err)
+	}
+	r = r.WithEventLog(ev)
+	defer r.CloseAll()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	adapter, err := r.Open("irc", pdir)
+	if err != nil {
+		t.Fatalf("relay open: %v", err)
+	}
+	go func() {
+		ep, derr := plug.ReadChannelEndpoint(pdir)
+		if derr != nil {
+			return
+		}
+		conn := dialTCPWhenReady(t, ep.Addr, 5*time.Second)
+		if conn == nil {
+			return
+		}
+		_, _ = conn.Write([]byte(ep.Token + "\n"))
+		_ = fakeChannelPluginWire(conn, make(chan string, 1))
+	}()
+
+	stream, err := adapter.Start(ctx)
+	if err != nil {
+		t.Fatalf("adapter start: %v", err)
+	}
+	// Receiving an inbound proves the plugin attached, so the event must be present.
+	select {
+	case <-stream:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no inbound routed; plugin never attached")
+	}
+
+	// The attach event is emitted right after the client is recorded, slightly before
+	// inbound is routed; poll briefly to avoid a write/read race on the log file.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		data, _ := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
+		if strings.Contains(string(data), `"kind":"channel.attached"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no channel.attached event emitted; log:\n%s", data)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

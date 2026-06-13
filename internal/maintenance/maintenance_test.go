@@ -4,11 +4,14 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shindakun/goclaw/internal/db"
+	"github.com/shindakun/goclaw/internal/eventlog"
 )
 
 func testDB(t *testing.T) *db.DB {
@@ -169,5 +172,34 @@ func TestFire_EnqueuesAndRecords(t *testing.T) {
 	// And last-run was recorded, so it's no longer due.
 	if due, _ := s.due(job, now.Add(time.Minute)); due {
 		t.Fatal("expected not due right after firing")
+	}
+}
+
+// A due job that fires emits a maintenance.fired event (so the introspection skill
+// can confirm upkeep ran). Drives the real tick path with an event log attached.
+func TestTick_EmitsMaintenanceFired(t *testing.T) {
+	d := testDB(t)
+	if _, _, err := d.Apply(db.Bootstrap{DefaultAgentGroupName: "default", DefaultAgentGroupFolder: "default"}); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	dir := t.TempDir()
+	evDir := t.TempDir()
+	ev, err := eventlog.New(evDir, eventlog.Config{}, quiet())
+	if err != nil {
+		t.Fatalf("eventlog: %v", err)
+	}
+	target := Target{AgentGroupID: 1, SessionKey: "telegram:1", Channel: "telegram", ChatID: "1"}
+	s := New(d, dir, nil, target, quiet()).WithEventLog(ev)
+	// A job with no preferred hour and never run is due now.
+	s.jobs = []Job{{Name: "nightly", Every: 20 * time.Hour, AtHour: -1, Prompt: "do maintenance"}}
+
+	s.tick(context.Background(), at(22))
+
+	data, err := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	if !strings.Contains(string(data), `"kind":"maintenance.fired"`) {
+		t.Fatalf("expected a maintenance.fired event, log:\n%s", data)
 	}
 }

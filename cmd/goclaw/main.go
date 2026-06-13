@@ -159,7 +159,7 @@ func run(log *slog.Logger) error {
 	// channel is logged and skipped, never fatal.
 	var chanRelay *chanplugin.Relay
 	if cfg.LaunchRunner {
-		chanRelay, err = setupChannelPlugins(registry, channelRelayConfig(cfg), pluginsHostDir(cfg), log)
+		chanRelay, err = setupChannelPlugins(registry, channelRelayConfig(cfg), pluginsHostDir(cfg), events, log)
 		if err != nil {
 			return err
 		}
@@ -444,7 +444,7 @@ func run(log *slog.Logger) error {
 	if cfg.VaultDir != "" && ensurer != nil {
 		target, ok := maintenanceTarget(cfg, agentGroupID, discordAdapter, log)
 		if ok {
-			sched := maintenance.New(central, cfg.DataDir, ensurer, target, log)
+			sched := maintenance.New(central, cfg.DataDir, ensurer, target, log).WithEventLog(events)
 			g.Go(func() error { return sched.Run(gctx) })
 			log.Info("vault maintenance enabled", "channel", target.Channel, "chat", target.ChatID)
 		}
@@ -584,11 +584,12 @@ func channelRelayConfig(cfg *config.Config) chanplugin.Config {
 // like a built-in channel. The relay listens now and accepts the in-container runner's
 // dial in the background (the container launches lazily). A failure for one channel is
 // logged and skipped, never fatal; the returned relay is closed on host shutdown.
-func setupChannelPlugins(registry *channels.Registry, cfg chanplugin.Config, pluginsDir string, log *slog.Logger) (*chanplugin.Relay, error) {
+func setupChannelPlugins(registry *channels.Registry, cfg chanplugin.Config, pluginsDir string, events *eventlog.Logger, log *slog.Logger) (*chanplugin.Relay, error) {
 	relay, err := chanplugin.NewRelay(cfg, log)
 	if err != nil {
 		return nil, fmt.Errorf("channel relay: %w", err)
 	}
+	relay = relay.WithEventLog(events) // records channel.attached/detached (nil-safe)
 	entries, err := os.ReadDir(pluginsDir)
 	if err != nil {
 		if os.IsNotExist(err) {

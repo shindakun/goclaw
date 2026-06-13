@@ -37,7 +37,7 @@ func TestSetupChannelPlugins_RegistersChannelsOnly(t *testing.T) {
 
 	cfg := chanplugin.Config{Transport: chanplugin.TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}
 	registry := channels.NewRegistry()
-	relay, err := setupChannelPlugins(registry, cfg, pluginsDir, quietLog())
+	relay, err := setupChannelPlugins(registry, cfg, pluginsDir, nil, quietLog())
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestSetupChannelPlugins_RegistersChannelsOnly(t *testing.T) {
 func TestSetupChannelPlugins_NoPluginsDir(t *testing.T) {
 	cfg := chanplugin.Config{Transport: chanplugin.TransportTCP, TCPHost: "127.0.0.1", TCPBind: "127.0.0.1"}
 	registry := channels.NewRegistry()
-	relay, err := setupChannelPlugins(registry, cfg, filepath.Join(t.TempDir(), "absent"), quietLog())
+	relay, err := setupChannelPlugins(registry, cfg, filepath.Join(t.TempDir(), "absent"), nil, quietLog())
 	if err != nil {
 		t.Fatalf("setup with absent plugins dir: %v", err)
 	}
