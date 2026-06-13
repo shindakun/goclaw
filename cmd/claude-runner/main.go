@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -167,6 +168,19 @@ func (r *runner) processAll(ctx context.Context, sessionsDir string) (int, error
 	return total, nil
 }
 
+// maxTransientAttempts bounds how many times one inbound message is retried after a
+// transient (infrastructure) failure before the runner gives up. A brief blip
+// clears within a poll or two; a sustained failure (API out of tokens, a hard
+// upstream error) never will, so after this many tries the runner stops deferring,
+// reports the failure to the chat, and consumes the message instead of refreshing a
+// stuck typing indicator forever. The retry cadence is the runner's poll interval.
+const maxTransientAttempts = 5
+
+// metaAttemptsPrefix keys the per-inbound-message transient-failure counter in the
+// runner-owned outbound.db meta KV (so it never touches the host-owned inbound.db,
+// preserving single-writer-per-file). The full key is metaAttemptsPrefix + <id>.
+const metaAttemptsPrefix = "attempts:"
+
 // metaSessionID is the session-DB meta key under which we persist Claude's
 // conversation session id for multi-turn continuity.
 const metaSessionID = "claude_session_id"
@@ -204,14 +218,33 @@ func (r *runner) processSessionWith(ctx context.Context, dir string, handle msgH
 	for _, m := range pending {
 		reply, transient := handle(ctx, sess, filepath.Base(dir), m.Text)
 		if transient != nil {
-			// Infrastructure failure (network/API/CLI). Do NOT consume this message or
-			// deliver a reply: leave it (and the rest of this session's pending, processed
-			// in order) queued so it is retried on the next pass once the cause clears. A
-			// transient failure must never look like a completed turn (a scheduled task
-			// that fired during an outage must re-run, not be marked done).
-			r.log.Warn("deferring message for retry (transient failure)",
-				"session", filepath.Base(dir), "in_id", m.ID, "err", transient)
-			break
+			// Infrastructure failure (network/API/CLI). Retry it a bounded number of
+			// times by leaving it (and the rest of this session's pending, processed in
+			// order) queued so the next poll re-runs it once the cause clears. A brief
+			// blip recovers within a poll or two; this is the fix for "a scheduled task
+			// fired during an outage, errored, and was lost".
+			attempts := r.bumpAttempts(sess, m.ID)
+			if attempts < maxTransientAttempts {
+				r.log.Warn("deferring message for retry (transient failure)",
+					"session", filepath.Base(dir), "in_id", m.ID, "attempt", attempts,
+					"max", maxTransientAttempts, "err", transient)
+				break // stop this session's pass; later messages stay queued, order preserved
+			}
+			// Out of retries: the failure is not clearing (e.g. API out of tokens). Stop
+			// deferring forever. Report it to the chat (this reaches the operator AND, via
+			// the normal delivery path, stops the stuck "typing" indicator) and CONSUME the
+			// message so it does not loop. Better a visible failure than a silent hang.
+			r.log.Error("giving up on message after repeated transient failures",
+				"session", filepath.Base(dir), "in_id", m.ID, "attempts", attempts, "err", transient)
+			if _, err := sess.EnqueueOutbound(m.Channel, m.ChatID,
+				"⚠️ I couldn't reach the model after several tries (it may be a temporary outage or the API is out of quota). Your message wasn't answered; please try again later."); err != nil {
+				return answered, err
+			}
+			if err := sess.SetInboundHWM(m.ID); err != nil {
+				return answered, err
+			}
+			r.clearAttempts(sess, m.ID)
+			continue
 		}
 		if _, err := sess.EnqueueOutbound(m.Channel, m.ChatID, reply); err != nil {
 			return answered, err
@@ -222,10 +255,40 @@ func (r *runner) processSessionWith(ctx context.Context, dir string, handle msgH
 		if err := sess.SetInboundHWM(m.ID); err != nil {
 			return answered, err
 		}
+		// Succeeded: drop any transient-failure count this message accrued, so a later
+		// message that briefly fails starts from a clean attempt count.
+		r.clearAttempts(sess, m.ID)
 		answered++
 		r.log.Info("answered", "session", filepath.Base(dir), "in_id", m.ID)
 	}
 	return answered, nil
+}
+
+// bumpAttempts increments and returns the transient-failure count for an inbound
+// message, persisted in the runner-owned meta KV so it survives across polls (and
+// across a container restart). A read/parse failure is treated as "this is attempt
+// 1" rather than blocking the turn on a counter.
+func (r *runner) bumpAttempts(sess *db.SessionDBs, inboundID int64) int {
+	key := metaAttemptsPrefix + strconv.FormatInt(inboundID, 10)
+	n := 0
+	if v, ok, err := sess.GetMeta(key); err == nil && ok {
+		if parsed, perr := strconv.Atoi(v); perr == nil {
+			n = parsed
+		}
+	}
+	n++
+	if err := sess.SetMeta(key, strconv.Itoa(n)); err != nil {
+		r.log.Warn("persist attempt count", "in_id", inboundID, "err", err)
+	}
+	return n
+}
+
+// clearAttempts removes a message's transient-failure counter once it is resolved
+// (answered or given up on), so the KV does not accumulate stale keys.
+func (r *runner) clearAttempts(sess *db.SessionDBs, inboundID int64) {
+	if err := sess.DeleteMeta(metaAttemptsPrefix + strconv.FormatInt(inboundID, 10)); err != nil {
+		r.log.Warn("clear attempt count", "in_id", inboundID, "err", err)
+	}
 }
 
 // handle processes one message: intercepts /reset and /compact commands,
