@@ -451,34 +451,25 @@ func (r *runner) query(ctx context.Context, resumeID, prompt string) (result, se
 			opts = append(opts, claude.WithSystemPromptFile(r.systemPromptFile))
 		}
 	}
-	if r.vaultMounted {
-		// The working directory is /work (scratch), not the vault, so a RELATIVE
-		// path like "wiki/tasks/" would resolve to /work and the agent would think
-		// the vault is empty. Tell it the vault's absolute root, and grant access
-		// to it (cwd is /work). The vault schema's "wiki/..." paths are relative to
-		// this root.
-		opts = append(opts,
-			claude.WithAppendSystemPrompt(
-				"Your knowledge vault is mounted at the ABSOLUTE path "+vaultDir+
-					". Always read and write vault notes under "+vaultDir+
-					" (e.g. "+vaultDir+"/wiki/tasks/, "+vaultDir+"/index.md, "+vaultDir+
-					"/log.md). Your current working directory ("+workDir+
-					") is scratch space for clones and temp files only; the vault is NOT there. "+
-					"When the vault manual says a path like \"wiki/tasks/\", it means "+vaultDir+"/wiki/tasks/."),
-			claude.WithAddDir(vaultDir))
-	}
-	// Give the agent an AUTHORITATIVE current time. Without this it has no
-	// reliable clock and guesses - producing invalid stamps like "24:30" or
-	// dropping the HH:MM the vault protocol requires. Computed per turn so it is
-	// always fresh. The agent must use THIS for any timestamp it writes (log
-	// lines, lease_until, handoff notes) rather than inventing one.
+	// Harness invariants: the always-on instruction blocks (vault-path discipline,
+	// authoritative current time) appended every turn. Their TEXT is host-owned data
+	// (cmd/claude-runner/harness.go); the live per-turn VALUES are substituted here.
+	// The vault-path block is gated on a mounted vault, mirroring the prior behavior;
+	// the current time is computed per turn so it is always fresh, and the agent must
+	// use THIS rather than guessing (it otherwise produces invalid stamps like 24:30).
 	now := time.Now()
-	opts = append(opts, claude.WithAppendSystemPrompt(
-		"The current date and time is "+now.Format("2006-01-02 15:04 MST")+
-			" (24-hour clock). Use THIS as 'now' for any timestamp you write - "+
-			"log lines, lease_until, handoff notes - in YYYY-MM-DD HH:MM form. "+
-			"Never guess the time, and never write an hour outside 00-23 (midnight "+
-			"is 00:00 of the next day, not 24:00)."))
+	invariants := harnessSpec().RenderInvariants(r.vaultMounted, map[string]string{
+		"vault_dir": vaultDir,
+		"work_dir":  workDir,
+		"now":       now.Format("2006-01-02 15:04 MST"),
+	})
+	for _, text := range invariants {
+		opts = append(opts, claude.WithAppendSystemPrompt(text))
+	}
+	if r.vaultMounted {
+		// Grant the agent access to the vault root (cwd is /work, not the vault).
+		opts = append(opts, claude.WithAddDir(vaultDir))
+	}
 
 	// Headless: there is no human at a terminal to answer tool-permission
 	// prompts, so a prompting mode would hang the agent (e.g. on a `git clone`

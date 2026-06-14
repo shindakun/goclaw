@@ -25,6 +25,8 @@
 //     they return a plan, and the host writes it.
 package agentspec
 
+import "strings"
+
 // AgentGroupSpec is the complete host-side definition of one agent group's agent.
 // The zero value is a usable minimal spec (host-default model, base harness, no
 // extra context); callers build it up from group config and current mounts.
@@ -120,6 +122,44 @@ const (
 	// RequireEvents: present only when the event log is mounted.
 	RequireEvents
 )
+
+// RenderInvariants returns the harness invariant texts to append to the system
+// prompt this turn, in tier order (TierMust first), with every {{name}} placeholder
+// substituted from values. An invariant gated RequiresVault is skipped unless
+// vaultMounted is true. Unknown placeholders are left untouched (so a typo is
+// visible rather than silently dropped). Pure: it reads data and returns strings.
+//
+// Keeping the template TEXT in the spec and the VALUES at the call site is the whole
+// point: the host owns the wording, the runner supplies live per-turn data (the
+// current time, the container mount paths), and no stale value is ever baked in.
+func (h HarnessSpec) RenderInvariants(vaultMounted bool, values map[string]string) []string {
+	// Stable tier order without sorting the original slice.
+	ordered := make([]Invariant, len(h.Invariants))
+	copy(ordered, h.Invariants)
+	// Simple insertion sort by Tier keeps equal-tier invariants in declared order.
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && ordered[j-1].Tier > ordered[j].Tier; j-- {
+			ordered[j-1], ordered[j] = ordered[j], ordered[j-1]
+		}
+	}
+	var out []string
+	for _, inv := range ordered {
+		if inv.RequiresVault && !vaultMounted {
+			continue
+		}
+		out = append(out, substitute(inv.Text, values))
+	}
+	return out
+}
+
+// substitute replaces each {{name}} in text with values[name]; an unknown name is
+// left as-is so a mistake surfaces in the prompt rather than vanishing.
+func substitute(text string, values map[string]string) string {
+	for name, val := range values {
+		text = strings.ReplaceAll(text, "{{"+name+"}}", val)
+	}
+	return text
+}
 
 // ResolvedSkills returns the skills whose mount precondition the spec's current
 // mounts satisfy, as a name -> container-target map ready for the runtime to sync as

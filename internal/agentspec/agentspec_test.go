@@ -2,8 +2,63 @@ package agentspec
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestRenderInvariants_TierOrderAndGating(t *testing.T) {
+	h := HarnessSpec{Invariants: []Invariant{
+		{Name: "may-hint", Tier: TierMay, Text: "soft hint"},
+		{Name: "vault-path", Tier: TierMust, Text: "vault at {{vault_dir}}", RequiresVault: true},
+		{Name: "time", Tier: TierMust, Text: "now is {{now}}"},
+		{Name: "should-default", Tier: TierShould, Text: "a default"},
+	}}
+	vals := map[string]string{"now": "2026-06-14 10:00 UTC", "vault_dir": "/vault"}
+
+	// Vault mounted: all four, in tier order (Must, Must, Should, May). Equal-tier
+	// invariants keep declared order, so vault-path (declared before time) precedes it.
+	got := h.RenderInvariants(true, vals)
+	want := []string{
+		"vault at /vault",
+		"now is 2026-06-14 10:00 UTC",
+		"a default",
+		"soft hint",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("vault-mounted render =\n%#v\nwant\n%#v", got, want)
+	}
+
+	// No vault: the RequiresVault invariant is dropped; the rest keep order.
+	gotNo := h.RenderInvariants(false, vals)
+	wantNo := []string{
+		"now is 2026-06-14 10:00 UTC",
+		"a default",
+		"soft hint",
+	}
+	if !reflect.DeepEqual(gotNo, wantNo) {
+		t.Fatalf("no-vault render =\n%#v\nwant\n%#v", gotNo, wantNo)
+	}
+}
+
+func TestRenderInvariants_UnknownPlaceholderLeftIntact(t *testing.T) {
+	h := HarnessSpec{Invariants: []Invariant{{Name: "x", Text: "value is {{missing}} here"}}}
+	got := h.RenderInvariants(false, map[string]string{"now": "irrelevant"})
+	if len(got) != 1 || !strings.Contains(got[0], "{{missing}}") {
+		t.Fatalf("unknown placeholder should survive, got %#v", got)
+	}
+}
+
+func TestRenderInvariants_DoesNotMutateSpecOrder(t *testing.T) {
+	h := HarnessSpec{Invariants: []Invariant{
+		{Name: "b", Tier: TierShould, Text: "b"},
+		{Name: "a", Tier: TierMust, Text: "a"},
+	}}
+	_ = h.RenderInvariants(false, nil)
+	// The original slice order is unchanged (render sorts a copy).
+	if h.Invariants[0].Name != "b" || h.Invariants[1].Name != "a" {
+		t.Fatalf("RenderInvariants mutated the spec's invariant order: %v", h.Invariants)
+	}
+}
 
 func baseSkills() []SkillRef {
 	return []SkillRef{
