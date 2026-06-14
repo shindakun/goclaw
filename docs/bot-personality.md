@@ -35,10 +35,15 @@ personality layer fits the existing model; it does not need a new mechanism.
 Personality is ADDITIVE and SUBORDINATE to the base. It can shape voice and character; it must
 not be able to disable or override a safety rule. Concretely:
 
-- Compose personality AFTER the base import, and have the base assert precedence: the safety
-  invariants (REPORT HONESTLY, the host/agent containment boundary, do-the-deliverable) are
-  not overridable by any layered file. We already added a clarify-on-conflict
-  rule with exactly this carve-out; personality is the first real consumer of it.
+- Compose personality AFTER the base import, and have the base assert precedence by RULE TIER:
+  a personality file may bend `may` (style/convention) and `should` (default-but-overridable)
+  behavior, but never a `must` (REPORT HONESTLY, the host/agent containment boundary,
+  do-the-deliverable). This is the tiered-severity model in
+  [`context-and-guardrails.md`](./context-and-guardrails.md) §2a; it turns the precedence rule
+  from prose into a label the layered file can name ("this file adjusts may/should, not must").
+  We already added a clarify-on-conflict rule with exactly this carve-out; personality is the
+  first real consumer of it. (This presumes the base prompt actually adopts the tiers; if it
+  stays a flat list, precedence falls back to the prose carve-out, weaker but still works.)
 - A personality file is operator-authored config, not agent- or user-authored. It is trusted at
   the same level as the rest of the group config. A personality must never be settable by an
   untrusted chat sender (that would be prompt injection of the bot's own character). See §6.
@@ -89,7 +94,7 @@ this is purely additive and the default is unchanged.
   persona erode honesty. Mitigation: keep the persona file SHORT and tone-only, and keep the
   hard invariants in the base where they are reinforced. Consider a lint/validation on the
   personality file (no instructions that look like policy overrides), though that is hard to do
-  well. OPEN (§7 q3).
+  well. OPEN (§7 q4).
 - **Containment unchanged.** This adds a config file read at compose time on the host; it opens
   no new agent->host channel. The boundary is untouched.
 
@@ -100,14 +105,28 @@ this is purely additive and the default is unchanged.
    conversation in a group share one personality (simplest, matches the per-group prompt), or
    should personality be per-conversation/per-channel (much more plumbing, and the composed
    prompt is currently per-group not per-session)? Default: per-group.
-3. **How hard do we enforce the "tone not policy" line?** Wording-only (cheap, leaky over long
-   sessions), or some validation of the personality file? What does the validation even check?
-4. **Default personality:** stays exactly as today (terse technical assistant) when no file is
+3. **Precedence: what can a personality override? LEANING RESOLVED.** Express the base prompt's
+   rules in tiers (`must` / `should` / `may`) per
+   [`context-and-guardrails.md`](./context-and-guardrails.md) §2a, and let a personality bend
+   `may` and `should` but never `must`. This makes precedence a structural label rather than a
+   prose carve-out and gives the personality file a one-line self-description ("adjusts may/should,
+   not must"). The remaining decision is just whether to do the base-prompt tiering refactor first
+   (cleaner) or ship personality against the current flat list + prose carve-out (works, weaker).
+   Tiering is the recommended prerequisite.
+4. **How hard do we enforce the "tone not policy" line?** Tiering (q3) handles the
+   override-precedence half. This question is the OTHER half: a personality could try to assert
+   policy in its own text ("never admit failure") rather than override a named rule. Wording-only
+   (cheap, leaky over long sessions), or some validation of the personality file? What does the
+   validation even check? Still open.
+5. **Default personality:** stays exactly as today (terse technical assistant) when no file is
    present, confirmed. Do we ship any EXAMPLE personalities (a friendly one, a terse one) as
    templates, or leave it entirely to the operator?
-5. **Does personality belong in the vault template / `vault sync`** if we pick B, so it is
-   created and refreshed like the other owned files?
-6. **Interaction with the librarian/coding/introspection skills:** those set their own tone
+6. **Does personality belong in the vault template / `vault sync`** if we pick B, so it is
+   created and refreshed like the other owned files? (Whatever the home, updates to a
+   goclaw-shipped personality TEMPLATE should follow the overlay discipline in
+   [`context-and-guardrails.md`](./context-and-guardrails.md) §4: refresh owned content, back up,
+   never clobber an operator's edits.)
+7. **Interaction with the librarian/coding/introspection skills:** those set their own tone
    ("Star Trek computer, terse") in places. Does a personality override skill tone, or do skills
    keep their working voice and personality only colors conversational replies? Probably the
    latter (a gruff pirate should still write a normal commit message), but it needs stating.
@@ -115,7 +134,8 @@ this is purely additive and the default is unchanged.
 ## 8. Recommendation
 
 Lean A (per-group `groups/<folder>/personality.md`), composed after the base, optional, tone-only,
-with the base asserting that safety invariants win. It is the smallest change that fits the
-existing composition model, needs no new storage, and degrades to today's behavior when absent.
-C (`/persona`) is a nice follow-up that writes into the same slot. Resolve §7 q1-q3 before any
-code; the rest can be decided during implementation.
+with precedence enforced by rule tier (a personality bends `may`/`should`, never `must`; §3, §7 q3).
+It is the smallest change that fits the existing composition model, needs no new storage, and
+degrades to today's behavior when absent. C (`/persona`) is a nice follow-up that writes into the
+same slot. Settle §7 q1 (home), q2 (scope), and q3 (precedence, including whether to tier the base
+prompt first) before any code; the rest can be decided during implementation.
