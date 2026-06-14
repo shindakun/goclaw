@@ -42,8 +42,8 @@ not be able to disable or override a safety rule. Concretely:
   [`context-and-guardrails.md`](./context-and-guardrails.md) §2a; it turns the precedence rule
   from prose into a label the layered file can name ("this file adjusts may/should, not must").
   We already added a clarify-on-conflict rule with exactly this carve-out; personality is the
-  first real consumer of it. (This presumes the base prompt actually adopts the tiers; if it
-  stays a flat list, precedence falls back to the prose carve-out, weaker but still works.)
+  first real consumer of it. (The base prompt's invariants are already tiered must/should/may,
+  so this hook exists; personality just declares which tiers it may touch.)
 - A personality file is operator-authored config, not agent- or user-authored. It is trusted at
   the same level as the rest of the group config. A personality must never be settable by an
   untrusted chat sender (that would be prompt injection of the bot's own character). See §6.
@@ -105,14 +105,12 @@ this is purely additive and the default is unchanged.
    conversation in a group share one personality (simplest, matches the per-group prompt), or
    should personality be per-conversation/per-channel (much more plumbing, and the composed
    prompt is currently per-group not per-session)? Default: per-group.
-3. **Precedence: what can a personality override? LEANING RESOLVED.** Express the base prompt's
-   rules in tiers (`must` / `should` / `may`) per
-   [`context-and-guardrails.md`](./context-and-guardrails.md) §2a, and let a personality bend
-   `may` and `should` but never `must`. This makes precedence a structural label rather than a
-   prose carve-out and gives the personality file a one-line self-description ("adjusts may/should,
-   not must"). The remaining decision is just whether to do the base-prompt tiering refactor first
-   (cleaner) or ship personality against the current flat list + prose carve-out (works, weaker).
-   Tiering is the recommended prerequisite.
+3. **Precedence: what can a personality override? RESOLVED.** The base prompt's rules are
+   tiered `must` / `should` / `may` (`container/CLAUDE.md`, see
+   [`context-and-guardrails.md`](./context-and-guardrails.md) §2a). A personality bends `may`
+   and `should`, never `must`. Precedence is a structural label, not a prose carve-out, and a
+   personality file declares its scope in one line ("adjusts may/should, not must"). The
+   prerequisite refactor (tiering the base prompt) is done, so this question is settled.
 4. **How hard do we enforce the "tone not policy" line?** Tiering (q3) handles the
    override-precedence half. This question is the OTHER half: a personality could try to assert
    policy in its own text ("never admit failure") rather than override a named rule. Wording-only
@@ -137,5 +135,5 @@ Lean A (per-group `groups/<folder>/personality.md`), composed after the base, op
 with precedence enforced by rule tier (a personality bends `may`/`should`, never `must`; §3, §7 q3).
 It is the smallest change that fits the existing composition model, needs no new storage, and
 degrades to today's behavior when absent. C (`/persona`) is a nice follow-up that writes into the
-same slot. Settle §7 q1 (home), q2 (scope), and q3 (precedence, including whether to tier the base
-prompt first) before any code; the rest can be decided during implementation.
+same slot. Precedence (§7 q3) is already settled, the base prompt is tiered; settle §7 q1 (home)
+and q2 (scope) before any code; the rest can be decided during implementation.

@@ -56,27 +56,26 @@ source the agent can cite, keep that citation.
 
 ### 2a. Tiered severity (must / should / may)
 
-Today the base prompt's invariants are a flat bulleted list, with one prose sentence
-bolted on to say which are non-overridable. A three-tier model makes the precedence
-structural instead of narrative:
+SHIPPED. The base prompt's invariants (`container/CLAUDE.md`) are grouped into three tiers
+so precedence is structural rather than a prose carve-out:
 
 - **must (iron law).** Non-negotiable. Safety, honesty, and the containment boundary.
   The agent never breaks these, and a user instruction to break one is declined.
-  Examples today: REPORT HONESTLY; the host/agent boundary is pull-only; do the
-  deliverable, do not narrate it.
+  Today: REPORT HONESTLY; do the deliverable, don't claim it; stay inside the boundary.
 - **should (golden path).** The default way to work. The agent follows it unless the
   user explicitly asks otherwise, in which case it complies and says it is doing so.
-  Examples: BE CONCISE; keep complexity low; tests with the code.
+  Today: BE CONCISE; DON'T JUST AGREE; don't guess the time.
 - **may (local convention).** Style and preference. Applied by default, freely
-  overridden. Examples: a specific output format, a tone preference.
+  overridden. Today: the timestamp format. (A per-group personality file, if built,
+  lands here too.)
 
-This maps cleanly onto the distinction the prompt already tries to draw ("safety rules
-are not overridable; style rules are"). Tiering replaces the ad-hoc sentence with a
-label on each rule, which is also what a per-group personality layer needs: a personality
-may bend a `may` rule and even a `should`, but never a `must`. That is the open precedence
-question in [`bot-personality.md`](./bot-personality.md), and severity tiers answer it.
+Tiering replaces the old ad-hoc "safety rules are not overridable; style rules are"
+sentence with a label on each rule, which is also what a per-group personality layer
+needs: a personality may bend a `may` rule and even a `should`, but never a `must`. That
+is the precedence question in [`bot-personality.md`](./bot-personality.md), and severity
+tiers answer it.
 
-Sketch of how the invariants section could read once tiered:
+The shipped invariants section reads (abridged):
 
 ```markdown
 ## Invariants
