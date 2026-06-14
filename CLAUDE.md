@@ -52,6 +52,7 @@ plugins) is deliberate defense-in-depth by trust level. See the brief §5.1 note
 - `internal/outscan` deterministic outbound content scanner (secret-shape + exact-needle) run send-side as defense-in-depth.
 - `internal/sweep`    periodic runner recovery + scheduled wakeups.
 - `internal/runtime`  per-agent-group Podman lifecycle (CLI shell-out), mounts, env injection, prompt composition.
+- `internal/agentspec` host-side declarative agent-group spec (Model/Harness/Context); runtime + runner render it. NOT I/O.
 - `internal/db`       central DB + migrations, the per-session DB pair, the queues.
 - `internal/permissions` pure access-control logic (roles, scope, unknown-sender policy). Fail-closed.
 - `internal/mounts`   external mount allowlist + validation (most security-critical: symlink resolution, `..`/colon rejection).

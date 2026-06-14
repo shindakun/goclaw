@@ -257,6 +257,12 @@ before reaching the agent:
 - An unwired conversation is dropped unless owner auto-wire is explicitly enabled.
 - There is no path where an unauthorized sender's message reaches the agent
   without an explicit allow or a completed approval.
+- The agent group's declarative spec (`internal/agentspec`) describes only the
+  agent's model, harness, and context. It deliberately carries NO I/O (channels,
+  triggers, delivery destinations): which channel feeds or receives a group is a
+  host access-control decision (the gate, `agent_destinations`, channel wirings), not
+  a per-group value the untrusted agent could influence. See
+  [agent-group-spec.md](agent-group-spec.md).
 
 ## Outbound content scanning: bounding what the agent can send
 
