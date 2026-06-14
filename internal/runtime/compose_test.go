@@ -144,6 +144,102 @@ func TestSyncSkillSymlinks_LeavesRealFilesAlone(t *testing.T) {
 	}
 }
 
+// TestComposeGroupPrompt_EntryPointBodyGolden pins the EXACT byte content of the
+// composed entry-point CLAUDE.md across every mount combination. The refactor that
+// renders composition from a declarative spec must keep this output byte-identical;
+// this golden test is the regression guard for that contract.
+func TestComposeGroupPrompt_EntryPointBodyGolden(t *testing.T) {
+	const header = "<!-- Composed at launch by goclaw - do not edit. -->\n@./.claude-shared.md\n"
+	cases := []struct {
+		name          string
+		vault, events bool
+		want          string
+	}{
+		{"no_vault_no_events", false, false, header},
+		{"vault_no_events", true, false, header + "@" + vaultCriticalFactsPath + "\n"},
+		{"no_vault_events", false, true, header},
+		{"vault_events", true, true, header + "@" + vaultCriticalFactsPath + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := composeGroupPrompt(home, tc.vault, tc.events); err != nil {
+				t.Fatalf("compose: %v", err)
+			}
+			body, err := os.ReadFile(filepath.Join(home, "CLAUDE.md"))
+			if err != nil {
+				t.Fatalf("read composed CLAUDE.md: %v", err)
+			}
+			if string(body) != tc.want {
+				t.Fatalf("entry-point body mismatch.\n got: %q\nwant: %q", body, tc.want)
+			}
+		})
+	}
+}
+
+// TestComposeGroupPrompt_SkillSetGolden pins exactly which skills are linked for
+// each mount combination, so the spec-driven refactor cannot silently add, drop, or
+// rename a skill.
+func TestComposeGroupPrompt_SkillSetGolden(t *testing.T) {
+	cases := []struct {
+		name          string
+		vault, events bool
+		want          map[string]string // skill name -> container target
+	}{
+		{"base", false, false, map[string]string{
+			"coding": skillsContainerBase + "/coding",
+		}},
+		{"vault", true, false, map[string]string{
+			"coding":    skillsContainerBase + "/coding",
+			"librarian": vaultLibrarianSkillPath,
+		}},
+		{"events", false, true, map[string]string{
+			"coding":        skillsContainerBase + "/coding",
+			"introspection": introspectionSkillPath,
+		}},
+		{"vault_events", true, true, map[string]string{
+			"coding":        skillsContainerBase + "/coding",
+			"librarian":     vaultLibrarianSkillPath,
+			"introspection": introspectionSkillPath,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := composeGroupPrompt(home, tc.vault, tc.events); err != nil {
+				t.Fatalf("compose: %v", err)
+			}
+			got := readSkillLinks(t, filepath.Join(home, "skills"))
+			if len(got) != len(tc.want) {
+				t.Fatalf("skill set size mismatch: got %v want %v", got, tc.want)
+			}
+			for name, target := range tc.want {
+				if got[name] != target {
+					t.Fatalf("skill %q target = %q, want %q (full got: %v)", name, got[name], target, got)
+				}
+			}
+		})
+	}
+}
+
+// readSkillLinks returns the symlink name -> target map under skillsDir.
+func readSkillLinks(t *testing.T, skillsDir string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		t.Fatalf("read skills dir: %v", err)
+	}
+	out := map[string]string{}
+	for _, e := range entries {
+		tgt, err := os.Readlink(filepath.Join(skillsDir, e.Name()))
+		if err != nil {
+			continue // not a symlink
+		}
+		out[e.Name()] = tgt
+	}
+	return out
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (func() bool {
 		for i := 0; i+len(sub) <= len(s); i++ {
