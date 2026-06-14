@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/shindakun/goclaw/internal/agentspec"
 )
 
 // CLAUDE.md composition for an agent group, mirroring NanoClaw's
@@ -68,20 +70,13 @@ func composeGroupPrompt(claudeHome string, vaultMounted, eventsMounted bool) err
 		return err
 	}
 
-	// Skill symlinks under claudeHome/skills/. coding is always present; librarian
-	// only when a vault is mounted; introspection only when the event log is mounted.
-	// Anything else is pruned, so unmounting a source removes its link (e.g. dropping
-	// to multi-group, which un-gates the events mount, removes introspection).
-	desired := map[string]string{
-		"coding": skillsContainerBase + "/coding",
-	}
-	if vaultMounted {
-		desired["librarian"] = vaultLibrarianSkillPath
-	}
-	if eventsMounted {
-		desired["introspection"] = introspectionSkillPath
-	}
-	if err := syncSkillSymlinks(filepath.Join(claudeHome, "skills"), desired); err != nil {
+	// Skill symlinks under claudeHome/skills/, derived from the group's ContextSpec
+	// rather than a hardcoded map: coding is always present; librarian only when a
+	// vault is mounted; introspection only when the event log is mounted. Anything
+	// else is pruned, so unmounting a source removes its link (e.g. dropping to
+	// multi-group, which un-gates the events mount, removes introspection).
+	ctx := groupContextSpec(vaultMounted, eventsMounted)
+	if err := syncSkillSymlinks(filepath.Join(claudeHome, "skills"), ctx.ResolvedSkills()); err != nil {
 		return err
 	}
 
@@ -99,6 +94,22 @@ func composeGroupPrompt(claudeHome string, vaultMounted, eventsMounted bool) err
 		return err
 	}
 	return nil
+}
+
+// groupContextSpec builds the group's ContextSpec from the current mounts and the
+// runtime-owned container-path constants. The skill SET and its gating live here as
+// data; agentspec.ContextSpec.ResolvedSkills applies the mount preconditions. Adding
+// a skill is now an append to this slice, not an edit to a map plus an if.
+func groupContextSpec(vaultMounted, eventsMounted bool) agentspec.ContextSpec {
+	return agentspec.ContextSpec{
+		VaultMounted:  vaultMounted,
+		EventsMounted: eventsMounted,
+		Skills: []agentspec.SkillRef{
+			{Name: "coding", ContainerTarget: skillsContainerBase + "/coding", Requires: agentspec.RequireNone},
+			{Name: "librarian", ContainerTarget: vaultLibrarianSkillPath, Requires: agentspec.RequireVault},
+			{Name: "introspection", ContainerTarget: introspectionSkillPath, Requires: agentspec.RequireEvents},
+		},
+	}
 }
 
 // syncSkillSymlinks makes skillsDir contain exactly one symlink per desired
