@@ -17,7 +17,7 @@ goclaw already composes a per-group system prompt at launch (`internal/runtime/c
 
 - A generic BASE prompt baked into the image at `/app/CLAUDE.md` (`container/CLAUDE.md`),
   identical for every agent group. It holds the invariants (DO THE DELIVERABLE, REPORT
-  HONESTLY, TIMESTAMPS, NO EM-DASHES, BE CONCISE, DON'T JUST AGREE) and the routing to skills.
+  HONESTLY, TIMESTAMPS, BE CONCISE, DON'T JUST AGREE) and the routing to skills.
 - Skill imports (coding always; librarian when a vault is mounted; introspection when the
   event log is mounted), as symlinks under the group's `~/.claude/skills/`.
 - When a vault is mounted, the vault's `CRITICAL_FACTS.md` is imported so L0 facts load every
@@ -36,8 +36,8 @@ Personality is ADDITIVE and SUBORDINATE to the base. It can shape voice and char
 not be able to disable or override a safety rule. Concretely:
 
 - Compose personality AFTER the base import, and have the base assert precedence: the safety
-  invariants (REPORT HONESTLY, NO EM-DASHES, the host/agent containment boundary, do-the-
-  deliverable) are not overridable by any layered file. We already added a clarify-on-conflict
+  invariants (REPORT HONESTLY, the host/agent containment boundary, do-the-deliverable) are
+  not overridable by any layered file. We already added a clarify-on-conflict
   rule with exactly this carve-out; personality is the first real consumer of it.
 - A personality file is operator-authored config, not agent- or user-authored. It is trusted at
   the same level as the rest of the group config. A personality must never be settable by an
@@ -90,8 +90,6 @@ this is purely additive and the default is unchanged.
   hard invariants in the base where they are reinforced. Consider a lint/validation on the
   personality file (no instructions that look like policy overrides), though that is hard to do
   well. OPEN (§7 q3).
-- **No em-dashes still applies.** A personality file is goclaw writing; it inherits the global
-  no-em-dash rule, and the persona must not reintroduce them in the bot's voice.
 - **Containment unchanged.** This adds a config file read at compose time on the host; it opens
   no new agent->host channel. The boundary is untouched.
 
