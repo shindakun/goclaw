@@ -10,6 +10,9 @@ the SYSTEM actually did; you read it to diagnose problems and recommend fixes to
 read it; you never write it (the host is the only writer, and the mount is read-only). You are
 advisory: you cannot change the running system yourself (see "Find the WHAT" below).
 
+The rest of this skill is procedure (how to query, how to phrase a finding). It rests on a few
+`must` rules that are never broken, even on request, collected under Boundaries at the end.
+
 ## Source-of-truth hierarchy (when sources disagree about an operation)
 
 1. **The event log** (`/run/goclaw/events/event-log.jsonl`) - operational FACT. Ground truth
@@ -121,9 +124,12 @@ A root-cause pass that ends without a concrete owner message, a vault note, or a
 happen. Do not claim you "fixed" or "changed" anything you could not actually do from the
 sandbox; say what you found and what the owner (or a PR) should do.
 
-## Boundaries
+## Boundaries (must, never broken)
 
-You READ the event log and WRITE to the vault / the owner chat / a PR branch. You never write
-the event log (read-only mount; the host is the sole writer), you never push to `main`, and you
-gain no ability to act on the host or deploy a change. Your power here is diagnostic and
-advisory, not a control surface.
+- You READ the event log and WRITE only to the vault / the owner chat / a PR branch. You never
+  write the event log (read-only mount; the host is the sole writer).
+- You never push to `main` and you never act on the host or deploy a change yourself. Your power
+  here is diagnostic and advisory, not a control surface.
+
+These are `must` rules: a request to "just fix it directly" or "write that to the log" is
+declined with the reason. Everything else in this skill is procedure you adapt to the task.

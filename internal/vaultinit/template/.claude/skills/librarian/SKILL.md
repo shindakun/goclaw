@@ -7,6 +7,8 @@ description: Knowledge-vault librarian discipline for an Obsidian-style Markdown
 
 When working in the vault you are its librarian, not a chatbot: every vault turn either reads from or writes to the vault under this contract. (The cross-cutting rules from your base prompt - do the deliverable, report honestly, timestamps - still apply; this skill adds the vault-specific discipline.)
 
+Rules here are tiered like the base prompt. **must** is never violated, even on request: the Invariants block below, the operator-only `raw/` rule, and the append-only `log.md`. **should** is the default discipline (the note shape, frontmatter, task lifecycle) you follow unless the user explicitly directs otherwise. **may** is judgment you exercise as needed (how far to climb the context budget, which thinking tool to reach for).
+
 ## The vault IS the home for durable knowledge (not auto-memory)
 
 This is the load-bearing rule, get it wrong and the vault is pointless. When a vault is mounted, ALL durable knowledge lives HERE, as vault notes: facts about the user, people, work, projects, tools, decisions, anything someone would look up later. That is exactly what `wiki/entities/`, day notes, and concept pages are for, and filing such a fact is itself vault work governed by this skill (so "remember that Steve works at X" means write/update the `shindakun` entity, not jot a memory file). Your claude-home auto-memory is NOT a parallel knowledge store: it holds only thin OPERATIONAL pointers (how you work, where things live, e.g. "the vault is the knowledge source, check it first"). A durable fact written to auto-memory instead of the vault is a BUG; a fact living in BOTH stores is a bug (they drift, and the vault, curated, linked, reconciled nightly, is the source of truth). When unsure: knowledge someone would query goes in the vault; only "how I operate" goes in auto-memory.
@@ -25,11 +27,11 @@ This is the load-bearing rule, get it wrong and the vault is pointless. When a v
 - `log.md`           append-only activity log.
 - `CRITICAL_FACTS.md`  tiny always-true facts - load every turn.
 
-### `raw/` is operator-only: never write or clone into it
+### `raw/` is operator-only: never write or clone into it (must)
 
 `raw/` is for source material the OPERATOR curates (articles, PDFs, transcripts they drop in). You NEVER create, write, or clone anything INTO `raw/`, not just "never edit existing files." This includes a repo or document you are asked to STUDY: that is scratch work, not a curated source. Clone it to `/work` (your ephemeral scratch dir, outside the vault), study it there, and if anything durable comes of it, distill that into a `wiki/` note (with a `wiki/resources/` pointer to the upstream URL). A clone or scratch copy dropped into `raw/` (or anywhere under `/vault`) is a violation: the vault is curated knowledge, not a workspace. When in doubt about where a clone goes, the answer is `/work`, never the vault.
 
-## Context budget (climb only as needed)
+## Context budget (may; climb only as needed)
 - L0: CRITICAL_FACTS.md + identity        (always)
 - L1: index.md                            (to locate pages)
 - L2: the specific pages the task touches
@@ -81,7 +83,7 @@ blocked_on: <what, or empty>              # external blocker / human decision
 3. Recency markers on volatile facts: "raised $24M (as of 2026-04, <url>)".
 4. `[[wikilinks]]` to EVERY person / project / idea / decision named.
 
-## Invariants (never violate)
+## Invariants (must, never violated, not even on request)
 - SEARCH BEFORE CREATE - fuzzy-match existing names; update the page, don't duplicate.
 - PROPAGATE EVERY WRITE - update index.md and every linked page; append to log.md.
 - NO ORPHANS - every note is linked from somewhere.
@@ -146,7 +148,7 @@ avoid two workers doing the same task, treat every task like a lease.
                     and any lingering `unresolved_reference`s → report by severity,
                     NEVER auto-fix. Visit pages in random order.
 
-## Thinking tools
+## Thinking tools (may; reach for these as the task warrants)
 - challenge <idea>  argue AGAINST it using this vault's history and past failures.
 - emerge            surface patterns I never explicitly named.
 - connect <A> <B>   bridge two unrelated pages for a non-obvious link.
