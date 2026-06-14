@@ -1,8 +1,17 @@
 # TLS-Intercepting Credential Proxy: Scope
 
-Status: scoping only, nothing built. This replaces the current Anthropic
-base-URL proxy with a single TLS-intercepting proxy that also covers GitHub
-(`git`/`gh`), which a base-URL redirect cannot reach.
+Status: SHIPPED. This is the original scoping doc, retained as the design record
+and the source of the hard-won gotchas below; the plan it describes is now built.
+The TLS-intercepting proxy lives in `internal/credproxy` (`ca.go` for CA
+load/generate + per-host leaf minting; `mitmproxy.go` for the CONNECT-hijack,
+intercept-vs-blind-tunnel decision, and per-host auth injection), wired in
+`cmd/goclaw`. It replaced the Anthropic base-URL proxy: `ANTHROPIC_BASE_URL` is
+gone, and the same mechanism now covers GitHub (`git`/`gh`/`codeload`) and
+Anthropic uniformly. The "Decisions", "How it works", "Components", and "Build
+sequence" sections below describe what was built; the "Gaps and open questions"
+section is the verified record of what tripped us during the build (several of its
+notes, e.g. the lowercase `https_proxy` and the host-specific GitHub auth scheme,
+are live gotchas still worth knowing).
 
 ## Why
 

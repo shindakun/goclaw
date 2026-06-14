@@ -140,11 +140,30 @@ These are product/UX calls, not mechanism questions:
    load-bearing differences beats a granular ladder whose middle rungs differ only
    cosmetically.
 
-## Why this is lower priority than it looks
+## Home for the tier: the agent-group spec
 
-The single existing posture is already a strong floor: non-root, rootless, explicit
-mounts, no host networking, no socket. Tiers add the ability to go TIGHTER per
-group, which is real defense-in-depth, but no group is currently UNDER-contained
-without them. So this is an enhancement to blast-radius control for multi-group
-deployments, not a fix for a present gap, and it should land after work that closes
-actual exposure.
+When this lands, the tier belongs on the host-side `agentspec.AgentGroupSpec` (see
+[agent-group-spec.md](agent-group-spec.md)), alongside Model/Harness/Context, as a
+`Tier` (or `Capabilities`) field the runtime reads while assembling the launch. That
+keeps it consistent with the rest of the per-group definition: host-owned, rendered
+into container facts, never I/O. The `Spec.Tier` sketch above predates that package;
+read it as "a field on the agent-group spec", not a separate struct.
+
+## Sequencing relative to capability hardening
+
+The single existing posture is a strong floor in most respects (non-root, rootless,
+explicit mounts, no host networking, no socket), so no group is currently
+UNDER-contained relative to that floor. But the floor itself is not yet at the
+minimum-capability mark: the container still launches with podman's DEFAULT
+capability set, no `--cap-drop=ALL`, no `--security-opt=no-new-privileges`, no
+seccomp profile, no read-only rootfs (see the residual-risk note in
+[security.md](security.md)).
+
+That capability-hardening work and this tier work touch the SAME surface
+(`buildArgs` / the launch argv) and should be sequenced together: harden the
+always-on floor first (drop-all-caps + no-new-privileges as the new default for every
+group), then expose the per-group tightening (network mode, mount writability, any
+caps a group may add back) as tier fields on the agent-group spec. Doing tiers first
+would mean revisiting the same argv twice. So this is still an enhancement rather than
+a present under-containment, but it is the natural follow-on to the capability floor,
+not an indefinitely deferred item.

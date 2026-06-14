@@ -1,10 +1,14 @@
 # Scheduled tasks: user-definable recurring agent work
 
-Status: DESIGN. Generalize the existing vault-maintenance scheduler into user-definable
-scheduled tasks, so an instruction like "send me a summary of my inbox every morning at
-8am" becomes a real, persisted, restart-safe job, not a hardcoded one. Read
-`internal/maintenance` (the scheduler this builds on) and `docs/gmail-channel-plugin.md`
-(the Gmail tools a scheduled task would call) first.
+Status: SHIPPED. User-definable scheduled tasks are built as `internal/scheduler`
+(distinct from `internal/maintenance`'s fixed vault-upkeep jobs): it loads tasks from
+the central DB each tick and fires each into its OWN target (session/channel/chat).
+The owner-gated `/schedule` command lives in the router (`internal/router/schedule.go`,
+capped per owner), and a failed scheduled run is re-armed by the delivery path
+(`RearmFailedSchedule`). So "send me a summary every morning at 8am" is a real,
+persisted, restart-safe job. This doc is retained as the design record; the sections
+below describe the machine that was built. (`docs/gmail-channel-plugin.md` covers tools
+such a task would call.)
 
 ## 1. What already exists (most of it)
 

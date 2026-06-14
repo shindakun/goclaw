@@ -458,8 +458,11 @@ tokens out of the agent container (verified live), with plugin-declared OAuth2
 command set (add/list/check/update/remove), build-on-install, and the `roll`
 reference plugin; channel plugins on the same boundary (a relay socket per
 channel), which activate live on `/plugin add` without a host restart;
-user-definable scheduled tasks (`/schedule`); and a host-owned operational event
-log (`internal/eventlog`).
+user-definable scheduled tasks (`/schedule`); a host-owned operational event
+log (`internal/eventlog`); a deterministic send-side outbound content scanner
+(`internal/outscan`) that blocks secret-shaped or beacon replies as defense-in-depth;
+and a host-side declarative agent-group spec (`internal/agentspec`) that composes a
+group's model, harness, and skills.
 
 Next:
 

@@ -1,9 +1,12 @@
 # goclaw plugins: design
 
-Status: proposal (2026-06). Goal: let operators add a plugin (a tool now, a
-channel later) WITHOUT rebuilding the host, and add or reconfigure a plugin WITHOUT
-restarting the host. Modeled on the author's own gobbsgo/godoorkit door system and
-its `pkg/ipc` protocol.
+Status: SHIPPED. Operators add a plugin (`/plugin add <git-url>`) WITHOUT rebuilding
+or restarting the host. Both kinds are built: TOOL plugins (request/response MCP
+servers) and CHANNEL plugins (long-lived chat gateways, see
+`docs/channels-plugin-design.md`), on the same protocol and manager (`internal/plugin`,
+the in-container launch in `cmd/claude-runner/plugins.go`). This is the foundational
+design doc, retained as the record; the sections below describe what was built.
+Modeled on the author's own gobbsgo/godoorkit door system and its `pkg/ipc` protocol.
 
 Ordering note: TOOLS ship first. A tool is request/response (invoke with args,
 return a result), which is a clean, small first deliverable; the reference plugin

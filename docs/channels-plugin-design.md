@@ -1,17 +1,20 @@
 # Channel plugins: running an untrusted channel in the sandbox
 
-Status: PARTIAL. The host<->channel-plugin PROTOCOL is built and proven LIVE: goclaw
-launches the goclawkit IRC reference plugin (`goclawkit/cmd/irc`), it dials Libera over
-TLS, joins a channel, and messages flow both ways through goclaw's host-side
-`ChannelClient` (a real `#goclawtester` mention arrived as inbound and a reply posted
-back). What is built so far is the DIRECT (no-container) path: `internal/plugin.
-ChannelClient` (host half of `ServeChannel`), `kind: channel` accepted in the manifest,
-the env allowlist (`Manifest.InjectEnv` / `MinimalEnvBase`), a dev harness
-(`cmd/chantest`), and the transport-agnostic `channels.ChannelAdapter` wrapper
-(`internal/channels/plugin`, with sender-id namespacing). NOT yet built: the sandboxed
-relay-over-socket boundary, which is a PREREQUISITE for daemon wiring (the host must not
-run the plugin; it connects to a sandboxed one), and hot-reload. The adapter is therefore
-built but NOT yet registered by `cmd/goclaw`. See section 9 for the build order.
+Status: SHIPPED (the sandboxed boundary). The host<->channel-plugin protocol AND the
+sandboxed relay-over-socket boundary are both built and live. The plugin runs IN the
+container: the in-container runner execs the plugin binary (`cmd/claude-runner/
+channels.go`) and bridges its stdio to the host, while the host only binds a per-channel
+relay socket and connects to it (`internal/channels/plugin/relay.go` - the host NEVER
+spawns the plugin). `cmd/goclaw` registers the relay and the channel adapters at startup
+(`setupChannelPlugins` / `registerChannelPlugin`), and hot-reload is wired too: a
+`/plugin add` of a channel plugin activates live via the `ChannelActivator` hook
+(`rtr.WithChannelActivator`). The earlier-built DIRECT (no-container) path -
+`internal/plugin.ChannelClient`, the `kind: channel` manifest, the env allowlist
+(`Manifest.InjectEnv` / `MinimalEnvBase`), the `cmd/chantest` dev harness, and the
+transport-agnostic `channels.ChannelAdapter` wrapper - remains for dev/testing only;
+production goes through the in-container relay. Section 9's build order is retained as
+the design record; "Not yet built" notes there predate the sandbox boundary landing and
+no longer describe the current state.
 
 This doc covers how a third-party **channel** can be added to goclaw WITHOUT giving
 untrusted code a foothold on the host. The deciding constraint and the whole reason this
@@ -549,19 +552,19 @@ against a real server first means the boundary is the only unknown when we add i
    `channels.InboundMsg`, `Send()` calls `SendOutbound`, and the plugin-asserted SenderID
    is NAMESPACED (`irc:<nick>`, section 7) so a spoofable plugin id cannot collide with
    another channel's owner id at the gate. The adapter is TRANSPORT-AGNOSTIC (it takes a
-   ChannelClient, not a process), so it does not change when the boundary lands. It is NOT
-   yet registered by `cmd/goclaw`, and deliberately so: see the next step.
-6. NEXT, and a PREREQUISITE for any daemon wiring. The sandboxed boundary (sections 4.0,
-   5a). The host MUST NOT run the plugin: untrusted plugin code runs IN THE CONTAINER (the
-   runner launches it, as it does tool plugins), and the host CONNECTS to it across the
-   boundary. So `cmd/goclaw` never exec-s the plugin binary; today's `ChannelClient`
-   constructor (`LaunchChannel`, which spawns a host child) is for chantest/tests only.
-   This step: pre-mount one socket dir at container start, add the in-container relay glue
-   that pipes a per-channel socket file <-> plugin stdio, and SPLIT `ChannelClient` so it
-   can attach to that socket (an already-connected stream) instead of spawning a process.
-   The step-5 adapter then wraps the socket-backed client unchanged, and only THEN does
-   `cmd/goclaw` register it. Plus host-side `kind: channel` discovery and hot-reload
-   (section 8); `channels.Registry.Unregister` is already in place for hot-remove.
+   ChannelClient, not a process), so it does not change when the boundary lands. (It is now
+   registered by `cmd/goclaw`, wrapping the socket-backed client; see step 6.)
+6. DONE. The sandboxed boundary (sections 4.0, 5a). The host does NOT run the plugin:
+   untrusted plugin code runs IN THE CONTAINER (the in-container runner launches it, as it
+   does tool plugins, at `cmd/claude-runner/channels.go`), and the host CONNECTS to it
+   across the boundary. The host binds a per-channel relay socket and writes a `.endpoint`
+   file (`internal/channels/plugin/relay.go`); the runner reads it, dials back, and bridges
+   the plugin's stdio to that socket. `cmd/goclaw` never exec-s the plugin binary;
+   `LaunchChannel` (which spawns a host child) is for chantest/tests only. `cmd/goclaw`
+   discovers `kind: channel` plugins and registers each adapter (`setupChannelPlugins` /
+   `registerChannelPlugin`), and hot-reload is wired: `/plugin add` activates a channel
+   live via the `ChannelActivator` hook (`rtr.WithChannelActivator`);
+   `channels.Registry.Unregister` handles hot-remove.
 7. (Only if a target platform forces it) Internet-inbound host ingress (section 4b): one
    always-on listener, `/channels/<name>/inbound` routes, host-side auth + identity. The
    fallback inbound webhook, a FIRST-PARTY feature; goclawkit's `cmd/webhook` is the SDK
