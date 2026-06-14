@@ -31,6 +31,7 @@ import (
 	"github.com/shindakun/goclaw/internal/eventlog"
 	"github.com/shindakun/goclaw/internal/maintenance"
 	"github.com/shindakun/goclaw/internal/mounts"
+	"github.com/shindakun/goclaw/internal/outscan"
 	"github.com/shindakun/goclaw/internal/plugin"
 	"github.com/shindakun/goclaw/internal/router"
 	"github.com/shindakun/goclaw/internal/runtime"
@@ -194,6 +195,12 @@ func run(log *slog.Logger) error {
 		// proxyCA is the built CA, shared between the spawn wiring and the proxy
 		// goroutine so they use the same root. nil when the proxy is off.
 		proxyCA *credproxy.CA
+		// outboundNeedles are the exact real secret VALUES that actually enter the
+		// runner container's env, fed to the outbound content scanner as literal
+		// needles so a reply echoing one is blocked. Populated only on the raw-key
+		// path: with the proxy active the container holds "placeholder", never a real
+		// token, so there is nothing real to leak and the list stays empty.
+		outboundNeedles []string
 	)
 	if cfg.LaunchRunner {
 		// Load the external mount allowlist (fail-closed if absent) to validate
@@ -279,8 +286,10 @@ func run(log *slog.Logger) error {
 				"proxy", proxyURL, "credentials", credHostList(credStore))
 		} else if cfg.AnthropicAPIKey != "" {
 			claudeEnv["ANTHROPIC_API_KEY"] = cfg.AnthropicAPIKey
+			outboundNeedles = append(outboundNeedles, cfg.AnthropicAPIKey)
 		} else if cfg.ClaudeCodeOAuthToken != "" {
 			claudeEnv["CLAUDE_CODE_OAUTH_TOKEN"] = cfg.ClaudeCodeOAuthToken
+			outboundNeedles = append(outboundNeedles, cfg.ClaudeCodeOAuthToken)
 		}
 		// Git identity, so the agent can commit (the vault repo, cloned repos).
 		// git honors GIT_AUTHOR_*/GIT_COMMITTER_* without a writable git config.
@@ -293,6 +302,7 @@ func run(log *slog.Logger) error {
 		// host and is injected per request, so we must not also leak it here.
 		if !useProxy {
 			claudeEnv["GH_TOKEN"] = cfg.GitHubToken
+			outboundNeedles = append(outboundNeedles, cfg.GitHubToken)
 		}
 		// Timezone: the container base image is UTC, so without this the agent's
 		// clock (and any `date`) is hours off the user's wall time - it wrote
@@ -384,7 +394,14 @@ func run(log *slog.Logger) error {
 	rtr := router.New(central, cfg.DataDir, autoWireID, ensurer, registry, typer, nil, log)
 	// The router intercepts an agent reply that IS a "/schedule ..." directive, so the
 	// agent can manage scheduled tasks by emitting one (natural-language scheduling).
-	del := delivery.New(central, registry, cfg.DataDir, typer, log).WithInterceptor(rtr).WithEventLog(events)
+	// Outbound content scanner: defense-in-depth on the send side (bounds what the
+	// agent can put on the wire, beneath containment which bounds what it can reach).
+	// Seeded with the exact real secret values that entered the container env on the
+	// raw-key path (empty on the proxy path, where only a placeholder is present).
+	del := delivery.New(central, registry, cfg.DataDir, typer, log).
+		WithInterceptor(rtr).
+		WithScanner(outscan.New(outboundNeedles...)).
+		WithEventLog(events)
 	swp := sweep.New(central, cfg.DataDir, runners, log).WithEventLog(events)
 	// Pin the channel-hosting agent group so the sweep never reaps its container as
 	// idle: an always-on channel plugin (e.g. IRC) must keep its container running to

@@ -49,6 +49,7 @@ plugins) is deliberate defense-in-depth by trust level. See the brief §5.1 note
 - `internal/channels` `ChannelAdapter` interface + registry; `telegram/` and `discord/` adapters.
 - `internal/router`   resolves user → messaging group → agent group → session; the access gate is here.
 - `internal/delivery` polls `outbound.db`, authorizes, sends via the adapter.
+- `internal/outscan` deterministic outbound content scanner (secret-shape + exact-needle) run send-side as defense-in-depth.
 - `internal/sweep`    periodic runner recovery + scheduled wakeups.
 - `internal/runtime`  per-agent-group Podman lifecycle (CLI shell-out), mounts, env injection, prompt composition.
 - `internal/db`       central DB + migrations, the per-session DB pair, the queues.

@@ -35,6 +35,19 @@ type OutboundInterceptor interface {
 	Intercept(channel, chatID, text string) (replacement string, handled bool)
 }
 
+// OutboundScanner inspects a fully-resolved agent reply just before it leaves the
+// host, as defense-in-depth BENEATH containment (it bounds what the agent SENDS,
+// where the container boundary bounds what it can REACH). It runs AFTER interception
+// (so it sees the exact text that will be sent) and BEFORE dispatch. This is a
+// different verb from OutboundInterceptor: the interceptor substitutes a directive's
+// result; the scanner decides whether content may leave at all. A Scan returning
+// Block=true stops delivery (the message is marked failed, not retried, since a
+// blocked secret stays blocked on retry); a non-empty Replacement with Block=false
+// carries redacted text to send instead. internal/outscan implements it; nil = off.
+type OutboundScanner interface {
+	Scan(channel, chatID, text string) (replacement string, block bool, reason string)
+}
+
 // Deliverer drains outbound messages and dispatches them.
 type Deliverer struct {
 	central     *db.DB
@@ -42,6 +55,7 @@ type Deliverer struct {
 	dataDir     string
 	typer       Typer
 	interceptor OutboundInterceptor // optional; nil = no interception
+	scanner     OutboundScanner     // optional; nil = no outbound content scan
 	events      *eventlog.Logger    // optional; nil = no operational event log
 	log         *slog.Logger
 }
@@ -56,6 +70,13 @@ func New(central *db.DB, registry *channels.Registry, dataDir string, typer Type
 // /schedule directives). Returns d for chaining.
 func (d *Deliverer) WithInterceptor(i OutboundInterceptor) *Deliverer {
 	d.interceptor = i
+	return d
+}
+
+// WithScanner sets an outbound content scanner that inspects each reply just before
+// it is sent (after interception). Optional (nil = no scan); returns d for chaining.
+func (d *Deliverer) WithScanner(s OutboundScanner) *Deliverer {
+	d.scanner = s
 	return d
 }
 
@@ -160,6 +181,29 @@ func (d *Deliverer) drainSession(ctx context.Context, s db.Session) error {
 					continue
 				}
 				text = replacement
+			}
+		}
+
+		// Outbound content scan: defense-in-depth on the SEND side. Containment
+		// bounds what the agent can reach; this bounds what it can put on the wire,
+		// closing the "authorized channel as exfil channel" path (a poisoned input
+		// that gets the agent to paste a secret, or a markdown beacon). A block is
+		// terminal: a blocked secret stays blocked on retry, so mark it failed (the
+		// same terminal path authorization-denial uses) rather than spin.
+		if d.scanner != nil {
+			replacement, block, reason := d.scanner.Scan(m.Channel, m.ChatID, text)
+			if block {
+				d.log.Warn("outbound blocked by scanner", "session", s.SessionKey, "target", m.Channel+":"+m.ChatID, "reason", reason)
+				d.events.Emit(eventlog.KindDeliveryBlocked, eventlog.Bool(false), map[string]any{
+					"session": s.SessionKey, "channel": m.Channel, "chat": m.ChatID, "msg_id": m.ID, "reason": reason,
+				})
+				if err := sess.MarkFailed(m.ID, "blocked: "+reason); err != nil {
+					return err
+				}
+				continue
+			}
+			if replacement != "" {
+				text = replacement // redact-and-send: a high-precision secret span was masked
 			}
 		}
 

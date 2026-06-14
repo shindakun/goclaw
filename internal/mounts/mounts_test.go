@@ -133,6 +133,75 @@ func TestLoadAllowlist_MissingFileFailsClosed(t *testing.T) {
 	}
 }
 
+// sensitiveLeaves enumerates the kinds of credential/secret locations that must
+// never be reachable as a bind mount. It is the goclaw analog of a "forbidden
+// zones" list, used here as ADVERSARIAL TEST DATA rather than as a runtime
+// denylist: goclaw's model is an allowlist (deny by default), which is stronger
+// than a denylist (allow by default, leak on omission). The point of this test is
+// to prove the allowlist model holds for each of these even when an operator
+// scopes the allowlist to a parent directory that happens to sit beside them.
+var sensitiveLeaves = []string{
+	".ssh",
+	".aws",
+	".gnupg",
+	".kube",
+	".docker",
+	".npmrc",
+	".netrc",
+	".git-credentials",
+	".config/gcloud",
+	".config/gh",
+	".password-store",
+	".env",
+}
+
+// A request to mount a sensitive path that is NOT under the allowlist is denied.
+// Models an operator with a narrowly-scoped allowlist (only a project dir): the
+// agent must not be able to request ~/.ssh and have it pass.
+func TestValidate_SensitivePathsNotUnderAllowlist(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "project")
+	mustMkdir(t, project)
+	a := newAllowlist(AllowEntry{HostPath: project, ReadWrite: true})
+
+	for _, leaf := range sensitiveLeaves {
+		t.Run(leaf, func(t *testing.T) {
+			p := filepath.Join(home, leaf)
+			mustMkdir(t, p)
+			_, err := a.Validate(Request{HostPath: p, ContainerPath: "/mnt"})
+			if !errors.Is(err, ErrNotAllowed) {
+				t.Fatalf("mounting %s should be denied (not under allowlist), got %v", leaf, err)
+			}
+		})
+	}
+}
+
+// A symlink that lives INSIDE the allowlisted dir but points at a sensitive path
+// outside it must be rejected after symlink resolution. This is the smuggling
+// case: the requested path looks allowed, but resolves elsewhere.
+func TestValidate_SymlinkToSensitivePathRejected(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "project")
+	mustMkdir(t, project)
+	a := newAllowlist(AllowEntry{HostPath: project, ReadWrite: true})
+
+	for _, leaf := range sensitiveLeaves {
+		t.Run(leaf, func(t *testing.T) {
+			target := filepath.Join(home, leaf)
+			mustMkdir(t, target)
+			// link sits under the allowed project dir but points at the secret.
+			link := filepath.Join(project, "link-"+filepath.Base(leaf))
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+			_, err := a.Validate(Request{HostPath: link, ContainerPath: "/mnt"})
+			if !errors.Is(err, ErrNotAllowed) {
+				t.Fatalf("symlink smuggling %s should be denied after resolution, got %v", leaf, err)
+			}
+		})
+	}
+}
+
 func mustMkdir(t *testing.T, p string) {
 	t.Helper()
 	if err := os.MkdirAll(p, 0o755); err != nil {

@@ -38,20 +38,21 @@ import (
 type Kind string
 
 const (
-	KindScheduleFired  Kind = "schedule.fired"     // a scheduled task was handed off to its runner
-	KindScheduleDefer  Kind = "schedule.deferred"  // a due task could not be handed off (re-fires next tick)
-	KindDeliverySent   Kind = "delivery.sent"      // an outbound message was delivered to a channel
-	KindDeliveryDenied Kind = "delivery.denied"    // an outbound message was denied by authorization
-	KindDeliveryFailed Kind = "delivery.failed"    // an outbound dispatch errored
-	KindProxyCANew     Kind = "proxy.ca_generated" // a NEW proxy CA identity was minted (containers trust a stale cert)
-	KindPluginInstall  Kind = "plugin.install"     // a plugin was installed/updated (subsumes the old .install-log.jsonl)
-	KindPluginRemove   Kind = "plugin.remove"      // a plugin was removed
-	KindRunnerLaunched Kind = "runner.launched"    // a runner container was (re)launched for a group
-	KindRunnerReaped   Kind = "runner.reaped"      // an idle runner container was stopped/removed by the sweep
-	KindRunnerTurnFail Kind = "runner.turn_failed" // the runner gave up on a message after repeated transient failures
-	KindChannelAttach  Kind = "channel.attached"   // a channel plugin dialed in and its relay is live
-	KindChannelDetach  Kind = "channel.detached"   // a channel plugin's connection dropped (awaiting re-dial)
-	KindMaintFired     Kind = "maintenance.fired"  // a scheduled vault-maintenance job fired
+	KindScheduleFired   Kind = "schedule.fired"     // a scheduled task was handed off to its runner
+	KindScheduleDefer   Kind = "schedule.deferred"  // a due task could not be handed off (re-fires next tick)
+	KindDeliverySent    Kind = "delivery.sent"      // an outbound message was delivered to a channel
+	KindDeliveryDenied  Kind = "delivery.denied"    // an outbound message was denied by authorization
+	KindDeliveryFailed  Kind = "delivery.failed"    // an outbound dispatch errored
+	KindDeliveryBlocked Kind = "delivery.blocked"   // an outbound message was blocked by the content scanner (secret/beacon)
+	KindProxyCANew      Kind = "proxy.ca_generated" // a NEW proxy CA identity was minted (containers trust a stale cert)
+	KindPluginInstall   Kind = "plugin.install"     // a plugin was installed/updated (subsumes the old .install-log.jsonl)
+	KindPluginRemove    Kind = "plugin.remove"      // a plugin was removed
+	KindRunnerLaunched  Kind = "runner.launched"    // a runner container was (re)launched for a group
+	KindRunnerReaped    Kind = "runner.reaped"      // an idle runner container was stopped/removed by the sweep
+	KindRunnerTurnFail  Kind = "runner.turn_failed" // the runner gave up on a message after repeated transient failures
+	KindChannelAttach   Kind = "channel.attached"   // a channel plugin dialed in and its relay is live
+	KindChannelDetach   Kind = "channel.detached"   // a channel plugin's connection dropped (awaiting re-dial)
+	KindMaintFired      Kind = "maintenance.fired"  // a scheduled vault-maintenance job fired
 )
 
 // Event is one record. Common fields are explicit; everything kind-specific rides in

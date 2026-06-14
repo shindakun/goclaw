@@ -196,6 +196,92 @@ func TestDrain_InterceptSwallows(t *testing.T) {
 	}
 }
 
+// fakeScanner blocks any text containing "SECRET" and redacts "REDACTME" to
+// "[clean]". Anything else passes untouched.
+type fakeScanner struct{}
+
+func (fakeScanner) Scan(channel, chatID, text string) (string, bool, string) {
+	if strings.Contains(text, "SECRET") {
+		return "", true, "contains secret"
+	}
+	if strings.Contains(text, "REDACTME") {
+		return strings.ReplaceAll(text, "REDACTME", "[clean]"), false, "redacted"
+	}
+	return "", false, ""
+}
+
+// A scanner block stops delivery and is terminal: nothing is sent, and the row is
+// recorded in the ledger (as failed) so a re-drain does not retry it.
+func TestDrain_ScannerBlocksAndIsTerminal(t *testing.T) {
+	d, central, agID, dataDir, fake := setup(t)
+	evDir := t.TempDir()
+	ev, err := eventlog.New(evDir, eventlog.Config{}, quiet())
+	if err != nil {
+		t.Fatalf("eventlog: %v", err)
+	}
+	d = d.WithScanner(fakeScanner{}).WithEventLog(ev)
+
+	const key = "telegram:555"
+	enqueueAndDrain(t, d, central, agID, dataDir, key, "here is the SECRET you asked for")
+	if len(fake.sent) != 0 {
+		t.Fatalf("blocked message must not be sent, got %+v", fake.sent)
+	}
+
+	// Terminal: the ledger records id 1, so a re-drain does not re-attempt it.
+	sess, _ := db.OpenSession(dataDir, agID, key)
+	defer func() { _ = sess.Close() }()
+	delivered, err := sess.WasDelivered(1)
+	if err != nil {
+		t.Fatalf("WasDelivered: %v", err)
+	}
+	if !delivered {
+		t.Fatalf("blocked row should be recorded in the ledger (terminal), was not")
+	}
+	if err := d.drain(context.Background()); err != nil {
+		t.Fatalf("re-drain: %v", err)
+	}
+	if len(fake.sent) != 0 {
+		t.Fatalf("re-drain must not send a blocked message, got %+v", fake.sent)
+	}
+
+	// A delivery.blocked event was recorded.
+	data, err := os.ReadFile(filepath.Join(evDir, "event-log.jsonl"))
+	if err != nil {
+		t.Fatalf("read event log: %v", err)
+	}
+	if !strings.Contains(string(data), `"kind":"delivery.blocked"`) {
+		t.Fatalf("expected a delivery.blocked event, log was:\n%s", data)
+	}
+}
+
+// A scanner redaction sends the replacement text, not the original.
+func TestDrain_ScannerRedactsAndSends(t *testing.T) {
+	d, central, agID, dataDir, fake := setup(t)
+	d = d.WithScanner(fakeScanner{})
+
+	enqueueAndDrain(t, d, central, agID, dataDir, "telegram:555", "the value is REDACTME ok")
+	if len(fake.sent) != 1 {
+		t.Fatalf("redacted message should still be delivered, got %+v", fake.sent)
+	}
+	if got := fake.sent[0].Text; got != "the value is [clean] ok" {
+		t.Fatalf("expected redacted text sent, got %q", got)
+	}
+}
+
+// The scanner runs AFTER interception, so it sees the interceptor's replacement
+// text (not the raw row). A reply rewritten by the interceptor into a secret is
+// still caught.
+func TestDrain_ScannerSeesPostInterceptText(t *testing.T) {
+	d, central, agID, dataDir, fake := setup(t)
+	d = d.WithInterceptor(fakeInterceptor{}).WithScanner(fakeScanner{})
+
+	// Interceptor turns "REWRITE:..." into "...". The post-rewrite text holds SECRET.
+	enqueueAndDrain(t, d, central, agID, dataDir, "telegram:555", "REWRITE:the SECRET value")
+	if len(fake.sent) != 0 {
+		t.Fatalf("scanner should catch the post-intercept secret, got %+v", fake.sent)
+	}
+}
+
 // A delivered 'turn_failed' outbound row (the runner's give-up apology) emits a
 // runner.turn_failed event in addition to delivery.sent, so the introspection
 // skill can see the turn failed. A normal 'reply' row emits only delivery.sent.

