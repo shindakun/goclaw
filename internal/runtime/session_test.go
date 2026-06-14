@@ -123,6 +123,8 @@ func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 	absDir, _ := filepath.Abs(relDir)
 	for _, want := range []string{
 		"run", "--user 1000:1000", "--init",
+		"--cap-drop=ALL",                   // capability floor (brief §9)
+		"--security-opt=no-new-privileges", // no setuid/setcap privilege gain
 		"--name goclaw-1",
 		absDir + ":/sessions:Z", // mount source must be absolute
 		"goclaw-runner:latest",

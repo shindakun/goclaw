@@ -28,6 +28,8 @@ at launch (`internal/runtime`):
 
 - `--user 1000:1000` - non-root inside the container.
 - `--init` - a real PID 1 for signal handling.
+- `--cap-drop=ALL` + `--security-opt=no-new-privileges` - the capability floor: the
+  bounding set is empty and no execve can gain privileges (see "Residual risks").
 - Rootless Podman, crun by default.
 - No `--privileged`, no host networking, no Docker/Podman socket mounted.
 - The agent reaches only its mounts (`/sessions`, `/home/agent/.claude`, `/work`,
@@ -437,10 +439,15 @@ choice (`GOCLAW_*` env / `goclaw auth`); the container, gate, and mounts are not
   describe. The load-bearing control remains containment limiting what the agent can
   read in the first place.
 - **Container capability posture.** The container is non-root (`--user 1000:1000`)
-  and rootless, but runs with Podman's DEFAULT capability set: goclaw does not add
-  `--cap-drop=ALL`, `--security-opt=no-new-privileges`, a custom seccomp profile, or
-  a read-only rootfs. The boundary is "rootless, non-root, explicit mounts", which is
-  strong, but it is not hardened to the minimum-capability floor a defense-in-depth
-  pass would add. Tightening this (drop-all-caps + no-new-privileges, then add back
-  only what the runner needs) is a known follow-up; a container escape is already out
-  of scope (see the note under the plugin install section).
+  and rootless, AND now launches with the capability floor applied: `--cap-drop=ALL`
+  (empties the capability bounding set) and `--security-opt=no-new-privileges` (blocks
+  the setuid/setcap privilege-gain path on execve). The runner already ran with no
+  effective capabilities (it is non-root), so these harden the FLOOR rather than the
+  current process: even a setuid-root or file-capability binary inside the image can no
+  longer acquire a capability. Verified live against the runner image that the full
+  workload (file IO, outbound TCP/DNS, a real `git clone` over HTTPS, node, subprocess
+  exec) is unaffected, and that a launched container shows `CapEff=0`, `CapBnd=0`,
+  `NoNewPrivs=1`. STILL NOT applied (a separate, riskier follow-up): a custom seccomp
+  profile and a read-only rootfs (the latter needs tmpfs mappings for the npm/claude
+  scratch paths). A container escape is already out of scope (see the note under the
+  plugin install section); this floor narrows the in-container blast radius further.

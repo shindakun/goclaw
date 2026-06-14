@@ -6,6 +6,7 @@
 // Security defaults baked in here (brief §6, §9):
 //   - rootless, non-root in container (--user 1000:1000),
 //   - an init process for PID-1 signal handling (--init),
+//   - capability floor: --cap-drop=ALL + --security-opt=no-new-privileges,
 //   - validated mounts with :Z relabeling (via internal/mounts),
 //   - per-group runtime selection (crun default; gvisor/kata opt-in).
 package runtime
@@ -264,8 +265,20 @@ func (m *Manager) buildArgs(spec Spec) []string {
 	args := []string{
 		"run", "-d",
 		"--user", "1000:1000", // non-root in container (brief §9)
-		"--init", // PID-1 signal handling (brief §9)
+		"--init",                           // PID-1 signal handling (brief §9)
+		"--cap-drop=ALL",                   // drop every Linux capability from the bounding set
+		"--security-opt=no-new-privileges", // no setuid/setcap privilege gain
 	}
+	// Capability floor (brief §9, docs/security.md). The runner already runs
+	// non-root, so its effective caps are empty today (verified: CapEff=0); these
+	// two flags harden the FLOOR rather than the current process:
+	//   - --cap-drop=ALL empties the capability BOUNDING set, so even a setuid-root
+	//     or file-capability binary inside the image cannot acquire a capability.
+	//   - no-new-privileges blocks the execve() privilege-gain path entirely.
+	// The runner's real workload needs no capability: file IO, outbound TCP/DNS, a
+	// real git clone over HTTPS, node, and subprocess exec all run unaffected
+	// (verified live against the runner image). Seccomp and a read-only rootfs are a
+	// separate, riskier follow-up (the rootfs needs tmpfs for npm/claude scratch).
 	if spec.Name != "" {
 		args = append(args, "--name", spec.Name)
 	}
