@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/shindakun/goclaw/internal/agentspec"
 	"github.com/shindakun/goclaw/internal/channels"
 	"github.com/shindakun/goclaw/internal/channels/discord"
 	chanplugin "github.com/shindakun/goclaw/internal/channels/plugin"
@@ -304,6 +305,12 @@ func run(log *slog.Logger) error {
 			claudeEnv["GH_TOKEN"] = cfg.GitHubToken
 			outboundNeedles = append(outboundNeedles, cfg.GitHubToken)
 		}
+		// Model: the agent spec's Model layer. Host-wide default for now (a future
+		// per-group override sets spec.Model directly, falling back to this). Passed
+		// to the runner as GOCLAW_MODEL; the runner uses it when no -model flag is set.
+		// WithEnv drops it when empty, so an unset model leaves the CLI default.
+		groupSpec := agentspec.AgentGroupSpec{Model: cfg.ClaudeModel}
+		claudeEnv["GOCLAW_MODEL"] = groupSpec.Model
 		// Timezone: the container base image is UTC, so without this the agent's
 		// clock (and any `date`) is hours off the user's wall time - it wrote
 		// vault stamps on the wrong day and invalid hours like "24:30". Pass the

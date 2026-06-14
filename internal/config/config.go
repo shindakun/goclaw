@@ -42,6 +42,11 @@ type Config struct {
 	// Code-credentials"); extract it into this env var. Takes precedence over
 	// AnthropicAPIKey when both are set.
 	ClaudeCodeOAuthToken string
+	// ClaudeModel, if set, is the model id the runner uses (mapped to the agent
+	// spec's Model layer and passed in as GOCLAW_MODEL). Empty means the CLI default.
+	// This is the host-wide default; a future per-group override would set the spec's
+	// Model directly, falling back to this.
+	ClaudeModel string
 	// VaultDir, if set, is a host directory mounted read-write at /vault in the
 	// agent-group container, and the runner reads /vault/CLAUDE.md as its system
 	// prompt (brief §11). Empty disables the knowledge vault. Create one with
@@ -120,6 +125,7 @@ func Load() (*Config, error) {
 		DefaultAgentGroupFolder: getenv("GOCLAW_DEFAULT_AGENT_GROUP_FOLDER", "default"),
 		LaunchRunner:            os.Getenv("GOCLAW_LAUNCH_RUNNER") == "1",
 		RunnerImage:             getenv("GOCLAW_RUNNER_IMAGE", "goclaw-claude:latest"),
+		ClaudeModel:             os.Getenv("GOCLAW_MODEL"),
 		AnthropicAPIKey:         os.Getenv("GOCLAW_ANTHROPIC_API_KEY"),
 		ClaudeCodeOAuthToken:    os.Getenv("GOCLAW_CLAUDE_CODE_OAUTH_TOKEN"),
 		VaultDir:                expandHome(os.Getenv("GOCLAW_VAULT_DIR"), home),

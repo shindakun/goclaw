@@ -75,8 +75,16 @@ func main() {
 		}
 	}
 
+	// Model: the explicit -model flag wins (dev/standalone); otherwise fall back to
+	// GOCLAW_MODEL, which the host injects from the agent spec's Model layer. Empty
+	// leaves the CLI default.
+	modelID := *model
+	if modelID == "" {
+		modelID = os.Getenv("GOCLAW_MODEL")
+	}
+
 	r := &runner{
-		model:            *model,
+		model:            modelID,
 		systemPromptFile: promptFile,
 		vaultMounted:     vaultMounted,
 		rotate:           loadRotateConfig(),

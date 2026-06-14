@@ -78,6 +78,28 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 }
 
+func TestLoad_ClaudeModel(t *testing.T) {
+	// Default: unset GOCLAW_MODEL yields an empty model (CLI default).
+	t.Setenv("GOCLAW_MODEL", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ClaudeModel != "" {
+		t.Errorf("ClaudeModel default = %q, want empty", cfg.ClaudeModel)
+	}
+
+	// Set: GOCLAW_MODEL flows into ClaudeModel verbatim.
+	t.Setenv("GOCLAW_MODEL", "claude-opus-4-8")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ClaudeModel != "claude-opus-4-8" {
+		t.Errorf("ClaudeModel = %q, want claude-opus-4-8", cfg.ClaudeModel)
+	}
+}
+
 func TestLoad_BooleanFlagsParseOne(t *testing.T) {
 	t.Setenv("GOCLAW_LAUNCH_RUNNER", "1")
 	t.Setenv("GOCLAW_AUTO_WIRE_OWNER", "1")
