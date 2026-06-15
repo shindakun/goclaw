@@ -154,6 +154,41 @@ A caution that matches goclaw's "fail closed" rule: a missing or skipped check i
 pass. If a sensor cannot run, the gate is not green, it is unknown, and unknown is
 treated as not-passed.
 
+### 3a. Strengthening the inferential half
+
+The computational half is as strong as it gets (an exit code does not have opinions). The
+inferential half is where quality varies, and there is a ladder of how hard it pushes,
+worth choosing deliberately per check rather than defaulting to the weakest:
+
+1. **Single reviewer.** One judged pass over the change. Cheapest; the floor. Its weakness
+   is that the reviewer shares the implementer's blind spots, especially when it is the
+   same model that wrote the code.
+2. **Adversarial framing.** The reviewer is prompted to REFUTE ("find the bug; assume it is
+   wrong; default to fail if unsure") rather than to bless. Same cost, materially better
+   recall of real problems, because "convince me this is correct" beats "does this look ok".
+   This is goclaw's current pattern and the right default.
+3. **N independent skeptics, majority vote.** Run the adversarial pass K times (or K ways,
+   different lenses: correctness, security, does-it-actually-reproduce) and require a
+   majority to pass. Catches failure modes a single sample misses; the cost is K turns.
+4. **Two-model debate, neutral distill.** Two DIFFERENT models argue the change, then a
+   neutral pass distills the verdict into agreements / residual disagreements /
+   recommendation. The strongest inferential check, because a failure mode has to survive
+   two models that do not share the same training blind spots. It presupposes more than one
+   model is wired (see task-work.md §9 q4), so it is a future option, not today's default.
+
+```
+inferential gate, by strength (pick per check, not globally)
+  single            one judged pass                              cheap, floor
+  adversarial       one pass prompted to REFUTE                  default
+  N-skeptic vote    K refute-passes, majority/threshold to pass  higher-stakes changes
+  debate+distill    two models argue -> neutral verdict          needs multi-model; strongest
+```
+
+The rule of thumb: scale the inferential strength to the blast radius of the change. A
+doc tweak needs none; a security-relevant or hard-to-reverse change earns N-skeptic or
+debate. The verdict stays advisory/voted (not a hard exit code) because judgment can be
+wrong; the COMPUTATIONAL half is the hard gate.
+
 ## 4. Manage files as an overlay: forward updates, never clobber user edits
 
 **Principle.** When goclaw writes a file that a human is also expected to edit (a prompt,

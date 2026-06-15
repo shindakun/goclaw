@@ -2,18 +2,26 @@
 
 Status: DESIGN / RFC. Nothing built. Date: 2026-06-10. Proposes one coherent design for how
 the agent improves its OWN capabilities over time, with the authorization gate scaling to the
-blast radius of the change. Two rungs:
+blast radius of the change. The rungs, in increasing blast radius:
 
 1. **Skills** (prose): the agent captures a repeated workflow as a `SKILL.md`. It lands
    directly, no human gate, because a skill is instructions, not code, and adds no execution
    surface. (Detailed separately in `docs/agent-authored-skills.md`; summarized here as rung 1.)
+1.5. **Captured procedures** (a read-only workflow replayed deterministically): the agent
+   records the shape of a successful read-only tool loop so a later similar task replays the
+   data-collection steps without re-running the whole LLM loop. More capable than prose (it
+   removes iterations) but not a new tool: read-only commands only, allowlisted, with a
+   safety-verify pass and auto-retirement of bad captures. Lands below rung 2 because it adds
+   no new execution surface; writes always stay on the LLM path.
 2. **Plugins** (code): the agent AUTHORS a plugin but cannot install it. It PROPOSES; the
    operator approves; the existing vetted, sandboxed `plugin add` path runs. The agent
    proposes, a human pulls the trigger.
 
 The governing principle: **the gate scales with the blast radius.** A prose self-edit changes
-what the agent reads; it lands free. A code self-edit changes what RUNS in the box; it routes
-through a human. Same loop ("the agent gets better at its job"), two very different rungs.
+what the agent reads; it lands free. A captured procedure changes how the agent runs its own
+READ-ONLY work; it lands gated-but-unattended (allowlist + verify, no new surface). A code
+self-edit changes what RUNS in the box; it routes through a human. Same loop ("the agent gets
+better at its job"), increasing blast radius, increasing gate.
 
 ## 0. The containment constraint (this is the whole design, not a footnote)
 
@@ -95,6 +103,75 @@ So the full rung-1 picture is: introspection (observe) + agent-authored skills (
 observed, in prose) + the skill-creator discipline (author well). All three are prose, all
 land without a gate, and together they are a complete self-improvement loop that never crosses
 the code boundary. Rung 2 is only for when that loop surfaces a need a prose skill cannot meet.
+
+## 1.5. Rung 1.5: captured procedures (a read-only workflow replayed deterministically)
+
+There is a rung between "prose skill" and "new tool", and it is the one with the biggest
+cost payoff. When the agent does the SAME multi-step read-only workflow repeatedly (a tool
+loop that greps, reads, runs a read-only command, synthesizes), it pays the per-iteration
+LLM cost every time. A prose skill (rung 1) documents HOW to do it but the agent still
+re-runs the whole LLM loop. A captured procedure records the SHAPE of a successful loop so a
+later, similar task replays the deterministic data-collection steps directly and spends one
+LLM call on the final synthesis, instead of N.
+
+This is more capable than a prose skill (it removes execution iterations, not just guidance)
+but it is NOT a new tool: a procedure invokes only commands the agent could already run, and
+only READ-ONLY ones. That is what lets it sit below rung 2.
+
+### 1.5a. What a procedure is
+
+A captured procedure is a small, declarative program over a fixed alphabet of generic steps,
+specificity lives in the arguments, not in new opcodes:
+
+```
+search     lookup (a read-only command, a memory/vault read)
+transform  data transform; mode = deterministic (pure, cacheable) | generative (one LLM call)
+validate   a condition check -> pass/fail
+compose    assemble the result from collected parts
+branch     conditional routing (if/else), not computation
+report     emit the result
+```
+
+A procedure is data (it serializes), it is stored where a skill is stored (the vault, or
+`claude-home/skills/authored/`), and it is matched to a new task the same way a skill is (by
+description/trigger). The deterministic steps run without the model; only a `transform` in
+`generative` mode spends a call.
+
+### 1.5b. Why it is safe to land below rung 2 (the gating)
+
+A replayable program that runs commands is exactly the kind of thing that could smuggle a
+capability escape past the "prose only" safety of rung 1, so it is gated, fail-closed, by
+construction, not by trust:
+
+- **Read-only commands only.** A procedure may capture and replay only commands with no
+  write/side-effect surface (read a file, grep, a read-only query). Anything that mutates,
+  installs, pushes, or reaches a new host stays on the LLM path where the normal turn rules
+  (and the must-tier invariants) apply. The allowlist of replayable commands is the
+  load-bearing check and it fails closed: an unrecognized command is not replayable.
+- **A safety-verify pass before a captured procedure is ever reused.** Capturing a loop is
+  not enough; the candidate procedure is checked (does every step parse to a read-only
+  allowlisted op? does it avoid generative steps where a deterministic one was claimed?)
+  before it is eligible, and a procedure that fails verification is discarded, not run.
+- **Neutral fitness that sinks a bad procedure.** A replayed procedure that produces a worse
+  or wrong result than the LLM loop it replaced is retired automatically, so a bad capture
+  decays out instead of compounding. (This is the loop-until-dry / completeness-critic
+  discipline applied to the agent's own shortcuts.)
+- **Writes always stay on the LLM path.** The whole point of the boundary is that the
+  untrusted agent does not get a deterministic, unsupervised way to mutate things. A
+  procedure accelerates OBSERVING; ACTING on what it found is still a normal, gated turn.
+- **Still no host execution channel.** A procedure runs inside the same sandbox as any turn,
+  invoking the same in-container tools. It opens nothing new toward the host; it is a cached
+  plan for the agent's own read-only work, not a new pathway out of the box.
+
+### 1.5c. The honest limit
+
+A captured procedure removes the cost of repeated per-iteration model calls, NOT the cost of
+the data the steps collect. The win scales with ITERATION overhead, not task size: a small,
+many-step workflow repeated often gets dramatically cheaper; a single-step audit over a huge
+file (cost dominated by the file contents, not the loop) saves almost nothing. So this rung
+is worth building only once introspection (rung 1's observe half) shows the agent actually
+repeating loop-heavy read-only work; otherwise it is machinery for a win that is not there.
+Default: do not build it speculatively, let the event log prove the repetition first.
 
 ## 2. Rung 2: operator-gated plugin proposals (code, human approves)
 
@@ -197,14 +274,19 @@ is the contributor's PR: it sits, visible, until a human acts.
    into the container, that is the observe half that tells the agent what to author. The
    skill-authoring (act) and introspection (observe) pieces are both prose and reinforce each
    other; ship them close together.
-2. **Rung 2 proposal plumbing:** the `plugin_proposals` table (mirroring `pending_approvals`),
+2. **(Optional, only if introspection shows it pays) Rung 1.5 (captured procedures):** the
+   read-only command allowlist, the procedure format + interpreter, capture-on-success, the
+   safety-verify pass, and neutral-fitness retirement. Build this ONLY after the event log
+   shows the agent repeating loop-heavy read-only work (section 1.5c); it is machinery for a
+   cost win that may not exist. Slots between rungs 1 and 2 because it adds no new surface.
+3. **Rung 2 proposal plumbing:** the `plugin_proposals` table (mirroring `pending_approvals`),
    the agent-emittable `/plugin propose <git-url>` directive (intercepted host-side like
    `/schedule`), and the owner-only `plugin proposals` / `approve` / `reject` commands.
    `approve` runs the UNCHANGED `installer.Add`. Git-URL-only first (open question 2).
-3. **(Later) local-source proposals:** let the agent propose authored source directly, still
+4. **(Later) local-source proposals:** let the agent propose authored source directly, still
    built in the sandbox, never trusted on the host. Only if git-URL proposals prove too
    indirect in practice.
-4. **(Later, separate) repo PRs for goclaw-core:** the agent cloning goclaw, branching, and
+5. **(Later, separate) repo PRs for goclaw-core:** the agent cloning goclaw, branching, and
    opening a PR for changes to goclaw ITSELF (not plugins). This is the legitimate
    "contributor" path for core changes and is a different track from plugin proposals; it needs
    its own design (credentials to push, which repo, review discipline) and is out of scope here
@@ -213,10 +295,14 @@ is the contributor's PR: it sits, visible, until a human acts.
 ## 6. Recommendation
 
 Ship rung 1 (skills) first and on its own: it is safe, small, and delivers most of the
-self-improvement value without touching the code boundary. Do rung 2 (plugin proposals) only
-when there is a real recurring need for a TOOL a skill cannot express, and do it git-URL-first
-so the host never reads agent-authored code directly, the existing sandbox pipeline does all
-the vetting, with a human approval as the only new gate. Keep the principle visible in both the
+self-improvement value without touching the code boundary. Treat rung 1.5 (captured
+procedures) as optional and demand-driven: build it only if introspection shows the agent
+actually repeating loop-heavy read-only work, and if built, gate it fail-closed (read-only
+allowlist + safety-verify + auto-retirement), since it is the rung most able to smuggle a
+capability past prose safety. Do rung 2 (plugin proposals) only when there is a real recurring
+need for a TOOL a skill cannot express, and do it git-URL-first so the host never reads
+agent-authored code directly, the existing sandbox pipeline does all the vetting, with a human
+approval as the only new gate. Keep the principle visible in both the
 code and the agent's own discipline: **prose lands directly; code routes through a human.** The
 agent proposes; the operator approves. Anything that would let the agent run code it wrote
 without a human in the loop is off the table, that is the containment line this whole ladder is

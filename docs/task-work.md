@@ -210,10 +210,38 @@ system share the enqueue primitive), but that composition is out of scope here.
    plus DB migrations, paralleling `internal/scheduler`? It should reuse the scheduler's
    fire/re-arm primitives rather than copy them, factor the shared "enqueue a sourced
    prompt + ensure runner + handle terminal failure" path out of the scheduler.
-4. **Multi-model (planner vs worker)?** A peer uses "one model drafts, another reviews."
-   goclaw is single-runner-per-group today; cross-model orchestration is a big addition and
-   probably a separate RFC. Default: one model, with the adversarial-review gate done as a
-   second turn of the same model (still catches a lot).
+4. **Multi-model (planner vs worker vs reviewer)?** goclaw is single-runner-per-group today,
+   so this is a real addition, but there are two distinct, well-motivated reasons to split
+   models that a task system should weigh:
+
+   - **Cost: plan expensive, execute cheap.** Planning and decomposition is where a strong,
+     pricey model earns its keep; the token-heavy task tool-loop does not need it. Running
+     the SCOUT/PLAN turns on a capable model and the per-task execution turns on a cheaper
+     one targets spend at the reasoning, not the grind. The agentspec already carries a
+     per-group `Model`; the natural shape is a per-PHASE model on the run, e.g.
+     `goal_runs.plan_model` / `goal_runs.exec_model`, falling back to the group model then
+     `GOCLAW_MODEL`. This is purely a host-side model-selection change (which model id the
+     runner turn uses for which phase); it adds no new boundary.
+   - **Verification quality: debate beats a single skeptic.** The inferential gate (§5) is
+     stronger when two DIFFERENT models argue the change and a neutral third pass distills
+     the verdict (agreements / residual disagreements / recommendation), instead of one
+     reviewer prompted to refute. A two-model council catches failure modes a single model
+     shares with the implementer. This presupposes more than one provider/model is wired.
+
+   Sketch of where phase-model selection slots in (no new mechanism, just which model the
+   turn runs under):
+
+   ```
+   SCOUT / PLAN turn   -> run.plan_model  (capable; reasoning + decomposition)
+   per-task execution  -> run.exec_model  (cheap; the tool loop)
+   inferential verify  -> run.review_model (ideally != exec_model; or a council of both)
+   each falls back: run.<phase>_model -> agent group Model -> GOCLAW_MODEL -> CLI default
+   ```
+
+   Default for v1 stays single-model with the adversarial review as a second turn of the
+   same model (still catches a lot, needs nothing new). Phase-model selection is the first
+   increment (cheap, host-side); a true two-model council is the second and can be its own
+   RFC. Either way the orchestration stays host-owned and the boundary is untouched.
 5. **Checkpoint scope for non-git work.** Code and vault have git; a task that touches a
    mounted external dir with no VCS has no natural checkpoint. Restrict task work to
    git-backed work trees first?
