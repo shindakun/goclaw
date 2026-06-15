@@ -34,10 +34,18 @@ type GroupRunner struct {
 	ExtraMounts    []mounts.Mount // already allowlist-validated extra mounts (brief §6.3)
 }
 
-// claudeHomePath is where the container's claude CLI keeps its config + session
-// history. Matches HOME=/home/agent in container/claude.Containerfile (a neutral
-// home for uid 1000, not the base image's incidental "node" user).
-const claudeHomePath = "/home/agent/.claude"
+// claudeHomePath is the container's HOME, mounted from the group's persistent
+// host dir. Matches HOME=/home/agent in container/claude.Containerfile (a neutral
+// home for uid 1000, not the base image's incidental "node" user). We persist the
+// WHOLE home, not just ~/.claude, so the CLI's HOME-root state file (~/.claude.json)
+// also survives a container recreate AND is writable under a read-only rootfs (the
+// rootfs is read-only; this bind mount and /work and /tmp are the writable surfaces).
+const claudeHomePath = "/home/agent"
+
+// claudeDotDirName is the ~/.claude subdir, under the persistent home, where the
+// host composes the system prompt + skill symlinks (see compose.go) and the CLI
+// keeps its session history. The runner reads claudeHomePath/.claude/CLAUDE.md.
+const claudeDotDirName = ".claude"
 
 // vaultMountPath is where the knowledge vault is mounted in the container; the
 // runner reads vaultMountPath/CLAUDE.md as its system prompt (brief §11).
@@ -150,11 +158,23 @@ func (m *Manager) EnsureGroupRunner(ctx context.Context, gr GroupRunner) error {
 		if err := os.MkdirAll(home, 0o777); err != nil {
 			return fmt.Errorf("runtime: create claude home %q: %w", home, err)
 		}
-		// Compose the agent's system prompt + skill symlinks into claude-home,
+		// Migrate a legacy layout: this host dir used to BE the ~/.claude contents
+		// (mounted at /home/agent/.claude). It is now the whole HOME (mounted at
+		// /home/agent), with the composed prompt + skills living under a .claude
+		// subdir. Move any pre-existing root contents into .claude/ once so an
+		// upgraded deployment keeps its session history.
+		if err := migrateClaudeHomeLayout(home); err != nil {
+			return err
+		}
+		// Compose the agent's system prompt + skill symlinks into the .claude subdir,
 		// fresh each launch: the baked-in base (/app/CLAUDE.md), the coding skill
 		// (always), and the librarian skill when a vault is mounted. The runner
 		// reads the composed CLAUDE.md as its system prompt (see compose.go).
-		if err := composeGroupPrompt(home, gr.VaultDir != "", gr.EventsDir != ""); err != nil {
+		dotDir := filepath.Join(home, claudeDotDirName)
+		if err := os.MkdirAll(dotDir, 0o777); err != nil {
+			return fmt.Errorf("runtime: create claude dot dir %q: %w", dotDir, err)
+		}
+		if err := composeGroupPrompt(dotDir, gr.VaultDir != "", gr.EventsDir != ""); err != nil {
 			return err
 		}
 		groupMounts = append(groupMounts, mounts.Mount{

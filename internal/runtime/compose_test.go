@@ -240,6 +240,85 @@ func readSkillLinks(t *testing.T, skillsDir string) map[string]string {
 	return out
 }
 
+// TestMigrateClaudeHomeLayout_MovesLegacyRootIntoDotClaude: a dir that holds the old
+// layout (compose artifacts at the root) is migrated so those artifacts live under
+// .claude/, preserving session history on upgrade.
+func TestMigrateClaudeHomeLayout_MovesLegacyRootIntoDotClaude(t *testing.T) {
+	home := t.TempDir()
+	// Legacy: CLAUDE.md + skills/ + a session history file at the ROOT.
+	mustWrite(t, filepath.Join(home, "CLAUDE.md"), "old")
+	if err := os.MkdirAll(filepath.Join(home, "skills"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(home, "history.jsonl"), "session")
+
+	if err := migrateClaudeHomeLayout(home); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Root artifacts moved under .claude/.
+	for _, name := range []string{"CLAUDE.md", "skills", "history.jsonl"} {
+		if _, err := os.Stat(filepath.Join(home, claudeDotDirName, name)); err != nil {
+			t.Errorf("%q should have moved under .claude/: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(home, name)); !os.IsNotExist(err) {
+			t.Errorf("%q should no longer be at the root: %v", name, err)
+		}
+	}
+}
+
+// TestMigrateClaudeHomeLayout_LeavesNewLayoutAlone: a dir that already holds the new
+// layout (a HOME-root state file and a .claude/ subdir) must NOT be touched - moving
+// ~/.claude.json into .claude/ would lose the CLI state.
+func TestMigrateClaudeHomeLayout_LeavesNewLayoutAlone(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, claudeDotDirName), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(home, ".claude.json"), "{}")
+
+	if err := migrateClaudeHomeLayout(home); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// ~/.claude.json stays at the HOME root.
+	if _, err := os.Stat(filepath.Join(home, ".claude.json")); err != nil {
+		t.Errorf("~/.claude.json must remain at HOME root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, claudeDotDirName, ".claude.json")); !os.IsNotExist(err) {
+		t.Errorf("~/.claude.json must NOT be moved into .claude/")
+	}
+}
+
+// TestMigrateClaudeHomeLayout_FreshAndIdempotent: a fresh dir is a no-op, and running
+// the migration twice is safe.
+func TestMigrateClaudeHomeLayout_FreshAndIdempotent(t *testing.T) {
+	home := t.TempDir()
+	if err := migrateClaudeHomeLayout(home); err != nil {
+		t.Fatalf("migrate fresh: %v", err)
+	}
+	if entries, _ := os.ReadDir(home); len(entries) != 0 {
+		t.Fatalf("fresh dir should stay empty, got %v", entries)
+	}
+	// Legacy then migrate twice: second run is a no-op (it sees .claude and returns).
+	mustWrite(t, filepath.Join(home, "CLAUDE.md"), "old")
+	if err := migrateClaudeHomeLayout(home); err != nil {
+		t.Fatalf("migrate legacy: %v", err)
+	}
+	if err := migrateClaudeHomeLayout(home); err != nil {
+		t.Fatalf("migrate idempotent: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, claudeDotDirName, "CLAUDE.md")); err != nil {
+		t.Errorf("migrated CLAUDE.md should remain under .claude/: %v", err)
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (func() bool {
 		for i := 0; i+len(sub) <= len(s); i++ {

@@ -125,6 +125,8 @@ func TestEnsureGroupRunner_LaunchesWhenAbsent(t *testing.T) {
 		"run", "--user 1000:1000", "--init",
 		"--cap-drop=ALL",                   // capability floor (brief §9)
 		"--security-opt=no-new-privileges", // no setuid/setcap privilege gain
+		"--read-only",                      // immutable rootfs
+		"--tmpfs /tmp",                     // writable scratch
 		"--name goclaw-1",
 		absDir + ":/sessions:Z", // mount source must be absolute
 		"goclaw-runner:latest",
@@ -496,6 +498,37 @@ func TestEnsureRunner_AppliesAllowlistedExtraMount(t *testing.T) {
 		t.Errorf("non-allowlisted mount must be dropped, but appears: %s", run)
 	}
 	_ = absAllowed
+}
+
+// TestEnsureRunner_MountsWholeHomeAndComposesUnderDotClaude verifies the claude-home
+// is mounted at /home/agent (the whole HOME, so ~/.claude.json persists and is
+// writable under the read-only rootfs), and that the composed prompt lands under the
+// .claude subdir where the runner reads it (/home/agent/.claude/CLAUDE.md).
+func TestEnsureRunner_MountsWholeHomeAndComposesUnderDotClaude(t *testing.T) {
+	var calls []string
+	withFakePodman(t, "", "goclaw-1\trunning\tgoclaw-runner:latest\t"+fakeImageID+"\n", &calls)
+
+	m := New("podman", "goclaw-runner:latest", RuntimeCrun, nil)
+	groupDir := filepath.Join(t.TempDir(), "sessions", "1")
+	if err := m.EnsureRunner(context.Background(), 1, groupDir); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	run := calls[1]
+
+	// The home is mounted at /home/agent, NOT /home/agent/.claude.
+	if !strings.Contains(run, ":"+claudeHomePath+":Z") {
+		t.Errorf("claude home should mount at %q; argv: %s", claudeHomePath, run)
+	}
+	if strings.Contains(run, ":/home/agent/.claude:Z") {
+		t.Errorf("claude home must NOT mount at /home/agent/.claude (whole HOME is persisted now): %s", run)
+	}
+
+	// The composed entry point was written under the .claude subdir of the host home.
+	home := claudeHomeFor(groupDir)
+	composed := filepath.Join(home, claudeDotDirName, composedClaudeMdName)
+	if _, err := os.Stat(composed); err != nil {
+		t.Errorf("composed prompt should exist at %q: %v", composed, err)
+	}
 }
 
 func TestStopGroupRunner_NoopWhenAbsent(t *testing.T) {

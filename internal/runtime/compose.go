@@ -96,6 +96,61 @@ func composeGroupPrompt(claudeHome string, vaultMounted, eventsMounted bool) err
 	return nil
 }
 
+// migrateClaudeHomeLayout upgrades a group's persistent home dir from the legacy
+// layout (the dir WAS the ~/.claude contents, mounted at /home/agent/.claude) to the
+// current one (the dir is the whole HOME, mounted at /home/agent, with ~/.claude as a
+// subdir). It moves any pre-existing entries at the root into a new .claude/ subdir,
+// EXCEPT the .claude subdir itself. It is idempotent and a no-op on a fresh dir or an
+// already-migrated one: if a .claude subdir already exists it assumes the new layout
+// and does nothing, so it never moves a HOME-root file (e.g. ~/.claude.json) into
+// .claude/. Detection therefore keys on "root has compose artifacts AND no .claude
+// subdir yet".
+func migrateClaudeHomeLayout(home string) error {
+	dotDir := filepath.Join(home, claudeDotDirName)
+	if _, err := os.Lstat(dotDir); err == nil {
+		return nil // .claude already present -> already new layout (or fresh+composed)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("compose: stat %q: %w", dotDir, err)
+	}
+
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		return fmt.Errorf("compose: read home %q: %w", home, err)
+	}
+	if len(entries) == 0 {
+		return nil // fresh dir, nothing to migrate
+	}
+
+	// Only the legacy layout has compose artifacts at the root. If none are present,
+	// treat the dir as already-HOME (e.g. it only holds ~/.claude.json) and do not
+	// move anything: moving a HOME-root state file into .claude/ would lose it.
+	legacy := false
+	for _, e := range entries {
+		switch e.Name() {
+		case composedClaudeMdName, ".claude-shared.md", "skills":
+			legacy = true
+		}
+	}
+	if !legacy {
+		return nil
+	}
+
+	if err := os.MkdirAll(dotDir, 0o777); err != nil {
+		return fmt.Errorf("compose: create .claude during migration %q: %w", dotDir, err)
+	}
+	for _, e := range entries {
+		if e.Name() == claudeDotDirName {
+			continue // never move .claude into itself
+		}
+		from := filepath.Join(home, e.Name())
+		to := filepath.Join(dotDir, e.Name())
+		if err := os.Rename(from, to); err != nil {
+			return fmt.Errorf("compose: migrate %q -> %q: %w", from, to, err)
+		}
+	}
+	return nil
+}
+
 // groupContextSpec builds the group's ContextSpec from the current mounts and the
 // runtime-owned container-path constants. The skill SET and its gating live here as
 // data; agentspec.ContextSpec.ResolvedSkills applies the mount preconditions. Adding

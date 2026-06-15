@@ -7,6 +7,8 @@
 //   - rootless, non-root in container (--user 1000:1000),
 //   - an init process for PID-1 signal handling (--init),
 //   - capability floor: --cap-drop=ALL + --security-opt=no-new-privileges,
+//   - read-only rootfs (--read-only) with a tmpfs /tmp; the writable surfaces are
+//     the bind mounts (the persistent HOME, /work, /sessions, ...) and tmpfs,
 //   - validated mounts with :Z relabeling (via internal/mounts),
 //   - per-group runtime selection (crun default; gvisor/kata opt-in).
 package runtime
@@ -268,6 +270,8 @@ func (m *Manager) buildArgs(spec Spec) []string {
 		"--init",                           // PID-1 signal handling (brief §9)
 		"--cap-drop=ALL",                   // drop every Linux capability from the bounding set
 		"--security-opt=no-new-privileges", // no setuid/setcap privilege gain
+		"--read-only",                      // immutable rootfs; only bind mounts + tmpfs are writable
+		"--tmpfs", "/tmp",                  // writable scratch for tools (some runtimes give /tmp by default; set it explicitly)
 	}
 	// Capability floor (brief §9, docs/security.md). The runner already runs
 	// non-root, so its effective caps are empty today (verified: CapEff=0); these
@@ -277,8 +281,16 @@ func (m *Manager) buildArgs(spec Spec) []string {
 	//   - no-new-privileges blocks the execve() privilege-gain path entirely.
 	// The runner's real workload needs no capability: file IO, outbound TCP/DNS, a
 	// real git clone over HTTPS, node, and subprocess exec all run unaffected
-	// (verified live against the runner image). Seccomp and a read-only rootfs are a
-	// separate, riskier follow-up (the rootfs needs tmpfs for npm/claude scratch).
+	// (verified live against the runner image).
+	//
+	// --read-only makes the rootfs immutable; the only writable surfaces are the
+	// bind mounts and tmpfs. The CLI's HOME-root state file (~/.claude.json) is why
+	// the WHOLE home is persisted as a bind mount (claudeHomePath), not just
+	// ~/.claude; /work and /sessions are bind mounts; /tmp is an explicit tmpfs.
+	// Verified live: under --read-only the real claude CLI runs (returns a structured
+	// 401 for a decoy key) and writes/persists ~/.claude.json. A custom seccomp
+	// profile is the remaining follow-up; podman's DEFAULT seccomp profile already
+	// applies and covers the runner's syscalls.
 	if spec.Name != "" {
 		args = append(args, "--name", spec.Name)
 	}

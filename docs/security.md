@@ -30,9 +30,13 @@ at launch (`internal/runtime`):
 - `--init` - a real PID 1 for signal handling.
 - `--cap-drop=ALL` + `--security-opt=no-new-privileges` - the capability floor: the
   bounding set is empty and no execve can gain privileges (see "Residual risks").
+- `--read-only` rootfs with a tmpfs `/tmp`. The rootfs is immutable; the only
+  writable surfaces are the bind mounts (the persistent HOME, `/work`, `/sessions`,
+  the channel-socket dir) and tmpfs. Podman's default seccomp profile applies.
 - Rootless Podman, crun by default.
 - No `--privileged`, no host networking, no Docker/Podman socket mounted.
-- The agent reaches only its mounts (`/sessions`, `/home/agent/.claude`, `/work`,
+- The agent reaches only its mounts (`/sessions`, `/home/agent` (the persistent
+  HOME, with `~/.claude` and the CLI's `~/.claude.json` state under it), `/work`,
   optionally `/vault`, the proxy CA) and the network. It cannot touch the host
   filesystem.
 
@@ -447,7 +451,12 @@ choice (`GOCLAW_*` env / `goclaw auth`); the container, gate, and mounts are not
   longer acquire a capability. Verified live against the runner image that the full
   workload (file IO, outbound TCP/DNS, a real `git clone` over HTTPS, node, subprocess
   exec) is unaffected, and that a launched container shows `CapEff=0`, `CapBnd=0`,
-  `NoNewPrivs=1`. STILL NOT applied (a separate, riskier follow-up): a custom seccomp
-  profile and a read-only rootfs (the latter needs tmpfs mappings for the npm/claude
-  scratch paths). A container escape is already out of scope (see the note under the
-  plugin install section); this floor narrows the in-container blast radius further.
+  `NoNewPrivs=1`. The rootfs is also `--read-only` (immutable image layer; the only
+  writable surfaces are the bind mounts and a tmpfs `/tmp`), verified live to still
+  run the real workload: a `git clone` + commit, and the claude CLI returning a
+  structured 401 for a decoy key while persisting its `~/.claude.json` state. Seccomp
+  is podman's DEFAULT profile (`Seccomp: 2` in the container), which already covers
+  the runner's syscalls; a CUSTOM profile is deliberately NOT added, since it would
+  only add the risk of breaking on an unanticipated syscall for no boundary gain. A
+  container escape is already out of scope (see the note under the plugin install
+  section); this floor narrows the in-container blast radius further.
